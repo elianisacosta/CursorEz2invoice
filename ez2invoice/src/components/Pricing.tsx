@@ -1,0 +1,136 @@
+import { Check } from 'lucide-react';
+import Link from 'next/link';
+
+const pricingPlans = [
+  {
+    name: "Starter",
+    description: "Perfect for small truck shops.",
+    price: "$80",
+    period: "/month",
+    features: [
+      "Up to 3 service bays",
+      "Work order management",
+      "Customer database",
+      "Invoice generation",
+      "Inventory management",
+      "Basic reporting",
+      "Email support"
+    ],
+    buttonText: "Get Started",
+    buttonStyle: "secondary",
+    popular: false
+  },
+  {
+    name: "Professional",
+    description: "For growing truck shops.",
+    price: "$150",
+    period: "/month",
+    features: [
+      "Everything in Starter",
+      "Up to 8 service bays",
+      "Analytics dashboard",
+      "Timesheet tracking",
+      "Advanced work order tracking",
+      "Customer communication tools",
+      "Accounts Receivable",
+      "Priority support"
+    ],
+    buttonText: "Get Started",
+    buttonStyle: "primary",
+    popular: true
+  },
+  {
+    name: "Enterprise",
+    description: "For large truck shop chains.",
+    price: "Contact Sales",
+    period: "",
+    features: [
+      "Everything in Professional",
+      "Unlimited service bays",
+      "Multi-location management",
+      "User permissions (up to 5 users)",
+      "Advanced reporting",
+      "API access",
+      "Custom integrations",
+      "Dedicated account manager"
+    ],
+    buttonText: "Get Started",
+    buttonStyle: "secondary",
+    popular: false
+  }
+];
+
+export default function Pricing() {
+  return (
+    <section id="pricing" className="py-20 bg-white">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        {/* Section Header */}
+        <div className="text-center mb-16">
+          <h2 className="text-4xl font-bold text-gray-900 mb-4">
+            Simple, transparent pricing
+          </h2>
+          <p className="text-xl text-gray-600 max-w-3xl mx-auto">
+            Choose the plan that fits your truck shop's needs. Start managing your business today.
+          </p>
+        </div>
+
+        {/* Pricing Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          {pricingPlans.map((plan, index) => (
+            <div
+              key={index}
+              className={`relative bg-white rounded-xl shadow-lg border-2 p-8 ${
+                plan.popular 
+                  ? 'border-primary-500 ring-2 ring-primary-500 ring-opacity-20' 
+                  : 'border-gray-200'
+              }`}
+            >
+              {/* Popular Badge */}
+              {plan.popular && (
+                <div className="absolute -top-4 left-1/2 transform -translate-x-1/2">
+                  <span className="bg-primary-500 text-white px-4 py-1 rounded-full text-sm font-semibold">
+                    Most Popular
+                  </span>
+                </div>
+              )}
+
+              {/* Plan Header */}
+              <div className="text-center mb-8">
+                <h3 className="text-2xl font-bold text-gray-900 mb-2">{plan.name}</h3>
+                <p className="text-gray-600 mb-4">{plan.description}</p>
+                <div className="mb-6">
+                  <span className="text-4xl font-bold text-gray-900">{plan.price}</span>
+                  {plan.period && (
+                    <span className="text-gray-600">{plan.period}</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Features */}
+              <ul className="space-y-4 mb-8">
+                {plan.features.map((feature, featureIndex) => (
+                  <li key={featureIndex} className="flex items-start">
+                    <Check className="h-5 w-5 text-green-500 mt-0.5 mr-3 flex-shrink-0" />
+                    <span className="text-gray-700">{feature}</span>
+                  </li>
+                ))}
+              </ul>
+
+              {/* CTA Button */}
+              <Link
+                href="/signup"
+                className={`w-full py-3 px-6 rounded-lg font-semibold text-lg transition-all duration-200 block text-center ${
+                  plan.buttonStyle === 'primary'
+                    ? 'bg-primary-500 text-white hover:bg-primary-600 hover:shadow-lg hover:-translate-y-1'
+                    : 'bg-white text-gray-700 border-2 border-gray-300 hover:border-gray-400 hover:bg-gray-50'
+                }`}
+              >
+                {plan.buttonText}
+              </Link>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
