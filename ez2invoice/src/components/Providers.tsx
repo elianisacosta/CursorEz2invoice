@@ -2,12 +2,15 @@
 
 import { AuthProvider } from '@/contexts/AuthContext';
 import { FounderProvider } from '@/contexts/FounderContext';
+import { ToastProvider } from '@/components/ui/ToastProvider';
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <AuthProvider>
       <FounderProvider>
-        {children}
+        <ToastProvider>
+          {children}
+        </ToastProvider>
       </FounderProvider>
     </AuthProvider>
   );

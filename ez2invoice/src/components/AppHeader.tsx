@@ -1,9 +1,18 @@
 'use client';
 
-import Link from 'next/link';
-import { ArrowLeft, Wrench } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Wrench, LogOut } from 'lucide-react';
+import { useAuth } from '@/contexts/AuthContext';
 
 export default function AppHeader() {
+  const { user, signOut } = useAuth();
+  const router = useRouter();
+
+  const handleSignOut = async () => {
+    await signOut();
+    router.push('/');
+  };
+
   return (
     <header className="bg-white shadow-sm border-b border-gray-200">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -21,19 +30,15 @@ export default function AppHeader() {
 
           {/* Navigation */}
           <div className="flex items-center space-x-4">
-            <Link
-              href="/"
-              className="flex items-center space-x-2 text-gray-600 hover:text-primary-500 transition-colors"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              <span>Back to Marketing Site</span>
-            </Link>
-            <Link
-              href="/dashboard"
-              className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors font-medium"
-            >
-              Dashboard
-            </Link>
+            {user && (
+              <button
+                onClick={handleSignOut}
+                className="flex items-center space-x-2 text-gray-600 hover:text-primary-500 transition-colors px-4 py-2 rounded-lg hover:bg-gray-50"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>Sign Out</span>
+              </button>
+            )}
           </div>
         </div>
       </div>

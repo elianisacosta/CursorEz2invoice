@@ -34,32 +34,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let mounted = true;
     
-    // Set loading to false immediately to allow page to render
-    // We'll update with actual session data when it's available
-    setLoading(false);
-    
-    // Get initial session (non-blocking with short timeout)
+    // Get initial session
     const initSession = async () => {
       try {
-        // Add short timeout to prevent hanging (2 seconds)
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Session check timeout')), 2000)
-        );
+        const { data: { session }, error } = await supabase.auth.getSession();
         
-        const sessionPromise = supabase.auth.getSession();
-        const result = await Promise.race([sessionPromise, timeoutPromise]) as any;
-        
-        if (mounted && result?.data?.session !== undefined) {
-          setSession(result.data.session);
-          setUser(result.data.session?.user ?? null);
+        if (mounted) {
+          if (session && !error) {
+            setSession(session);
+            setUser(session.user);
+          } else {
+            // Explicitly clear user state if no valid session
+            setSession(null);
+            setUser(null);
+          }
+          setLoading(false);
         }
       } catch (error) {
-        // Silently fail - page can still render without auth
-        // This is expected if Supabase is unavailable or slow
+        // If session check fails, assume no user is logged in
+        if (mounted) {
+          setSession(null);
+          setUser(null);
+          setLoading(false);
+        }
       }
     };
 
-    // Start session check but don't block rendering
+    // Start session check
     initSession();
 
     // Listen for auth changes
@@ -78,6 +79,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (error) {
       // If auth listener fails, page can still render
       console.warn('Auth state listener setup failed:', error);
+      if (mounted) {
+        setLoading(false);
+      }
     }
 
     return () => {
@@ -110,6 +114,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     await supabase.auth.signOut();
+    // Explicitly clear user state on sign out
+    setSession(null);
+    setUser(null);
   };
 
   const resendConfirmation = async (email: string) => {

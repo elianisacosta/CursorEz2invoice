@@ -12,9 +12,7 @@ export default function Header() {
   
   // Get auth context - hooks must be called unconditionally
   // The context will handle loading states internally
-  const auth = useAuth();
-  const user = auth?.user || null;
-  const signOut = auth?.signOut || (async () => {});
+  const { user, signOut } = useAuth();
 
   const toggleMenu = () => {
     setIsMenuOpen(!isMenuOpen);
