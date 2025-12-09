@@ -56,10 +56,20 @@ UPDATE public.mechanics
 SET employee_type = 'Mechanic' 
 WHERE employee_type IS NULL;
 
--- Step 3: Add constraint for employee_type values
-ALTER TABLE public.mechanics 
-ADD CONSTRAINT check_employee_type 
-CHECK (employee_type IN ('Mechanic', 'Office Staff', 'Manager', 'Parts Person', 'Receptionist', 'Other'));
+-- Step 3: Add constraint for employee_type values (check if it exists first)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints 
+    WHERE constraint_schema = 'public' 
+    AND table_name = 'mechanics' 
+    AND constraint_name = 'check_employee_type'
+  ) THEN
+    ALTER TABLE public.mechanics 
+    ADD CONSTRAINT check_employee_type 
+    CHECK (employee_type IN ('Mechanic', 'Office Staff', 'Manager', 'Parts Person', 'Receptionist', 'Other'));
+  END IF;
+END $$;
 
 -- Step 4: Rename timesheets.mechanic_id to employee_id
 -- First, drop the foreign key constraint
@@ -70,18 +80,23 @@ DROP CONSTRAINT IF EXISTS timesheets_mechanic_id_fkey;
 ALTER TABLE public.timesheets 
 RENAME COLUMN mechanic_id TO employee_id;
 
--- Step 5: Rename mechanics table to employees
+-- Step 5: Drop old RLS policies on mechanics table BEFORE renaming
+-- This must happen before the table is renamed
+DROP POLICY IF EXISTS "Users can manage mechanics for own shops" ON public.mechanics;
+DROP POLICY IF EXISTS "Users can manage timesheets for own shops" ON public.timesheets;
+
+-- Step 6: Rename mechanics table to employees
 ALTER TABLE public.mechanics 
 RENAME TO employees;
 
--- Step 6: Recreate foreign key with new table name
+-- Step 7: Recreate foreign key with new table name
 ALTER TABLE public.timesheets 
 ADD CONSTRAINT timesheets_employee_id_fkey 
 FOREIGN KEY (employee_id) 
 REFERENCES public.employees(id) 
 ON DELETE CASCADE;
 
--- Step 7: Update indexes
+-- Step 8: Update indexes
 DROP INDEX IF EXISTS idx_mechanics_shop_id;
 DROP INDEX IF EXISTS idx_mechanics_status;
 DROP INDEX IF EXISTS idx_mechanics_is_active;
@@ -95,11 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_employees_employee_type ON public.employees(emplo
 CREATE INDEX IF NOT EXISTS idx_timesheets_employee_id ON public.timesheets(employee_id);
 CREATE INDEX IF NOT EXISTS idx_timesheets_work_date ON public.timesheets(work_date);
 
--- Step 8: Update RLS policies
--- Drop old policies
-DROP POLICY IF EXISTS "Users can manage mechanics for own shops" ON public.employees;
-DROP POLICY IF EXISTS "Users can manage timesheets for own shops" ON public.timesheets;
-
+-- Step 9: Create new RLS policies on employees table (AFTER rename)
 -- Create new policies with updated names (shop_id should now exist after Step 0)
 CREATE POLICY "Users can manage employees for own shops" ON public.employees
   FOR ALL USING (
@@ -153,4 +164,3 @@ END $$;
 -- Migration complete!
 -- All existing mechanics are now employees with employee_type = 'Mechanic'
 -- You can now add new employees with different types: 'Office Staff', 'Manager', 'Parts Person', etc.
-

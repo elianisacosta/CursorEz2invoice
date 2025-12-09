@@ -4951,8 +4951,13 @@ export default function Dashboard() {
                 .eq('id', order.id)
                 .single();
               
-              if (woData?.employees?.full_name) {
-                mechanicName = woData.employees.full_name;
+              // Supabase returns related rows as arrays; normalize to single record if present
+              const employeeRecord = Array.isArray(woData?.employees)
+                ? woData.employees[0]
+                : woData?.employees;
+
+              if (employeeRecord?.full_name) {
+                mechanicName = employeeRecord.full_name;
               } else if (woData?.employee_id) {
                 // Try one more time with employee_id
                 const { data: empData } = await supabase
@@ -9741,6 +9746,7 @@ export default function Dashboard() {
                       setInvoiceFormData({
                         customer_id: invoice.customer_id || '',
                         work_order_id: invoice.work_order_id || '',
+                        invoice_date: (invoice as any).invoice_date || getTodayDate(),
                         due_date: invoice.due_date || '',
                         tax_rate: defaultTaxRate / 100, // Always use tax rate from settings
                         notes: (invoice as any).notes || '',
@@ -14921,7 +14927,8 @@ export default function Dashboard() {
                       due_date: getTodayDate(),
                       invoice_date: getTodayDate(),
                       tax_rate: defaultTaxRate / 100,
-                      notes: ''
+                      notes: '',
+                      internal_notes: ''
                     });
                     setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 }]);
                     setInvoiceItemSearch({});
@@ -15537,7 +15544,8 @@ export default function Dashboard() {
                       
                       if (editingInvoice && applyCardFee) {
                         // When editing: calculate on balance due
-                        const balanceDueBeforeFee = Math.max(0, baseTotal - (editingInvoice.paid_amount || 0));
+                        const paidAmount = (editingInvoice as Invoice)?.paid_amount || 0;
+                        const balanceDueBeforeFee = Math.max(0, baseTotal - paidAmount);
                         const cardFee = balanceDueBeforeFee * (cardProcessingFeePercentage / 100);
                         if (cardFee > 0) {
                           return (
@@ -15616,7 +15624,8 @@ export default function Dashboard() {
                     customer_id: '',
                     work_order_id: '',
                     due_date: getTodayDate(),
-                    tax_rate: 0.06,
+                    invoice_date: getTodayDate(),
+                    tax_rate: defaultTaxRate / 100,
                     notes: '',
                     internal_notes: ''
                   });
@@ -15762,8 +15771,10 @@ export default function Dashboard() {
                         customer_id: '',
                         work_order_id: '',
                         due_date: '',
+                        invoice_date: getTodayDate(),
                         tax_rate: defaultTaxRate / 100,
-                        notes: ''
+                        notes: '',
+                        internal_notes: ''
                       });
                       setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 }]);
                       setInvoiceItemSearch({});
@@ -15906,8 +15917,10 @@ export default function Dashboard() {
                         customer_id: '',
                         work_order_id: '',
                         due_date: '',
+                        invoice_date: getTodayDate(),
                         tax_rate: defaultTaxRate / 100,
-                        notes: ''
+                        notes: '',
+                        internal_notes: ''
                       });
                       setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 }]);
                       setInvoiceItemSearch({});

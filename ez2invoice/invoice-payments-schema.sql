@@ -19,9 +19,54 @@ CREATE INDEX IF NOT EXISTS idx_invoice_payments_created_at ON public.invoice_pay
 -- Enable RLS
 ALTER TABLE public.invoice_payments ENABLE ROW LEVEL SECURITY;
 
--- Create policies (allow all for now, adjust as needed)
-CREATE POLICY invoice_payments_select ON public.invoice_payments FOR SELECT USING (true);
-CREATE POLICY invoice_payments_insert ON public.invoice_payments FOR INSERT WITH CHECK (true);
-CREATE POLICY invoice_payments_update ON public.invoice_payments FOR UPDATE USING (true);
-CREATE POLICY invoice_payments_delete ON public.invoice_payments FOR DELETE USING (true);
+-- Drop existing policies if they exist (to allow re-running this script)
+DROP POLICY IF EXISTS invoice_payments_select ON public.invoice_payments;
+DROP POLICY IF EXISTS invoice_payments_insert ON public.invoice_payments;
+DROP POLICY IF EXISTS invoice_payments_update ON public.invoice_payments;
+DROP POLICY IF EXISTS invoice_payments_delete ON public.invoice_payments;
 
+-- Create policies that check shop ownership through the invoice
+-- Users can only access payments for invoices in their own shops
+CREATE POLICY invoice_payments_select ON public.invoice_payments 
+  FOR SELECT 
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.invoices i
+      JOIN public.truck_shops ts ON i.shop_id = ts.id
+      WHERE i.id = invoice_payments.invoice_id
+      AND ts.user_id::text = auth.uid()::text
+    )
+  );
+
+CREATE POLICY invoice_payments_insert ON public.invoice_payments 
+  FOR INSERT 
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.invoices i
+      JOIN public.truck_shops ts ON i.shop_id = ts.id
+      WHERE i.id = invoice_payments.invoice_id
+      AND ts.user_id::text = auth.uid()::text
+    )
+  );
+
+CREATE POLICY invoice_payments_update ON public.invoice_payments 
+  FOR UPDATE 
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.invoices i
+      JOIN public.truck_shops ts ON i.shop_id = ts.id
+      WHERE i.id = invoice_payments.invoice_id
+      AND ts.user_id::text = auth.uid()::text
+    )
+  );
+
+CREATE POLICY invoice_payments_delete ON public.invoice_payments 
+  FOR DELETE 
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.invoices i
+      JOIN public.truck_shops ts ON i.shop_id = ts.id
+      WHERE i.id = invoice_payments.invoice_id
+      AND ts.user_id::text = auth.uid()::text
+    )
+  );
