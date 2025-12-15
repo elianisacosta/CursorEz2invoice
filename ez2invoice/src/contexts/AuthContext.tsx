@@ -92,12 +92,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signUp = async (email: string, password: string, userData?: any, redirectTo?: string) => {
+    // Use NEXT_PUBLIC_SITE_URL for production, fallback to window.location.origin for development
+    const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: userData,
-        emailRedirectTo: redirectTo ?? `${window.location.origin}/auth/callback?next=/dashboard`
+        emailRedirectTo: redirectTo ?? `${baseUrl}/auth/callback?next=/dashboard`
       }
     });
     return { data, error };
@@ -119,11 +121,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const resendConfirmation = async (email: string) => {
+    // Use NEXT_PUBLIC_SITE_URL for production, fallback to window.location.origin for development
+    const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
     const { data, error } = await supabase.auth.resend({
       type: 'signup',
       email: email,
       options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback?next=/dashboard`
+        emailRedirectTo: `${baseUrl}/auth/callback?next=/dashboard`
       }
     });
     return { data, error };

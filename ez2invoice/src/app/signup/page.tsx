@@ -35,9 +35,11 @@ function SignUpForm() {
 
       // Build redirect URL - include priceId if present (for both founders and regular users)
       // Founders can still purchase plans, they just get dashboard access without payment
+      // Use NEXT_PUBLIC_SITE_URL for production, fallback to window.location.origin for development
+      const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
       const redirectTo = priceId
-        ? `${window.location.origin}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
-        : `${window.location.origin}/auth/callback?next=/dashboard`;
+        ? `${baseUrl}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
+        : `${baseUrl}/auth/callback?next=/dashboard`;
       
       const { data, error } = await signUp(email, password, {
         first_name: firstName,
