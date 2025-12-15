@@ -22,23 +22,33 @@ export async function GET(request: NextRequest) {
       if (priceId) {
         const customerEmail = data.session?.user?.email ?? undefined
 
-        const session = await stripe.checkout.sessions.create({
-          mode: 'subscription',
-          payment_method_types: ['card'],
-          line_items: [
-            {
-              price: priceId,
-              quantity: 1,
-            },
-          ],
-          customer_email: customerEmail,
-          success_url: `${requestUrl.origin}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: `${requestUrl.origin}/pricing`,
-          metadata: planName ? { planName } : undefined,
-        })
+        try {
+          const session = await stripe.checkout.sessions.create({
+            mode: 'subscription',
+            payment_method_types: ['card'],
+            line_items: [
+              {
+                price: priceId,
+                quantity: 1,
+              },
+            ],
+            customer_email: customerEmail,
+            success_url: `${requestUrl.origin}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${requestUrl.origin}/pricing`,
+            metadata: planName ? { planName } : undefined,
+          })
 
-        if (session.url) {
-          return NextResponse.redirect(session.url)
+          if (session.url) {
+            return NextResponse.redirect(session.url)
+          } else {
+            // Session created but no URL - this should not happen, redirect to pricing with error
+            console.error('Stripe checkout session created but no URL returned', session.id)
+            return NextResponse.redirect(`${requestUrl.origin}/pricing?error=checkout_failed`)
+          }
+        } catch (stripeError) {
+          // Handle Stripe API errors
+          console.error('Error creating Stripe checkout session:', stripeError)
+          return NextResponse.redirect(`${requestUrl.origin}/pricing?error=checkout_failed`)
         }
       }
 

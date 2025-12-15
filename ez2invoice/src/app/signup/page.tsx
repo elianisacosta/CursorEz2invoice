@@ -33,7 +33,9 @@ export default function SignUpPage() {
       const priceId = searchParams.get('priceId');
       const planName = searchParams.get('planName') ?? undefined;
 
-      const redirectTo = !isFounder && priceId
+      // Build redirect URL - include priceId if present (for both founders and regular users)
+      // Founders can still purchase plans, they just get dashboard access without payment
+      const redirectTo = priceId
         ? `${window.location.origin}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
         : `${window.location.origin}/auth/callback?next=/dashboard`;
       
