@@ -48,6 +48,7 @@ function SignUpForm() {
       }, redirectTo);
 
       if (error) {
+        console.error('Signup error:', error);
         setError(error.message);
       } else {
         if (isFounder) {
@@ -210,9 +211,10 @@ function SignUpForm() {
                         
                         const { error: resendError } = await resendConfirmation(email, redirectTo);
                         if (resendError) {
-                          setError('Failed to resend email. Please try again.');
+                          console.error('Resend confirmation error:', resendError);
+                          setError(`Failed to resend email: ${resendError.message || 'Unknown error'}. Please check your email address and try again.`);
                         } else {
-                          setSuccess('Confirmation email resent! Please check your inbox.');
+                          setSuccess('Confirmation email resent! Please check your inbox (and spam folder).');
                         }
                         setLoading(false);
                       }}
