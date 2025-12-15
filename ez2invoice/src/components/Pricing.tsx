@@ -1,7 +1,22 @@
+'use client';
+
 import { Check } from 'lucide-react';
 import Link from 'next/link';
+import { useAuth } from '@/contexts/AuthContext';
 
-const pricingPlans = [
+type Plan = {
+  name: string;
+  description: string;
+  price: string;
+  period: string;
+  features: string[];
+  buttonText: string;
+  buttonStyle: 'primary' | 'secondary';
+  popular: boolean;
+  priceId?: string;
+};
+
+const pricingPlans: Plan[] = [
   {
     name: "Starter",
     description: "Perfect for small truck shops.",
@@ -18,7 +33,8 @@ const pricingPlans = [
     ],
     buttonText: "Get Started",
     buttonStyle: "secondary",
-    popular: false
+    popular: false,
+    priceId: process.env.NEXT_PUBLIC_STRIPE_STARTER_PRICE_ID,
   },
   {
     name: "Professional",
@@ -37,7 +53,8 @@ const pricingPlans = [
     ],
     buttonText: "Get Started",
     buttonStyle: "primary",
-    popular: true
+    popular: true,
+    priceId: process.env.NEXT_PUBLIC_STRIPE_PROFESSIONAL_PRICE_ID,
   },
   {
     name: "Enterprise",
@@ -54,9 +71,9 @@ const pricingPlans = [
       "Custom integrations",
       "Dedicated account manager"
     ],
-    buttonText: "Get Started",
+    buttonText: "Contact",
     buttonStyle: "secondary",
-    popular: false
+    popular: false,
   }
 ];
 
@@ -117,20 +134,86 @@ export default function Pricing() {
               </ul>
 
               {/* CTA Button */}
-              <Link
-                href="/signup"
-                className={`w-full py-3 px-6 rounded-lg font-semibold text-lg transition-all duration-200 block text-center ${
-                  plan.buttonStyle === 'primary'
-                    ? 'bg-primary-500 text-white hover:bg-primary-600 hover:shadow-lg hover:-translate-y-1'
-                    : 'bg-white text-gray-700 border-2 border-gray-300 hover:border-gray-400 hover:bg-gray-50'
-                }`}
-              >
-                {plan.buttonText}
-              </Link>
+              {plan.name === 'Enterprise' ? (
+                <Link
+                  href="/contact"
+                  className={`w-full py-3 px-6 rounded-lg font-semibold text-lg transition-all duration-200 block text-center ${
+                    plan.buttonStyle === 'primary'
+                      ? 'bg-primary-500 text-white hover:bg-primary-600 hover:shadow-lg hover:-translate-y-1'
+                      : 'bg-white text-gray-700 border-2 border-gray-300 hover:border-gray-400 hover:bg-gray-50'
+                  }`}
+                >
+                  {plan.buttonText}
+                </Link>
+              ) : (
+                <PlanCheckoutButton plan={plan} />
+              )}
             </div>
           ))}
         </div>
       </div>
     </section>
+  );
+}
+
+function PlanCheckoutButton({ plan }: { plan: Plan }) {
+  const { user } = useAuth();
+
+  const handleClick = async () => {
+    if (!user?.email) {
+      const params = new URLSearchParams();
+      if (plan.priceId) {
+        params.set('priceId', plan.priceId);
+        params.set('planName', plan.name);
+      }
+      const query = params.toString();
+      window.location.href = query ? `/signup?${query}` : '/signup';
+      return;
+    }
+
+    if (!plan.priceId) {
+      alert('This plan is not yet available for online purchase.');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          priceId: plan.priceId,
+          customerEmail: user.email,
+        }),
+      });
+
+      if (!res.ok) {
+        alert('Unable to start checkout. Please try again.');
+        return;
+      }
+
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        alert('Unable to start checkout. Please try again.');
+      }
+    } catch (error) {
+      console.error('Error starting checkout:', error);
+      alert('Something went wrong. Please try again.');
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className={`w-full py-3 px-6 rounded-lg font-semibold text-lg transition-all duration-200 block text-center ${
+        plan.buttonStyle === 'primary'
+          ? 'bg-primary-500 text-white hover:bg-primary-600 hover:shadow-lg hover:-translate-y-1'
+          : 'bg-white text-gray-700 border-2 border-gray-300 hover:border-gray-400 hover:bg-gray-50'
+      }`}
+    >
+      {plan.buttonText}
+    </button>
   );
 }

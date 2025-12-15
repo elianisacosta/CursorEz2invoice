@@ -9,7 +9,7 @@ interface AuthContextType {
   session: Session | null;
   loading: boolean;
   isFounder: boolean;
-  signUp: (email: string, password: string, userData?: any) => Promise<any>;
+  signUp: (email: string, password: string, userData?: any, redirectTo?: string) => Promise<any>;
   signIn: (email: string, password: string) => Promise<any>;
   signOut: () => Promise<void>;
   resendConfirmation: (email: string) => Promise<any>;
@@ -38,7 +38,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const initSession = async () => {
       try {
         const { data: { session }, error } = await supabase.auth.getSession();
-        
         if (mounted) {
           if (session && !error) {
             setSession(session);
@@ -92,13 +91,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const signUp = async (email: string, password: string, userData?: any) => {
+  const signUp = async (email: string, password: string, userData?: any, redirectTo?: string) => {
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: userData,
-        emailRedirectTo: `${window.location.origin}/auth/callback?next=/dashboard`
+        emailRedirectTo: redirectTo ?? `${window.location.origin}/auth/callback?next=/dashboard`
       }
     });
     return { data, error };

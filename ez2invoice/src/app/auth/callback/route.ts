@@ -1,10 +1,13 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
+import { stripe } from '@/lib/stripe'
 
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url)
   const code = requestUrl.searchParams.get('code')
   const next = requestUrl.searchParams.get('next') ?? '/'
+  const priceId = requestUrl.searchParams.get('priceId')
+  const planName = requestUrl.searchParams.get('planName') ?? undefined
 
   if (code) {
     const supabase = createClient(
@@ -12,10 +15,34 @@ export async function GET(request: NextRequest) {
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     )
     
-    const { error } = await supabase.auth.exchangeCodeForSession(code)
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code)
     
     if (!error) {
-      // Successful confirmation, redirect to the intended page
+      // If a Stripe priceId was provided, immediately start checkout
+      if (priceId) {
+        const customerEmail = data.session?.user?.email ?? undefined
+
+        const session = await stripe.checkout.sessions.create({
+          mode: 'subscription',
+          payment_method_types: ['card'],
+          line_items: [
+            {
+              price: priceId,
+              quantity: 1,
+            },
+          ],
+          customer_email: customerEmail,
+          success_url: `${requestUrl.origin}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${requestUrl.origin}/pricing`,
+          metadata: planName ? { planName } : undefined,
+        })
+
+        if (session.url) {
+          return NextResponse.redirect(session.url)
+        }
+      }
+
+      // Successful confirmation without Stripe flow, redirect to the intended page
       return NextResponse.redirect(`${requestUrl.origin}${next}`)
     }
   }

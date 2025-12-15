@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { Eye, EyeOff, Mail, Lock, User, Zap } from 'lucide-react';
@@ -16,6 +17,7 @@ export default function SignUpPage() {
   const [success, setSuccess] = useState('');
 
   const { signUp } = useAuth();
+  const searchParams = useSearchParams();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,12 +29,19 @@ export default function SignUpPage() {
       // Check if this is a founder email
       const founderEmails = ['acostaelianis@yahoo.com', 'founder@ez2invoice.com', 'admin@ez2invoice.com'];
       const isFounder = founderEmails.includes(email.toLowerCase());
+
+      const priceId = searchParams.get('priceId');
+      const planName = searchParams.get('planName') ?? undefined;
+
+      const redirectTo = !isFounder && priceId
+        ? `${window.location.origin}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
+        : `${window.location.origin}/auth/callback?next=/dashboard`;
       
       const { data, error } = await signUp(email, password, {
         first_name: firstName,
         last_name: lastName,
         role: isFounder ? 'founder' : 'user'
-      });
+      }, redirectTo);
 
       if (error) {
         setError(error.message);

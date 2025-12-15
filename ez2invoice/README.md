@@ -35,6 +35,10 @@ Create a `.env.local` file in the root directory:
 ```env
 NEXT_PUBLIC_SUPABASE_URL=https://komyyuqpwmrehslfbyhk.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtvbXl5dXFwd21yZWhzbGZieWhrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEwNzU1NjUsImV4cCI6MjA3NjY1MTU2NX0.VCfjcE1QMz8HTg9PlRWDO_TqpjiKEHhqkDW2U56-NTk
+STRIPE_SECRET_KEY=sk_test_your_key_here
+NEXT_PUBLIC_STRIPE_STARTER_PRICE_ID=price_starter_here
+NEXT_PUBLIC_STRIPE_PROFESSIONAL_PRICE_ID=price_professional_here
+NEXT_PUBLIC_SITE_URL=http://localhost:3000
 ```
 
 ### 3. Install Dependencies

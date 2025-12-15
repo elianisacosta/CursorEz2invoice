@@ -251,16 +251,10 @@ export default function Contact() {
                     <h3 className="font-semibold text-gray-900 mb-2">Email</h3>
                     <div className="space-y-1">
                       <a 
-                        href="mailto:support@ez2invoice.com" 
+                        href="mailto:ez2invoicellc@gmail.com" 
                         className="block text-gray-600 hover:text-primary-500 transition-colors"
                       >
-                        support@ez2invoice.com
-                      </a>
-                      <a 
-                        href="mailto:sales@ez2invoice.com" 
-                        className="block text-gray-600 hover:text-primary-500 transition-colors"
-                      >
-                        sales@ez2invoice.com
+                        ez2invoicellc@gmail.com
                       </a>
                     </div>
                   </div>
@@ -289,18 +283,6 @@ export default function Contact() {
               </div>
             </div>
 
-            {/* Help Center */}
-            <div className="bg-gray-50 rounded-xl p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-3">
-                Need immediate help?
-              </h3>
-              <p className="text-gray-600 mb-4">
-                Check out our comprehensive help center with guides and tutorials.
-              </p>
-              <button className="bg-white text-gray-700 px-6 py-3 rounded-lg border border-gray-300 hover:border-gray-400 hover:bg-gray-50 transition-colors font-medium">
-                Visit Help Center
-              </button>
-            </div>
           </div>
         </div>
       </div>
