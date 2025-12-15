@@ -12,7 +12,7 @@ interface AuthContextType {
   signUp: (email: string, password: string, userData?: any, redirectTo?: string) => Promise<any>;
   signIn: (email: string, password: string) => Promise<any>;
   signOut: () => Promise<void>;
-  resendConfirmation: (email: string) => Promise<any>;
+  resendConfirmation: (email: string, redirectTo?: string) => Promise<any>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -120,14 +120,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
   };
 
-  const resendConfirmation = async (email: string) => {
+  const resendConfirmation = async (email: string, redirectTo?: string) => {
     // Use NEXT_PUBLIC_SITE_URL for production, fallback to window.location.origin for development
     const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
     const { data, error } = await supabase.auth.resend({
       type: 'signup',
       email: email,
       options: {
-        emailRedirectTo: `${baseUrl}/auth/callback?next=/dashboard`
+        emailRedirectTo: redirectTo ?? `${baseUrl}/auth/callback?next=/dashboard`
       }
     });
     return { data, error };

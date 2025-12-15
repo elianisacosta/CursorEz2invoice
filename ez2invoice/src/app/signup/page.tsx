@@ -16,7 +16,7 @@ function SignUpForm() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  const { signUp } = useAuth();
+  const { signUp, resendConfirmation } = useAuth();
   const searchParams = useSearchParams();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -194,7 +194,34 @@ function SignUpForm() {
 
               {success && (
                 <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
-                  <p className="text-green-800 text-sm">{success}</p>
+                  <p className="text-green-800 text-sm mb-3">{success}</p>
+                  {success.includes('check your email') && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setLoading(true);
+                        setError('');
+                        const priceId = searchParams.get('priceId');
+                        const planName = searchParams.get('planName') ?? undefined;
+                        const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
+                        const redirectTo = priceId
+                          ? `${baseUrl}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
+                          : `${baseUrl}/auth/callback?next=/dashboard`;
+                        
+                        const { error: resendError } = await resendConfirmation(email, redirectTo);
+                        if (resendError) {
+                          setError('Failed to resend email. Please try again.');
+                        } else {
+                          setSuccess('Confirmation email resent! Please check your inbox.');
+                        }
+                        setLoading(false);
+                      }}
+                      disabled={loading}
+                      className="text-sm text-primary-600 hover:text-primary-700 underline font-medium"
+                    >
+                      Resend confirmation email
+                    </button>
+                  )}
                 </div>
               )}
 
