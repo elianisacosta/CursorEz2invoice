@@ -3171,6 +3171,71 @@ export default function Dashboard() {
     showToast({ type: 'success', message: `Exported ${invoices.length} invoice(s) to CSV.` });
   };
 
+  // Export estimates to CSV
+  const exportEstimates = () => {
+    if (!estimates.length) {
+      showToast({ type: 'error', message: 'No estimates to export.' });
+      return;
+    }
+
+    const header = [
+      'Estimate Number',
+      'Customer Name',
+      'Phone Number',
+      'Date Created',
+      'Valid Until',
+      'Subtotal',
+      'Tax Amount',
+      'Total Amount',
+      'Status'
+    ];
+
+    const rows = estimates.map((estimate) => {
+      const customerName = estimate.customer 
+        ? [estimate.customer.first_name, estimate.customer.last_name].filter(Boolean).join(' ') || estimate.customer.company || 'Unknown'
+        : 'No Customer';
+      const customerPhone = estimate.customer?.phone || '';
+      const dateCreated = estimate.created_at 
+        ? formatDateInTimezone(estimate.created_at, { month: 'short', day: 'numeric', year: 'numeric' })
+        : '';
+      const validUntil = estimate.valid_until 
+        ? formatDateInTimezone(estimate.valid_until, { month: 'short', day: 'numeric', year: 'numeric' })
+        : '';
+      const subtotal = estimate.subtotal || 0;
+      const taxAmount = estimate.tax_amount || 0;
+      const totalAmount = estimate.total_amount || 0;
+      const status = estimate.status || 'draft';
+
+      return [
+        estimate.estimate_number || estimate.id.slice(0, 8),
+        customerName,
+        customerPhone,
+        dateCreated,
+        validUntil,
+        subtotal.toFixed(2),
+        taxAmount.toFixed(2),
+        totalAmount.toFixed(2),
+        status
+      ];
+    });
+
+    const csv = [header, ...rows]
+      .map((row) => row.map((v) => `"${(v || '').toString().replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `estimates-${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    showToast({ type: 'success', message: `Exported ${estimates.length} estimate(s) to CSV.` });
+  };
+
   // Import invoices from CSV
   const handleImportInvoices = async () => {
     const input = document.createElement('input');
@@ -8293,7 +8358,10 @@ export default function Dashboard() {
                     </select>
                   </div>
                   <div className="flex items-center space-x-3">
-                    <button className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+                    <button 
+                      onClick={exportEstimates}
+                      className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                    >
                       <FileText className="h-4 w-4" />
                       <span>Export CSV</span>
                     </button>
