@@ -171,7 +171,10 @@ export default function Dashboard() {
   const [userPlanType, setUserPlanType] = useState<string>('starter'); // Track user's actual plan from database
   
   // Use simulated tier if active, otherwise use actual plan from database
-  const effectivePlanType = simulatedTier !== 'real' ? simulatedTier : userPlanType;
+  // When 'real' is selected and bypass is active, use 'enterprise' (bypass mode)
+  const effectivePlanType = simulatedTier !== 'real' 
+    ? simulatedTier 
+    : (subscriptionBypass && isFounder ? 'enterprise' : userPlanType);
   const [showCreateInvoiceModal, setShowCreateInvoiceModal] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
   // Helper function to get today's date in YYYY-MM-DD format
@@ -14084,6 +14087,16 @@ export default function Dashboard() {
                           </div>
                         </div>
                       )}
+                      {simulatedTier === 'real' && subscriptionBypass && (
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                          <div className="flex items-start space-x-3">
+                            <AlertTriangle className="h-5 w-5 text-green-500 mt-0.5" />
+                            <p className="text-sm text-gray-700">
+                              <strong>Using Real Subscription:</strong> Enterprise tier with bypass enabled. All features are available and bay limits are unlimited.
+                            </p>
+                          </div>
+                        </div>
+                      )}
                       
                       <div>
                         <h4 className="text-sm font-medium text-gray-900 mb-3">Select Tier to Simulate</h4>
@@ -14092,7 +14105,9 @@ export default function Dashboard() {
                             { 
                               id: 'real', 
                               title: 'Use Real Subscription', 
-                              description: 'Experience your actual subscription tier (Enterprise with bypass)',
+                              description: subscriptionBypass 
+                                ? 'Experience your actual subscription tier (Enterprise with bypass - all features enabled)'
+                                : 'Experience your actual subscription tier from database',
                             },
                             { 
                               id: 'starter', 
