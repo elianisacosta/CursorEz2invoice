@@ -34,14 +34,19 @@ function AuthCallbackContent() {
         
         // If still no priceId, check localStorage (stored during signup)
         if (!priceId && typeof window !== 'undefined') {
-          priceId = localStorage.getItem('pending_priceId');
-          if (!planName) {
-            planName = localStorage.getItem('pending_planName') || null;
+          const storedPriceId = localStorage.getItem('pending_priceId');
+          const storedPlanName = localStorage.getItem('pending_planName');
+          console.log('Checking localStorage - storedPriceId:', storedPriceId, 'storedPlanName:', storedPlanName);
+          if (storedPriceId) {
+            priceId = storedPriceId;
+          }
+          if (!planName && storedPlanName) {
+            planName = storedPlanName;
           }
         }
         
         // Debug logging
-        console.log('Auth callback - priceId:', priceId, 'planName:', planName, 'code:', code);
+        console.log('Auth callback - Final priceId:', priceId, 'planName:', planName, 'code:', code, 'hasHash:', !!hash);
 
         let session = null;
         let authError = null;
@@ -98,12 +103,15 @@ function AuthCallbackContent() {
         }
 
         // Authentication succeeded!
+        console.log('Auth successful, priceId:', priceId, 'planName:', planName);
+        
         // If we have a priceId, redirect to Stripe checkout
         if (priceId) {
           setStatus('redirecting');
           
           try {
             const customerEmail = session.user?.email;
+            console.log('Creating Stripe checkout session with priceId:', priceId, 'email:', customerEmail);
             
             const response = await fetch('/api/create-checkout-session', {
               method: 'POST',
@@ -122,6 +130,7 @@ function AuthCallbackContent() {
             }
 
             const data = await response.json();
+            console.log('Stripe checkout session created, URL:', data.url);
             
             if (data.url) {
               // Clear stored priceId since we're proceeding to checkout
@@ -129,8 +138,9 @@ function AuthCallbackContent() {
                 localStorage.removeItem('pending_priceId');
                 localStorage.removeItem('pending_planName');
               }
-              // Redirect to Stripe checkout
+              // Redirect to Stripe checkout immediately
               window.location.href = data.url;
+              return; // Don't continue execution
             } else {
               throw new Error('No checkout URL returned');
             }
@@ -140,12 +150,22 @@ function AuthCallbackContent() {
             setErrorMessage(error.message || 'Failed to start checkout');
             
             // Redirect to pricing with error
-            router.push('/pricing?error=checkout_failed');
+            setTimeout(() => {
+              router.push('/pricing?error=checkout_failed');
+            }, 2000);
+            return;
           }
         } else {
-          // No priceId, just redirect to the intended page
+          // No priceId found - this shouldn't happen if user selected a plan
+          console.warn('No priceId found after successful auth. Redirecting to dashboard.');
+          // Clear any stale localStorage
+          if (typeof window !== 'undefined') {
+            localStorage.removeItem('pending_priceId');
+            localStorage.removeItem('pending_planName');
+          }
+          // Redirect to dashboard
           setStatus('redirecting');
-          router.push(next);
+          router.push('/dashboard');
         }
       } catch (error: any) {
         console.error('Unexpected error in auth callback:', error);
