@@ -9,33 +9,7 @@ export async function GET(request: NextRequest) {
   const priceId = requestUrl.searchParams.get('priceId')
   const planName = requestUrl.searchParams.get('planName') ?? undefined
   
-  // Check for error in URL hash (Supabase sometimes puts errors in the hash)
-  const hash = requestUrl.hash
-  let errorCode = requestUrl.searchParams.get('error_code')
-  let errorDescription = requestUrl.searchParams.get('error_description')
-  
-  // Parse hash for errors (format: #error=access_denied&error_code=otp_expired&error_description=...)
-  if (hash && hash.includes('error')) {
-    const hashParams = new URLSearchParams(hash.substring(1))
-    errorCode = errorCode || hashParams.get('error_code')
-    errorDescription = errorDescription || hashParams.get('error_description')
-  }
-
-  // If there's an error (like expired token), redirect to signup with priceId preserved
-  if (errorCode || errorDescription) {
-    const errorMsg = errorCode === 'otp_expired' 
-      ? 'email_expired' 
-      : 'auth_callback_error'
-    
-    // Preserve priceId and planName if they were in the original signup
-    const redirectParams = new URLSearchParams()
-    if (priceId) redirectParams.set('priceId', priceId)
-    if (planName) redirectParams.set('planName', planName)
-    redirectParams.set('error', errorMsg)
-    
-    return NextResponse.redirect(`${requestUrl.origin}/signup?${redirectParams.toString()}`)
-  }
-
+  // Priority 1: Handle PKCE flow with code parameter (standard flow)
   if (code) {
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -96,7 +70,47 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // If there's an error or no code, redirect to signup (not login) with error
+  // Priority 2: Check for access_token in hash (client-side auth success)
+  const hash = requestUrl.hash
+  const hasAccessToken = hash && hash.includes('access_token')
+  
+  if (hasAccessToken) {
+    // Auth succeeded via hash token - redirect to client page to handle it
+    if (priceId) {
+      const redirectParams = new URLSearchParams()
+      redirectParams.set('priceId', priceId)
+      if (planName) redirectParams.set('planName', planName)
+      return NextResponse.redirect(`${requestUrl.origin}/auth/complete?${redirectParams.toString()}`)
+    }
+    return NextResponse.redirect(`${requestUrl.origin}${next}`)
+  }
+
+  // Priority 3: Check for errors only if no code and no access_token
+  let errorCode = requestUrl.searchParams.get('error_code')
+  let errorDescription = requestUrl.searchParams.get('error_description')
+  
+  // Parse hash for errors (only if no access_token)
+  if (hash && hash.includes('error') && !hasAccessToken) {
+    const hashParams = new URLSearchParams(hash.substring(1))
+    errorCode = errorCode || hashParams.get('error_code')
+    errorDescription = errorDescription || hashParams.get('error_description')
+  }
+
+  // If there's an error, redirect to signup with priceId preserved
+  if (errorCode || errorDescription) {
+    const errorMsg = errorCode === 'otp_expired' 
+      ? 'email_expired' 
+      : 'auth_callback_error'
+    
+    const redirectParams = new URLSearchParams()
+    if (priceId) redirectParams.set('priceId', priceId)
+    if (planName) redirectParams.set('planName', planName)
+    redirectParams.set('error', errorMsg)
+    
+    return NextResponse.redirect(`${requestUrl.origin}/signup?${redirectParams.toString()}`)
+  }
+
+  // If there's no code, no access_token, and no error, redirect to signup with error
   const redirectParams = new URLSearchParams()
   if (priceId) redirectParams.set('priceId', priceId)
   if (planName) redirectParams.set('planName', planName)
