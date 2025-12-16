@@ -37,9 +37,9 @@ export const subscriptionTiers: SubscriptionTier[] = [
   {
     id: 'professional',
     name: 'Professional',
-    price: '$150/month',
+    price: '$160/month',
     bays: '8 bays',
-    features: ['Analytics & Timesheets', 'Accounts Receivable'],
+    features: ['Analytics & Timesheets', 'Accounts Receivable', 'DOT Inspections'],
     color: 'blue',
     bayLimit: 8
   },
@@ -97,6 +97,8 @@ export function FounderProvider({ children }: { children: ReactNode }) {
           return tier.id === 'professional' || tier.id === 'enterprise';
         case 'user_permissions':
           return tier.id === 'enterprise';
+        case 'dot_inspections':
+          return tier.id === 'professional' || tier.id === 'enterprise';
         default:
           return true; // Basic features available to all
       }
@@ -118,6 +120,8 @@ export function FounderProvider({ children }: { children: ReactNode }) {
         return tier.id === 'professional' || tier.id === 'enterprise';
       case 'user_permissions':
         return tier.id === 'enterprise';
+      case 'dot_inspections':
+        return tier.id === 'professional' || tier.id === 'enterprise';
       default:
         return true; // Basic features available to all
     }

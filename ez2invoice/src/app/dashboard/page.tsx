@@ -164,7 +164,7 @@ import ConfirmDeleteDialog from '@/components/ui/ConfirmDeleteDialog';
 import AnnualVehicleInspectionForm from '@/components/AnnualVehicleInspectionForm';
 
 export default function Dashboard() {
-  const { isFounder, subscriptionBypass, simulatedTier, currentTier, canAccessFeature, setSubscriptionBypass, setSimulatedTier } = useFounder();
+  const { isFounder, subscriptionBypass, simulatedTier, currentTier, canAccessFeature, getBayLimit, setSubscriptionBypass, setSimulatedTier } = useFounder();
   const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState('overview');
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -3174,6 +3174,17 @@ export default function Dashboard() {
     fetchInventory();
   }, []);
 
+  // Redirect from DOT inspections if not accessible
+  useEffect(() => {
+    if (activeTab === 'dot-inspections' && !canAccessFeature('dot_inspections')) {
+      setActiveTab('overview');
+      showToast({ 
+        type: 'error', 
+        message: 'DOT Inspections is only available for Professional and Enterprise plans. Please upgrade to access this feature.' 
+      });
+    }
+  }, [activeTab, canAccessFeature, showToast]);
+
   // Load DOT inspections when the tab is active
   useEffect(() => {
     if (activeTab === 'dot-inspections') {
@@ -5949,6 +5960,17 @@ export default function Dashboard() {
     }
     
     try {
+      // Check bay limit based on subscription tier
+      const bayLimit = getBayLimit();
+      const currentBayCount = serviceBays.length;
+      
+      // If bayLimit is -1, it means unlimited (Enterprise)
+      if (bayLimit !== -1 && currentBayCount >= bayLimit) {
+        const tierName = currentTier.name;
+        alert(`You have reached the maximum number of bays (${bayLimit}) for your ${tierName} plan. Please upgrade to add more bays.`);
+        return;
+      }
+      
       const shopId = await getShopId();
     
     const bayName = newBayName.trim();
@@ -6956,7 +6978,15 @@ export default function Dashboard() {
                   <PanelLeft className="h-4 w-4" />
                 </button>
               </div>
-              {navigationItems.map((item) => (
+              {navigationItems
+                .filter((item) => {
+                  // Hide DOT Inspections for Starter plan
+                  if (item.id === 'dot-inspections') {
+                    return canAccessFeature('dot_inspections');
+                  }
+                  return true;
+                })
+                .map((item) => (
                 <button
                   key={item.id}
                   onClick={() => setActiveTab(item.id)}

@@ -39,7 +39,7 @@ const pricingPlans: Plan[] = [
   {
     name: "Professional",
     description: "For growing truck shops.",
-    price: "$150",
+    price: "$160",
     period: "/month",
     features: [
       "Everything in Starter",
@@ -47,7 +47,8 @@ const pricingPlans: Plan[] = [
       "Analytics dashboard",
       "Timesheet tracking",
       "Advanced work order tracking",
-      "Customer communication tools",
+      "Fleet customer management",
+      "DOT inspection tracking",
       "Accounts Receivable",
       "Priority support"
     ],
