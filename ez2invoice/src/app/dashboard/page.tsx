@@ -402,13 +402,6 @@ export default function Dashboard() {
     };
     fetchUserPlan();
   }, []);
-
-  // Reset Fleet selection if Starter plan when modal opens
-  useEffect(() => {
-    if (showAddCustomerModal && userPlanType === 'starter' && customerForm.is_fleet) {
-      setCustomerForm(prev => ({ ...prev, is_fleet: false }));
-    }
-  }, [showAddCustomerModal, userPlanType, customerForm.is_fleet]);
   
   // Work order history and move modals
   const [showWorkOrderHistoryModal, setShowWorkOrderHistoryModal] = useState(false);
@@ -460,6 +453,13 @@ export default function Dashboard() {
     fleet_name: '',
     enable_fleet_discounts: false
   });
+  
+  // Reset Fleet selection if Starter plan when modal opens
+  useEffect(() => {
+    if (showAddCustomerModal && userPlanType === 'starter' && customerForm.is_fleet) {
+      setCustomerForm(prev => ({ ...prev, is_fleet: false }));
+    }
+  }, [showAddCustomerModal, userPlanType, customerForm.is_fleet]);
   
   // Customer notes state
   interface CustomerNote {
