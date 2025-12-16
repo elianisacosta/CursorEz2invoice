@@ -10041,7 +10041,6 @@ export default function Dashboard() {
                               <th className="px-6 py-3 text-right">Amount</th>
                               <th className="px-6 py-3 text-right">Outstanding</th>
                               <th className="px-6 py-3 text-left">Aging</th>
-                              <th className="px-6 py-3 text-right">Actions</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-gray-100 bg-white">
@@ -10073,24 +10072,6 @@ export default function Dashboard() {
                                     <span className={`px-3 py-1 rounded-full text-xs font-semibold ${agingBucketMeta[bucket].badgeClasses}`}>
                                       {agingBucketMeta[bucket].label}
                                     </span>
-                                  </td>
-                                  <td className="px-6 py-4 text-right">
-                                    <div className="flex items-center justify-end gap-2">
-                                      <button
-                                        onClick={() => handleMarkInvoicePaid(invoice)}
-                                        disabled={markingInvoiceId === invoice.id}
-                                        className="inline-flex items-center justify-center px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed"
-                                      >
-                                        {markingInvoiceId === invoice.id ? 'Marking...' : 'Mark Paid'}
-                                      </button>
-                                      <button
-                                        onClick={() => setInvoiceToDelete(invoice)}
-                                        className="p-2 text-gray-400 hover:text-red-600 transition-colors"
-                                        title="Delete invoice"
-                                      >
-                                        <Trash2 className="h-4 w-4" />
-                                      </button>
-                                    </div>
                                   </td>
                                 </tr>
                               );
