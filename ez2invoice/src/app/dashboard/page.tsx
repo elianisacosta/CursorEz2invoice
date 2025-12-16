@@ -4109,13 +4109,43 @@ export default function Dashboard() {
 
   const getInvoiceAgingBucket = (invoice: Invoice): AgingBucket => {
     if (!invoice.due_date) return 'current';
+    
+    // Get today's date in local timezone, normalized to midnight
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const dueDate = new Date(invoice.due_date);
+    const todayYear = today.getFullYear();
+    const todayMonth = today.getMonth();
+    const todayDay = today.getDate();
+    const todayMidnight = new Date(todayYear, todayMonth, todayDay);
+    
+    // Parse due date - handle both date strings and ISO strings
+    let dueDate: Date;
+    if (typeof invoice.due_date === 'string') {
+      // If it's just a date string (YYYY-MM-DD), parse it directly
+      if (invoice.due_date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        const [year, month, day] = invoice.due_date.split('-').map(Number);
+        dueDate = new Date(year, month - 1, day);
+      } else {
+        // Otherwise parse as ISO string and extract date components
+        const parsed = new Date(invoice.due_date);
+        const year = parsed.getFullYear();
+        const month = parsed.getMonth();
+        const day = parsed.getDate();
+        dueDate = new Date(year, month, day);
+      }
+    } else {
+      dueDate = new Date(invoice.due_date);
+    }
+    
     if (Number.isNaN(dueDate.getTime())) return 'current';
-    dueDate.setHours(0, 0, 0, 0);
-    const diffDays = Math.floor((today.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24));
-    // Current = not overdue (due date is today or in the future, or less than 1 day overdue)
+    
+    // Calculate difference in days
+    const diffTime = todayMidnight.getTime() - dueDate.getTime();
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    
+    // Current = not overdue (due date is today or in the future)
+    // If diffDays is negative, due date is in the future (not overdue)
+    // If diffDays is 0, due date is today (not overdue)
+    // If diffDays >= 1, it's overdue
     if (diffDays < 1) return 'current';
     if (diffDays <= 30) return '1-30';
     if (diffDays <= 90) return '31-90';
