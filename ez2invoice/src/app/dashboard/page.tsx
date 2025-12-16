@@ -10324,8 +10324,8 @@ export default function Dashboard() {
               });
             
             // Payment Methods Data (simulated based on paid invoices)
-            // In a real app, this would come from a payment_method field in invoices
-            const cardFeeRate = 0.03; // 3% card processing fee
+            // Use the configured processing fee from settings (cardProcessingFeePercentage)
+            const cardFeeRate = (cardProcessingFeePercentage || 0) / 100;
             
             // Simulate payment methods distribution for paid invoices
             const paymentMethodsData = {
