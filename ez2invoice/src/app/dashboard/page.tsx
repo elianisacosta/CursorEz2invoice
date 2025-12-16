@@ -4115,7 +4115,8 @@ export default function Dashboard() {
     if (Number.isNaN(dueDate.getTime())) return 'current';
     dueDate.setHours(0, 0, 0, 0);
     const diffDays = Math.floor((today.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24));
-    if (diffDays <= 0) return 'current';
+    // Current = not overdue (due date is today or in the future, or less than 1 day overdue)
+    if (diffDays < 1) return 'current';
     if (diffDays <= 30) return '1-30';
     if (diffDays <= 90) return '31-90';
     return '90+';
@@ -10037,6 +10038,7 @@ export default function Dashboard() {
                             <tr>
                               <th className="px-6 py-3 text-left">Invoice #</th>
                               <th className="px-6 py-3 text-left">Customer</th>
+                              <th className="px-6 py-3 text-left">Date</th>
                               <th className="px-6 py-3 text-left">Due Date</th>
                               <th className="px-6 py-3 text-right">Amount</th>
                               <th className="px-6 py-3 text-right">Outstanding</th>
@@ -10053,6 +10055,15 @@ export default function Dashboard() {
                                     {formatInvoiceNumber(invoice.invoice_number)}
                                   </td>
                                   <td className="px-6 py-4 text-gray-700">{getInvoiceCustomerName(invoice)}</td>
+                                  <td className="px-6 py-4 text-gray-600">
+                                    {invoice.created_at
+                                      ? formatDateInTimezone(invoice.created_at, {
+                                          month: 'short',
+                                          day: 'numeric',
+                                          year: 'numeric'
+                                        })
+                                      : 'N/A'}
+                                  </td>
                                   <td className="px-6 py-4 text-gray-600">
                                     {invoice.due_date
                                       ? formatDateInTimezone(invoice.due_date, {
