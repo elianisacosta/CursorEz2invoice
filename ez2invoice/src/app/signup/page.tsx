@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, Suspense } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
@@ -18,6 +18,16 @@ function SignUpForm() {
 
   const { signUp, resendConfirmation } = useAuth();
   const searchParams = useSearchParams();
+
+  // Check for error in URL parameters (from expired email link)
+  useEffect(() => {
+    const urlError = searchParams.get('error');
+    if (urlError === 'email_expired') {
+      setError('Your email verification link has expired. Please request a new confirmation email below.');
+    } else if (urlError === 'auth_callback_error') {
+      setError('There was an error verifying your email. Please try requesting a new confirmation email.');
+    }
+  }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -189,7 +199,36 @@ function SignUpForm() {
               {/* Error/Success Messages */}
               {error && (
                 <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                  <p className="text-red-800 text-sm">{error}</p>
+                  <p className="text-red-800 text-sm mb-3">{error}</p>
+                  {(error.includes('expired') || error.includes('verifying')) && email && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setLoading(true);
+                        setError('');
+                        const priceId = searchParams.get('priceId');
+                        const planName = searchParams.get('planName') ?? undefined;
+                        const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
+                        const redirectTo = priceId
+                          ? `${baseUrl}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
+                          : `${baseUrl}/auth/callback?next=/dashboard`;
+                        
+                        const { error: resendError } = await resendConfirmation(email, redirectTo);
+                        if (resendError) {
+                          console.error('Resend confirmation error:', resendError);
+                          setError(`Failed to resend email: ${resendError.message || 'Unknown error'}. Please check your email address and try again.`);
+                        } else {
+                          setError('');
+                          setSuccess('New confirmation email sent! Please check your inbox (and spam folder).');
+                        }
+                        setLoading(false);
+                      }}
+                      disabled={loading}
+                      className="text-sm text-red-600 hover:text-red-800 underline font-medium"
+                    >
+                      {loading ? 'Sending...' : 'Resend confirmation email'}
+                    </button>
+                  )}
                 </div>
               )}
 
