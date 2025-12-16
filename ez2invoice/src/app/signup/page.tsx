@@ -52,6 +52,15 @@ function SignUpForm() {
         ? `${baseUrl}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
         : `${baseUrl}/auth/callback?next=/dashboard`;
       
+      // Store priceId and planName in localStorage so callback can retrieve them
+      // (Supabase might not preserve query params in redirect)
+      if (priceId) {
+        localStorage.setItem('pending_priceId', priceId);
+        if (planName) {
+          localStorage.setItem('pending_planName', planName);
+        }
+      }
+
       const { data, error } = await signUp(email, password, {
         first_name: firstName,
         last_name: lastName,
@@ -61,9 +70,17 @@ function SignUpForm() {
       if (error) {
         console.error('Signup error:', error);
         setError(error.message);
+        // Clear stored priceId on error
+        if (priceId) {
+          localStorage.removeItem('pending_priceId');
+          localStorage.removeItem('pending_planName');
+        }
       } else {
         if (isFounder) {
           setSuccess('Founder account created successfully! Redirecting to dashboard...');
+          // Clear stored priceId for founders
+          localStorage.removeItem('pending_priceId');
+          localStorage.removeItem('pending_planName');
           setTimeout(() => {
             window.location.href = '/dashboard';
           }, 2000);

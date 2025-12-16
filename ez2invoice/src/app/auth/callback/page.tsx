@@ -13,11 +13,35 @@ function AuthCallbackContent() {
   useEffect(() => {
     const handleAuthCallback = async () => {
       try {
-        // Get priceId and planName from query string
-        const priceId = searchParams.get('priceId') || searchParams.get('priceld'); // Handle typo
-        const planName = searchParams.get('planName');
+        // Get priceId and planName from query string, hash, or localStorage
+        // Supabase might not preserve query params in redirect, so we store them in localStorage during signup
+        let priceId = searchParams.get('priceId') || searchParams.get('priceld'); // Handle typo
+        let planName = searchParams.get('planName');
         const code = searchParams.get('code');
         const next = searchParams.get('next') ?? '/dashboard';
+        
+        // Also check hash for priceId (Supabase might preserve it in hash)
+        const hash = window.location.hash;
+        if (hash) {
+          const hashParams = new URLSearchParams(hash.substring(1));
+          if (!priceId) {
+            priceId = hashParams.get('priceId') || hashParams.get('priceld');
+          }
+          if (!planName) {
+            planName = hashParams.get('planName') || null;
+          }
+        }
+        
+        // If still no priceId, check localStorage (stored during signup)
+        if (!priceId && typeof window !== 'undefined') {
+          priceId = localStorage.getItem('pending_priceId');
+          if (!planName) {
+            planName = localStorage.getItem('pending_planName') || null;
+          }
+        }
+        
+        // Debug logging
+        console.log('Auth callback - priceId:', priceId, 'planName:', planName, 'code:', code);
 
         let session = null;
         let authError = null;
@@ -100,6 +124,11 @@ function AuthCallbackContent() {
             const data = await response.json();
             
             if (data.url) {
+              // Clear stored priceId since we're proceeding to checkout
+              if (typeof window !== 'undefined') {
+                localStorage.removeItem('pending_priceId');
+                localStorage.removeItem('pending_planName');
+              }
               // Redirect to Stripe checkout
               window.location.href = data.url;
             } else {
