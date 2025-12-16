@@ -15505,20 +15505,36 @@ export default function Dashboard() {
                     <Users className="h-4 w-4" />
                     <span>Employees</span>
                   </button>
-                  <button
-                    onClick={() => setEmployeesSubTab('timesheets')}
-                    className={`flex items-center space-x-2 py-4 px-1 border-b-2 font-medium text-sm ${
-                      employeesSubTab === 'timesheets'
-                        ? 'border-primary-500 text-primary-600'
-                        : 'border-transparent text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    <Clock className="h-4 w-4" />
-                    <span>Timesheets</span>
-                  </button>
+                  {canAccessFeature('timesheets') ? (
+                    <button
+                      onClick={() => setEmployeesSubTab('timesheets')}
+                      className={`flex items-center space-x-2 py-4 px-1 border-b-2 font-medium text-sm ${
+                        employeesSubTab === 'timesheets'
+                          ? 'border-primary-500 text-primary-600'
+                          : 'border-transparent text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      <Clock className="h-4 w-4" />
+                      <span>Timesheets</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        showToast({ 
+                          type: 'error', 
+                          message: 'Timesheets are available for Professional and Enterprise plans. Please upgrade to access this feature.' 
+                        });
+                      }}
+                      className="flex items-center space-x-2 py-4 px-1 border-b-2 font-medium text-sm border-transparent text-gray-400 cursor-not-allowed opacity-50"
+                      disabled
+                    >
+                      <Clock className="h-4 w-4" />
+                      <span>Timesheets (Upgrade Required)</span>
+                    </button>
+                  )}
                 </div>
                 <div className="flex items-center space-x-2">
-                  {employeesSubTab === 'timesheets' && (
+                  {employeesSubTab === 'timesheets' && canAccessFeature('timesheets') && (
                 <button
                       onClick={() => setShowWeekSettingsModal(true)}
                       className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors flex items-center space-x-2"
@@ -15659,7 +15675,7 @@ export default function Dashboard() {
               )}
 
               {/* Timesheet Management View */}
-              {employeesSubTab === 'timesheets' && (
+              {employeesSubTab === 'timesheets' && canAccessFeature('timesheets') && (
                 <div>
                   {/* Header */}
                   <div className="mb-6">
