@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, Suspense } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { Eye, EyeOff, Mail, Lock, User, Zap } from 'lucide-react';
@@ -18,9 +18,37 @@ function SignUpForm() {
 
   const { signUp, resendConfirmation } = useAuth();
   const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // Check for access_token in hash (successful auth) - redirect to complete page
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash && hash.includes('access_token')) {
+      // Auth succeeded! Redirect to complete page with priceId preserved
+      const priceId = searchParams.get('priceId') || searchParams.get('priceld');
+      const planName = searchParams.get('planName');
+      
+      if (priceId) {
+        const params = new URLSearchParams();
+        params.set('priceId', priceId);
+        if (planName) params.set('planName', planName);
+        router.push(`/auth/complete?${params.toString()}`);
+      } else {
+        router.push('/dashboard');
+      }
+      return;
+    }
+  }, [searchParams, router]);
 
   // Check for error in URL parameters (from expired email link)
+  // Only show error if there's no access_token (auth didn't succeed)
   useEffect(() => {
+    const hash = window.location.hash;
+    if (hash && hash.includes('access_token')) {
+      // Don't show error if auth succeeded
+      return;
+    }
+    
     const urlError = searchParams.get('error');
     if (urlError === 'email_expired') {
       setError('Your email verification link has expired. Please request a new confirmation email below.');
