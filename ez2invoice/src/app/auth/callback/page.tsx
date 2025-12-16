@@ -1,0 +1,185 @@
+'use client';
+
+import { useEffect, useState, Suspense } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
+import { supabase } from '@/lib/supabase';
+
+function AuthCallbackContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const [status, setStatus] = useState<'loading' | 'redirecting' | 'error'>('loading');
+  const [errorMessage, setErrorMessage] = useState<string>('');
+
+  useEffect(() => {
+    const handleAuthCallback = async () => {
+      try {
+        // Get priceId and planName from query string
+        const priceId = searchParams.get('priceId') || searchParams.get('priceld'); // Handle typo
+        const planName = searchParams.get('planName');
+        const code = searchParams.get('code');
+        const next = searchParams.get('next') ?? '/dashboard';
+
+        let session = null;
+        let authError = null;
+
+        // Check if we have a code parameter (PKCE flow)
+        if (code) {
+          try {
+            const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+            if (error) {
+              authError = error;
+            } else {
+              session = data?.session;
+            }
+          } catch (err: any) {
+            authError = err;
+            console.error('Error exchanging code for session:', err);
+          }
+        } else {
+          // No code, try to get session from URL hash (access_token)
+          try {
+            const { data, error } = await supabase.auth.getSessionFromUrl({
+              storeSession: true,
+            });
+            if (error) {
+              authError = error;
+            } else {
+              session = data?.session;
+            }
+          } catch (err: any) {
+            authError = err;
+            console.error('Error getting session from URL:', err);
+          }
+        }
+
+        // If authentication failed, redirect to signup with error
+        if (authError || !session) {
+          console.error('Auth callback error:', authError);
+          setStatus('error');
+          
+          // Determine error type
+          let errorType = 'auth_callback_error';
+          if (authError?.message?.includes('expired') || authError?.message?.includes('invalid')) {
+            errorType = 'email_expired';
+          }
+
+          // Redirect to signup with error and preserve priceId
+          const redirectParams = new URLSearchParams();
+          if (priceId) redirectParams.set('priceId', priceId);
+          if (planName) redirectParams.set('planName', planName);
+          redirectParams.set('error', errorType);
+          
+          router.push(`/signup?${redirectParams.toString()}`);
+          return;
+        }
+
+        // Authentication succeeded!
+        // If we have a priceId, redirect to Stripe checkout
+        if (priceId) {
+          setStatus('redirecting');
+          
+          try {
+            const customerEmail = session.user?.email;
+            
+            const response = await fetch('/api/create-checkout-session', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                priceId: priceId,
+                customerEmail: customerEmail,
+              }),
+            });
+
+            if (!response.ok) {
+              const errorData = await response.json();
+              throw new Error(errorData.error || 'Failed to create checkout session');
+            }
+
+            const data = await response.json();
+            
+            if (data.url) {
+              // Redirect to Stripe checkout
+              window.location.href = data.url;
+            } else {
+              throw new Error('No checkout URL returned');
+            }
+          } catch (error: any) {
+            console.error('Error creating checkout session:', error);
+            setStatus('error');
+            setErrorMessage(error.message || 'Failed to start checkout');
+            
+            // Redirect to pricing with error
+            router.push('/pricing?error=checkout_failed');
+          }
+        } else {
+          // No priceId, just redirect to the intended page
+          setStatus('redirecting');
+          router.push(next);
+        }
+      } catch (error: any) {
+        console.error('Unexpected error in auth callback:', error);
+        setStatus('error');
+        setErrorMessage(error.message || 'An unexpected error occurred');
+        
+        // Redirect to signup with error
+        const redirectParams = new URLSearchParams();
+        const priceId = searchParams.get('priceId') || searchParams.get('priceld');
+        const planName = searchParams.get('planName');
+        if (priceId) redirectParams.set('priceId', priceId);
+        if (planName) redirectParams.set('planName', planName);
+        redirectParams.set('error', 'auth_callback_error');
+        
+        router.push(`/signup?${redirectParams.toString()}`);
+      }
+    };
+
+    handleAuthCallback();
+  }, [searchParams, router]);
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="text-center">
+        {status === 'loading' && (
+          <>
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-500 mx-auto mb-4"></div>
+            <p className="text-gray-600">Verifying your email...</p>
+          </>
+        )}
+        {status === 'redirecting' && (
+          <>
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-500 mx-auto mb-4"></div>
+            <p className="text-gray-600">Redirecting to checkout...</p>
+          </>
+        )}
+        {status === 'error' && (
+          <>
+            <div className="text-red-500 text-4xl mb-4">⚠️</div>
+            <p className="text-gray-600 mb-2">Verification failed</p>
+            {errorMessage && (
+              <p className="text-sm text-gray-500">{errorMessage}</p>
+            )}
+            <p className="text-sm text-gray-500 mt-4">Redirecting...</p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function AuthCallbackPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-500 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    }>
+      <AuthCallbackContent />
+    </Suspense>
+  );
+}
+
