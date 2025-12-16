@@ -46,7 +46,6 @@ const pricingPlans: Plan[] = [
       "Up to 8 service bays",
       "Analytics dashboard",
       "Timesheet tracking",
-      "Advanced work order tracking",
       "Fleet customer management",
       "DOT inspection tracking",
       "Accounts Receivable",
