@@ -4143,18 +4143,18 @@ export default function Dashboard() {
       const diffMs = todayMidnight.getTime() - dueDateMidnight.getTime();
       const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
       
-      // Debug logging - remove after fixing
-      if (diffDays >= 1) {
-        console.log('Aging calc (OVERDUE):', {
-          invoiceId: invoice.id,
-          invoiceNumber: invoice.invoice_number,
-          dueDate: invoice.due_date,
-          todayMidnight: todayMidnight.toISOString().split('T')[0],
-          dueDateMidnight: dueDateMidnight.toISOString().split('T')[0],
-          diffDays,
-          bucket: diffDays <= 30 ? '1-30' : diffDays <= 90 ? '31-90' : '90+'
-        });
-      }
+      // Debug logging - show all calculations
+      const bucket = diffDays < 1 ? 'current' : diffDays <= 30 ? '1-30' : diffDays <= 90 ? '31-90' : '90+';
+      console.log('Aging calc:', {
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoice_number,
+        dueDate: invoice.due_date,
+        today: todayMidnight.toISOString().split('T')[0],
+        dueDateParsed: dueDateMidnight.toISOString().split('T')[0],
+        diffDays,
+        bucket,
+        isOverdue: diffDays >= 1
+      });
       
       // Current = not overdue (due date is today or in the future)
       // diffDays < 0 means due date is in the future (not overdue)
