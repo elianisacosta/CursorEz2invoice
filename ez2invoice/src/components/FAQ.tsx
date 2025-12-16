@@ -132,7 +132,7 @@ export default function FAQ() {
               <span>Contact Support</span>
             </a>
             <a
-              href="mailto:support@ez2invoice.com"
+              href="mailto:ez2invoicellc@gmail.com"
               className="bg-white text-gray-700 px-6 py-3 rounded-lg font-semibold border border-gray-300 hover:border-gray-400 hover:bg-gray-50 transition-colors flex items-center justify-center space-x-2"
             >
               <Mail className="h-5 w-5" />

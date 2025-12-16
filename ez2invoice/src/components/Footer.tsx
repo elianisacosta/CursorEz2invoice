@@ -67,19 +67,19 @@ export default function Footer() {
               <div className="flex items-center space-x-2">
                 <Mail className="h-4 w-4 text-gray-400" />
                 <a 
-                  href="mailto:support@ez2invoice.com" 
+                  href="mailto:ez2invoicellc@gmail.com" 
                   className="text-gray-600 hover:text-primary-500 transition-colors"
                 >
-                  support@ez2invoice.com
+                  ez2invoicellc@gmail.com
                 </a>
               </div>
               <div className="flex items-center space-x-2">
                 <Phone className="h-4 w-4 text-gray-400" />
                 <a 
-                  href="tel:+15550123456" 
+                  href="tel:+15027673961" 
                   className="text-gray-600 hover:text-primary-500 transition-colors"
                 >
-                  (555) 012-3456
+                  +1 (502) 767-3961
                 </a>
               </div>
             </div>
