@@ -4110,46 +4110,64 @@ export default function Dashboard() {
   const getInvoiceAgingBucket = (invoice: Invoice): AgingBucket => {
     if (!invoice.due_date) return 'current';
     
-    // Get today's date in local timezone, normalized to midnight
-    const today = new Date();
-    const todayYear = today.getFullYear();
-    const todayMonth = today.getMonth();
-    const todayDay = today.getDate();
-    const todayMidnight = new Date(todayYear, todayMonth, todayDay);
-    
-    // Parse due date - handle both date strings and ISO strings
-    let dueDate: Date;
-    if (typeof invoice.due_date === 'string') {
-      // If it's just a date string (YYYY-MM-DD), parse it directly
-      if (invoice.due_date.match(/^\d{4}-\d{2}-\d{2}$/)) {
-        const [year, month, day] = invoice.due_date.split('-').map(Number);
-        dueDate = new Date(year, month - 1, day);
+    try {
+      // Get today's date components in local timezone
+      const now = new Date();
+      const todayYear = now.getFullYear();
+      const todayMonth = now.getMonth();
+      const todayDay = now.getDate();
+      const todayMidnight = new Date(todayYear, todayMonth, todayDay, 0, 0, 0, 0);
+      
+      // Parse due date - handle date strings (YYYY-MM-DD) or ISO strings
+      let dueDateMidnight: Date;
+      const dueDateStr = String(invoice.due_date);
+      
+      if (dueDateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        // Pure date string format (YYYY-MM-DD) - parse directly
+        const [year, month, day] = dueDateStr.split('-').map(Number);
+        dueDateMidnight = new Date(year, month - 1, day, 0, 0, 0, 0);
       } else {
-        // Otherwise parse as ISO string and extract date components
-        const parsed = new Date(invoice.due_date);
+        // ISO string or other format - parse and extract date components
+        const parsed = new Date(dueDateStr);
+        if (Number.isNaN(parsed.getTime())) {
+          console.warn('Invalid due_date format:', invoice.due_date);
+          return 'current';
+        }
         const year = parsed.getFullYear();
         const month = parsed.getMonth();
         const day = parsed.getDate();
-        dueDate = new Date(year, month, day);
+        dueDateMidnight = new Date(year, month, day, 0, 0, 0, 0);
       }
-    } else {
-      dueDate = new Date(invoice.due_date);
+      
+      // Calculate difference in milliseconds, then convert to days
+      const diffMs = todayMidnight.getTime() - dueDateMidnight.getTime();
+      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+      
+      // Debug logging - remove after fixing
+      if (diffDays >= 1) {
+        console.log('Aging calc (OVERDUE):', {
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoice_number,
+          dueDate: invoice.due_date,
+          todayMidnight: todayMidnight.toISOString().split('T')[0],
+          dueDateMidnight: dueDateMidnight.toISOString().split('T')[0],
+          diffDays,
+          bucket: diffDays <= 30 ? '1-30' : diffDays <= 90 ? '31-90' : '90+'
+        });
+      }
+      
+      // Current = not overdue (due date is today or in the future)
+      // diffDays < 0 means due date is in the future (not overdue)
+      // diffDays === 0 means due date is today (not overdue)
+      // diffDays >= 1 means it's overdue
+      if (diffDays < 1) return 'current';
+      if (diffDays <= 30) return '1-30';
+      if (diffDays <= 90) return '31-90';
+      return '90+';
+    } catch (error) {
+      console.error('Error calculating aging bucket:', error, invoice.due_date);
+      return 'current';
     }
-    
-    if (Number.isNaN(dueDate.getTime())) return 'current';
-    
-    // Calculate difference in days
-    const diffTime = todayMidnight.getTime() - dueDate.getTime();
-    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-    
-    // Current = not overdue (due date is today or in the future)
-    // If diffDays is negative, due date is in the future (not overdue)
-    // If diffDays is 0, due date is today (not overdue)
-    // If diffDays >= 1, it's overdue
-    if (diffDays < 1) return 'current';
-    if (diffDays <= 30) return '1-30';
-    if (diffDays <= 90) return '31-90';
-    return '90+';
   };
 
   const createEmptyAgingMap = (): Record<AgingBucket, number> => ({
