@@ -1148,22 +1148,50 @@ export default function Dashboard() {
         return;
       }
 
-      // Here you would typically integrate with an email service
-      // For now, we'll just show a confirmation
       const confirmed = confirm(`Send ${formatInvoiceNumber(invoice.invoice_number)} to ${customer.email}?`);
       if (!confirmed) return;
 
-      // Update invoice status to 'sent' if needed
-      await supabase
-        .from('invoices')
-        .update({ status: 'sent' })
-        .eq('id', invoice.id);
+      // Generate email HTML
+      const emailHTML = await generateInvoiceEmailHTML(invoice);
+      const invoiceNumber = formatInvoiceNumber(invoice.invoice_number);
+      
+      // Send email via API
+      const response = await fetch('/api/send-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          to: customer.email,
+          subject: `Invoice ${invoiceNumber} from ${shopInfo.shop_name || 'EZ2Invoice'}`,
+          html: emailHTML,
+          type: 'invoice',
+          invoiceId: invoice.id,
+        }),
+      });
 
-      showToast({ type: 'success', message: 'Invoice sent successfully' });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to send email');
+      }
+
+      // Update invoice status
+      const { error } = await supabase
+        .from('invoices')
+        .update({ status: 'sent', updated_at: new Date().toISOString() })
+        .eq('id', invoice.id);
+      
+      if (error) {
+        console.error('Error updating invoice status:', error);
+        // Email was sent but status update failed - still show success
+      }
+      
+      showToast({ type: 'success', message: 'Invoice sent successfully!' });
       await fetchInvoices();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error sending invoice:', err);
-      alert('Error sending invoice. Please try again.');
+      alert(`Error sending invoice: ${err.message || 'Please try again.'}`);
     }
   };
 
@@ -1955,6 +1983,136 @@ export default function Dashboard() {
 
         <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center; color: #6b7280; font-size: 12px;">
           <p>This is an automated email from EZ2Invoice. Please do not reply to this email.</p>
+        </div>
+      </body>
+      </html>
+    `;
+  };
+
+  // Function to generate invoice email HTML
+  const generateInvoiceEmailHTML = async (invoice: Invoice) => {
+    // Fetch invoice line items
+    const { data: lineItems } = await supabase
+      .from('invoice_line_items')
+      .select('*')
+      .eq('invoice_id', invoice.id)
+      .order('created_at', { ascending: true });
+
+    const customerName = getInvoiceCustomerName(invoice);
+    const invoiceNumber = formatInvoiceNumber(invoice.invoice_number);
+    const invoiceDate = invoice.created_at 
+      ? formatDateInTimezone(invoice.created_at, { month: 'short', day: 'numeric', year: 'numeric' })
+      : 'N/A';
+    const dueDate = invoice.due_date 
+      ? formatDateInTimezone(invoice.due_date, { month: 'short', day: 'numeric', year: 'numeric' })
+      : 'No due date';
+    
+    const subtotal = invoice.subtotal || 0;
+    const taxRate = invoice.tax_rate || 0;
+    const taxAmount = invoice.tax_amount || 0;
+    const total = invoice.total_amount || 0;
+    const paidAmount = invoice.paid_amount || 0;
+    const balanceDue = total - paidAmount;
+
+    // Get shop information for email
+    const shopId = await getShopId();
+    let shopName = 'EZ2Invoice';
+    if (shopId) {
+      const { data: shopData } = await supabase
+        .from('truck_shops')
+        .select('shop_name')
+        .eq('id', shopId)
+        .single();
+      if (shopData?.shop_name) {
+        shopName = shopData.shop_name;
+      }
+    }
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Invoice ${invoiceNumber}</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+          <h1 style="color: #2563eb; margin: 0 0 10px 0;">INVOICE</h1>
+          <p style="margin: 5px 0;"><strong>Invoice #:</strong> ${invoiceNumber}</p>
+          <p style="margin: 5px 0;"><strong>Date:</strong> ${invoiceDate}</p>
+          <p style="margin: 5px 0;"><strong>Due Date:</strong> ${dueDate}</p>
+        </div>
+
+        <div style="margin-bottom: 20px;">
+          <h2 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">Bill To</h2>
+          <p style="margin: 5px 0;"><strong>${customerName}</strong></p>
+          ${invoice.customer?.email ? `<p style="margin: 5px 0;">${invoice.customer.email}</p>` : ''}
+          ${invoice.customer?.phone ? `<p style="margin: 5px 0;">${invoice.customer.phone}</p>` : ''}
+        </div>
+
+        <div style="margin-bottom: 20px;">
+          <h2 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">Line Items</h2>
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+            <thead>
+              <tr style="background-color: #f3f4f6;">
+                <th style="padding: 12px; text-align: left; border: 1px solid #e5e7eb;">Description</th>
+                <th style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;">Quantity</th>
+                <th style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;">Unit Price</th>
+                <th style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(lineItems || []).map((item: any) => `
+                <tr>
+                  <td style="padding: 12px; border: 1px solid #e5e7eb;">${item.description || '—'}</td>
+                  <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;">${item.quantity || 0}</td>
+                  <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;">$${(item.unit_price || 0).toFixed(2)}</td>
+                  <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;">$${(item.total_price || 0).toFixed(2)}</td>
+                </tr>
+              `).join('')}
+              <tr style="background-color: #f9fafb;">
+                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Subtotal:</strong></td>
+                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${subtotal.toFixed(2)}</strong></td>
+              </tr>
+              ${taxRate > 0 ? `
+              <tr style="background-color: #f9fafb;">
+                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Tax (${(taxRate * 100).toFixed(2)}%):</strong></td>
+                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${taxAmount.toFixed(2)}</strong></td>
+              </tr>
+              ` : ''}
+              <tr style="background-color: #dbeafe; font-size: 18px;">
+                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Total:</strong></td>
+                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${total.toFixed(2)}</strong></td>
+              </tr>
+              ${paidAmount > 0 ? `
+              <tr style="background-color: #f0fdf4;">
+                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Paid:</strong></td>
+                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${paidAmount.toFixed(2)}</strong></td>
+              </tr>
+              <tr style="background-color: #fef3c7;">
+                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Balance Due:</strong></td>
+                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${balanceDue.toFixed(2)}</strong></td>
+              </tr>
+              ` : ''}
+            </tbody>
+          </table>
+        </div>
+
+        ${invoice.notes ? `
+          <div style="margin-bottom: 20px;">
+            <h2 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">Notes</h2>
+            <p style="white-space: pre-wrap;">${invoice.notes}</p>
+          </div>
+        ` : ''}
+
+        <div style="background-color: #eff6ff; padding: 15px; border-radius: 8px; margin-top: 20px; border-left: 4px solid #2563eb;">
+          <p style="margin: 0;"><strong>Status:</strong> ${invoice.status.charAt(0).toUpperCase() + invoice.status.slice(1)}</p>
+          ${balanceDue > 0 ? `<p style="margin: 10px 0 0 0;">Please remit payment of <strong>$${balanceDue.toFixed(2)}</strong> by ${dueDate}.</p>` : '<p style="margin: 10px 0 0 0;">This invoice has been paid in full. Thank you!</p>'}
+        </div>
+
+        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center; color: #6b7280; font-size: 12px;">
+          <p>This is an automated email from ${shopName}. Please contact us if you have any questions about this invoice.</p>
         </div>
       </body>
       </html>
@@ -15157,13 +15315,60 @@ export default function Dashboard() {
                       </div>
                       
                       <div>
-                        <h4 className="text-sm font-medium text-gray-900 mb-4">Payment Methods</h4>
-                        <p className="text-sm text-gray-600">No payment methods on file</p>
-                      </div>
-                      
-                      <div>
-                        <h4 className="text-sm font-medium text-gray-900 mb-4">Billing History</h4>
-                        <p className="text-sm text-gray-600">No billing history available</p>
+                        <h4 className="text-sm font-medium text-gray-900 mb-4">Manage Billing</h4>
+                        <p className="text-sm text-gray-600 mb-4">
+                          Update your payment method, view billing history, and manage your subscription.
+                        </p>
+                        <button
+                          onClick={async () => {
+                            try {
+                              // Get the current session token
+                              const { data: { session } } = await supabase.auth.getSession();
+                              
+                              if (!session?.access_token) {
+                                showToast({
+                                  type: 'error',
+                                  message: 'Please log in to manage billing.'
+                                });
+                                return;
+                              }
+
+                              // Call the API to create portal session
+                              const response = await fetch('/api/stripe/create-portal-session', {
+                                method: 'POST',
+                                headers: {
+                                  'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({
+                                  accessToken: session.access_token,
+                                }),
+                              });
+
+                              const data = await response.json();
+
+                              if (!response.ok) {
+                                throw new Error(data.error || 'Failed to create billing portal session');
+                              }
+
+                              if (data.url) {
+                                // Redirect to Stripe Customer Portal
+                                window.location.href = data.url;
+                              } else {
+                                throw new Error('No portal URL returned');
+                              }
+                            } catch (error: any) {
+                              console.error('Error opening billing portal:', error);
+                              showToast({
+                                type: 'error',
+                                message: error.message || 'Failed to open billing portal. Please try again.'
+                              });
+                            }
+                          }}
+                          className="bg-primary-500 text-white px-6 py-3 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2"
+                        >
+                          <CreditCard className="h-5 w-5" />
+                          <span>Manage Billing</span>
+                        </button>
                       </div>
                     </div>
                   </div>
