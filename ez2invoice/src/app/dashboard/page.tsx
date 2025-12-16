@@ -4108,7 +4108,9 @@ export default function Dashboard() {
   };
 
   const getInvoiceAgingBucket = (invoice: Invoice): AgingBucket => {
-    if (!invoice.due_date) return 'current';
+    // Use invoice creation date (invoice_date if available, otherwise created_at)
+    const invoiceDate = (invoice as any).invoice_date || invoice.created_at;
+    if (!invoiceDate) return 'current';
     
     try {
       // Get today's date components in local timezone
@@ -4118,54 +4120,54 @@ export default function Dashboard() {
       const todayDay = now.getDate();
       const todayMidnight = new Date(todayYear, todayMonth, todayDay, 0, 0, 0, 0);
       
-      // Parse due date - handle date strings (YYYY-MM-DD) or ISO strings
-      let dueDateMidnight: Date;
-      const dueDateStr = String(invoice.due_date);
+      // Parse invoice creation date - handle date strings (YYYY-MM-DD) or ISO strings
+      let invoiceDateMidnight: Date;
+      const invoiceDateStr = String(invoiceDate);
       
-      if (dueDateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+      if (invoiceDateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
         // Pure date string format (YYYY-MM-DD) - parse directly
-        const [year, month, day] = dueDateStr.split('-').map(Number);
-        dueDateMidnight = new Date(year, month - 1, day, 0, 0, 0, 0);
+        const [year, month, day] = invoiceDateStr.split('-').map(Number);
+        invoiceDateMidnight = new Date(year, month - 1, day, 0, 0, 0, 0);
       } else {
         // ISO string or other format - parse and extract date components
-        const parsed = new Date(dueDateStr);
+        const parsed = new Date(invoiceDateStr);
         if (Number.isNaN(parsed.getTime())) {
-          console.warn('Invalid due_date format:', invoice.due_date);
+          console.warn('Invalid invoice date format:', invoiceDate);
           return 'current';
         }
         const year = parsed.getFullYear();
         const month = parsed.getMonth();
         const day = parsed.getDate();
-        dueDateMidnight = new Date(year, month, day, 0, 0, 0, 0);
+        invoiceDateMidnight = new Date(year, month, day, 0, 0, 0, 0);
       }
       
       // Calculate difference in milliseconds, then convert to days
-      const diffMs = todayMidnight.getTime() - dueDateMidnight.getTime();
+      // Positive diffDays means invoice was created that many days ago
+      const diffMs = todayMidnight.getTime() - invoiceDateMidnight.getTime();
       const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
       
       // Debug logging - show all calculations
       const bucket = diffDays < 1 ? 'current' : diffDays <= 30 ? '1-30' : diffDays <= 90 ? '31-90' : '90+';
-      console.log('Aging calc:', {
+      console.log('Aging calc (based on creation date):', {
         invoiceId: invoice.id,
         invoiceNumber: invoice.invoice_number,
-        dueDate: invoice.due_date,
+        invoiceDate: invoiceDate,
         today: todayMidnight.toISOString().split('T')[0],
-        dueDateParsed: dueDateMidnight.toISOString().split('T')[0],
+        invoiceDateParsed: invoiceDateMidnight.toISOString().split('T')[0],
         diffDays,
         bucket,
-        isOverdue: diffDays >= 1
+        daysSinceCreation: diffDays
       });
       
-      // Current = not overdue (due date is today or in the future)
-      // diffDays < 0 means due date is in the future (not overdue)
-      // diffDays === 0 means due date is today (not overdue)
-      // diffDays >= 1 means it's overdue
+      // Current = invoice created less than 1 day ago
+      // diffDays < 1 means invoice was created today or in the future (shouldn't happen, but handle it)
+      // diffDays >= 1 means invoice was created that many days ago
       if (diffDays < 1) return 'current';
       if (diffDays <= 30) return '1-30';
       if (diffDays <= 90) return '31-90';
       return '90+';
     } catch (error) {
-      console.error('Error calculating aging bucket:', error, invoice.due_date);
+      console.error('Error calculating aging bucket:', error, invoiceDate);
       return 'current';
     }
   };
