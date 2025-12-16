@@ -40,7 +40,8 @@ function SignUpForm() {
       const founderEmails = ['acostaelianis@yahoo.com', 'founder@ez2invoice.com', 'admin@ez2invoice.com'];
       const isFounder = founderEmails.includes(email.toLowerCase());
 
-      const priceId = searchParams.get('priceId');
+      // Handle both 'priceId' and 'priceld' (typo in URL)
+      const priceId = searchParams.get('priceId') || searchParams.get('priceld');
       const planName = searchParams.get('planName') ?? undefined;
 
       // Build redirect URL - include priceId if present (for both founders and regular users)
@@ -200,34 +201,46 @@ function SignUpForm() {
               {error && (
                 <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
                   <p className="text-red-800 text-sm mb-3">{error}</p>
-                  {(error.includes('expired') || error.includes('verifying')) && email && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        setLoading(true);
-                        setError('');
-                        const priceId = searchParams.get('priceId');
-                        const planName = searchParams.get('planName') ?? undefined;
-                        const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
-                        const redirectTo = priceId
-                          ? `${baseUrl}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
-                          : `${baseUrl}/auth/callback?next=/dashboard`;
-                        
-                        const { error: resendError } = await resendConfirmation(email, redirectTo);
-                        if (resendError) {
-                          console.error('Resend confirmation error:', resendError);
-                          setError(`Failed to resend email: ${resendError.message || 'Unknown error'}. Please check your email address and try again.`);
-                        } else {
+                  {(error.includes('expired') || error.includes('verifying')) && (
+                    <div className="space-y-3">
+                      {!email && (
+                        <p className="text-sm text-gray-600">
+                          Enter your email address above, then click the button below to resend the confirmation email.
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!email) {
+                            setError('Please enter your email address first.');
+                            return;
+                          }
+                          setLoading(true);
                           setError('');
-                          setSuccess('New confirmation email sent! Please check your inbox (and spam folder).');
-                        }
-                        setLoading(false);
-                      }}
-                      disabled={loading}
-                      className="text-sm text-red-600 hover:text-red-800 underline font-medium"
-                    >
-                      {loading ? 'Sending...' : 'Resend confirmation email'}
-                    </button>
+                          // Handle both 'priceId' and 'priceld' (typo in URL)
+                          const priceId = searchParams.get('priceId') || searchParams.get('priceld');
+                          const planName = searchParams.get('planName') ?? undefined;
+                          const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
+                          const redirectTo = priceId
+                            ? `${baseUrl}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
+                            : `${baseUrl}/auth/callback?next=/dashboard`;
+                          
+                          const { error: resendError } = await resendConfirmation(email, redirectTo);
+                          if (resendError) {
+                            console.error('Resend confirmation error:', resendError);
+                            setError(`Failed to resend email: ${resendError.message || 'Unknown error'}. Please check your email address and try again.`);
+                          } else {
+                            setError('');
+                            setSuccess('New confirmation email sent! Please check your inbox (and spam folder).');
+                          }
+                          setLoading(false);
+                        }}
+                        disabled={loading || !email}
+                        className="w-full px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-sm font-medium transition-colors"
+                      >
+                        {loading ? 'Sending...' : 'Resend Confirmation Email'}
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
@@ -241,7 +254,8 @@ function SignUpForm() {
                       onClick={async () => {
                         setLoading(true);
                         setError('');
-                        const priceId = searchParams.get('priceId');
+                        // Handle both 'priceId' and 'priceld' (typo in URL)
+                        const priceId = searchParams.get('priceId') || searchParams.get('priceld');
                         const planName = searchParams.get('planName') ?? undefined;
                         const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
                         const redirectTo = priceId
