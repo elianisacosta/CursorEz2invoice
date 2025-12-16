@@ -3236,6 +3236,341 @@ export default function Dashboard() {
     showToast({ type: 'success', message: `Exported ${estimates.length} estimate(s) to CSV.` });
   };
 
+  // Export inventory to CSV
+  const exportInventory = () => {
+    if (!inventory.length) {
+      showToast({ type: 'error', message: 'No inventory items to export.' });
+      return;
+    }
+
+    const header = [
+      'Item Name',
+      'Quantity',
+      'Price',
+      'Cost',
+      'Supplier'
+    ];
+
+    const rows = inventory.map((item) => {
+      return [
+        item.part_name || '',
+        (item.quantity_in_stock || 0).toString(),
+        (item.selling_price || 0).toFixed(2),
+        (item.cost || 0).toFixed(2),
+        item.supplier || ''
+      ];
+    });
+
+    const csv = [header, ...rows]
+      .map((row) => row.map((v) => `"${(v || '').toString().replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `inventory-${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    showToast({ type: 'success', message: `Exported ${inventory.length} inventory item(s) to CSV.` });
+  };
+
+  // Import inventory from CSV
+  const handleImportInventory = async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+
+      try {
+        const text = await file.text();
+        const lines = text.split('\n').filter(line => line.trim());
+        if (lines.length < 2) {
+          showToast({ type: 'error', message: 'CSV file must have at least a header row and one data row.' });
+          return;
+        }
+
+        // Parse CSV (handle quoted values)
+        const parseCSVLine = (line: string): string[] => {
+          const result: string[] = [];
+          let current = '';
+          let inQuotes = false;
+          
+          for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            if (char === '"') {
+              if (inQuotes && line[i + 1] === '"') {
+                current += '"';
+                i++;
+              } else {
+                inQuotes = !inQuotes;
+              }
+            } else if (char === ',' && !inQuotes) {
+              result.push(current.trim());
+              current = '';
+            } else {
+              current += char;
+            }
+          }
+          result.push(current.trim());
+          return result;
+        };
+
+        const header = parseCSVLine(lines[0]);
+        const itemNameIndex = header.findIndex(h => h.toLowerCase().includes('item') && h.toLowerCase().includes('name'));
+        const quantityIndex = header.findIndex(h => h.toLowerCase().includes('quantity'));
+        const priceIndex = header.findIndex(h => h.toLowerCase().includes('price'));
+        const costIndex = header.findIndex(h => h.toLowerCase().includes('cost'));
+        const supplierIndex = header.findIndex(h => h.toLowerCase().includes('supplier'));
+
+        if (itemNameIndex === -1 || quantityIndex === -1 || priceIndex === -1 || costIndex === -1 || supplierIndex === -1) {
+          showToast({ 
+            type: 'error', 
+            message: 'CSV must contain columns: Item Name, Quantity, Price, Cost, and Supplier.' 
+          });
+          return;
+        }
+
+        const shopId = await getShopId();
+        if (!shopId) {
+          showToast({ type: 'error', message: 'Unable to get shop ID. Please try again.' });
+          return;
+        }
+
+        let successCount = 0;
+        let errorCount = 0;
+        const errors: string[] = [];
+
+        // Process each row (skip header)
+        for (let i = 1; i < lines.length; i++) {
+          const row = parseCSVLine(lines[i]);
+          if (row.length < Math.max(itemNameIndex, quantityIndex, priceIndex, costIndex, supplierIndex) + 1) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: Insufficient columns`);
+            continue;
+          }
+
+          const itemName = row[itemNameIndex]?.trim() || '';
+          const quantity = parseInt(row[quantityIndex]?.trim() || '0') || 0;
+          const price = parseFloat(row[priceIndex]?.trim() || '0') || 0;
+          const cost = parseFloat(row[costIndex]?.trim() || '0') || 0;
+          const supplier = row[supplierIndex]?.trim() || '';
+
+          if (!itemName) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: Missing item name`);
+            continue;
+          }
+
+          // Create inventory item
+          const { error: itemError } = await supabase
+            .from('parts')
+            .insert({
+              shop_id: shopId,
+              part_name: itemName,
+              quantity_in_stock: quantity,
+              selling_price: price,
+              cost: cost,
+              supplier: supplier || null,
+              minimum_stock_level: 0
+            });
+
+          if (itemError) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: Failed to create item - ${itemError.message}`);
+            continue;
+          }
+
+          successCount++;
+        }
+
+        // Refresh inventory list
+        fetchInventory();
+
+        // Show results
+        if (successCount > 0) {
+          showToast({ 
+            type: 'success', 
+            message: `Successfully imported ${successCount} inventory item(s).${errorCount > 0 ? ` ${errorCount} error(s).` : ''}` 
+          });
+        } else {
+          showToast({ 
+            type: 'error', 
+            message: `Failed to import inventory items.${errors.length > 0 ? ` Errors: ${errors.slice(0, 3).join('; ')}${errors.length > 3 ? '...' : ''}` : ''}` 
+          });
+        }
+      } catch (error: any) {
+        console.error('Error importing inventory:', error);
+        showToast({ type: 'error', message: `Error importing CSV: ${error.message || 'Unknown error'}` });
+      }
+    };
+    input.click();
+  };
+
+  // Export labor items to CSV
+  const exportLabor = () => {
+    if (!laborItems.length) {
+      showToast({ type: 'error', message: 'No labor items to export.' });
+      return;
+    }
+
+    const header = [
+      'Service Name',
+      'Price',
+      'Description'
+    ];
+
+    const rows = laborItems.map((item) => {
+      return [
+        item.service_name || '',
+        (item.rate || 0).toFixed(2),
+        item.description || ''
+      ];
+    });
+
+    const csv = [header, ...rows]
+      .map((row) => row.map((v) => `"${(v || '').toString().replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `labor-items-${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    showToast({ type: 'success', message: `Exported ${laborItems.length} labor item(s) to CSV.` });
+  };
+
+  // Import labor items from CSV
+  const handleImportLabor = async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+
+      try {
+        const text = await file.text();
+        const lines = text.split('\n').filter(line => line.trim());
+        if (lines.length < 2) {
+          showToast({ type: 'error', message: 'CSV file must have at least a header row and one data row.' });
+          return;
+        }
+
+        // Parse CSV (handle quoted values)
+        const parseCSVLine = (line: string): string[] => {
+          const result: string[] = [];
+          let current = '';
+          let inQuotes = false;
+          
+          for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            if (char === '"') {
+              if (inQuotes && line[i + 1] === '"') {
+                current += '"';
+                i++;
+              } else {
+                inQuotes = !inQuotes;
+              }
+            } else if (char === ',' && !inQuotes) {
+              result.push(current.trim());
+              current = '';
+            } else {
+              current += char;
+            }
+          }
+          result.push(current.trim());
+          return result;
+        };
+
+        const header = parseCSVLine(lines[0]);
+        const serviceNameIndex = header.findIndex(h => h.toLowerCase().includes('service') && h.toLowerCase().includes('name'));
+        const priceIndex = header.findIndex(h => h.toLowerCase().includes('price'));
+        const descriptionIndex = header.findIndex(h => h.toLowerCase().includes('description'));
+
+        if (serviceNameIndex === -1 || priceIndex === -1 || descriptionIndex === -1) {
+          showToast({ 
+            type: 'error', 
+            message: 'CSV must contain columns: Service Name, Price, and Description.' 
+          });
+          return;
+        }
+
+        let successCount = 0;
+        let errorCount = 0;
+        const errors: string[] = [];
+
+        // Process each row (skip header)
+        for (let i = 1; i < lines.length; i++) {
+          const row = parseCSVLine(lines[i]);
+          if (row.length < Math.max(serviceNameIndex, priceIndex, descriptionIndex) + 1) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: Insufficient columns`);
+            continue;
+          }
+
+          const serviceName = row[serviceNameIndex]?.trim() || '';
+          const price = parseFloat(row[priceIndex]?.trim() || '0') || 0;
+          const description = row[descriptionIndex]?.trim() || '';
+
+          if (!serviceName) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: Missing service name`);
+            continue;
+          }
+
+          // Create labor item
+          const { error: itemError } = await supabase
+            .from('labor_items')
+            .insert({
+              service_name: serviceName,
+              rate: price,
+              rate_type: 'fixed',
+              description: description || null
+            });
+
+          if (itemError) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: Failed to create labor item - ${itemError.message}`);
+            continue;
+          }
+
+          successCount++;
+        }
+
+        // Refresh labor items list
+        fetchLaborItems();
+
+        // Show results
+        if (successCount > 0) {
+          showToast({ 
+            type: 'success', 
+            message: `Successfully imported ${successCount} labor item(s).${errorCount > 0 ? ` ${errorCount} error(s).` : ''}` 
+          });
+        } else {
+          showToast({ 
+            type: 'error', 
+            message: `Failed to import labor items.${errors.length > 0 ? ` Errors: ${errors.slice(0, 3).join('; ')}${errors.length > 3 ? '...' : ''}` : ''}` 
+          });
+        }
+      } catch (error: any) {
+        console.error('Error importing labor items:', error);
+        showToast({ type: 'error', message: `Error importing CSV: ${error.message || 'Unknown error'}` });
+      }
+    };
+    input.click();
+  };
+
   // Import invoices from CSV
   const handleImportInvoices = async () => {
     const input = document.createElement('input');
@@ -8528,6 +8863,20 @@ export default function Dashboard() {
                   <input value={inventoryQuery} onChange={(e)=>setInventoryQuery(e.target.value)} placeholder="Search inventory..." className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
                 </div>
                 <div className="flex items-center gap-3">
+                  <button 
+                    onClick={exportInventory}
+                    className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    <FileText className="h-4 w-4" />
+                    <span>Export CSV</span>
+                  </button>
+                  <button 
+                    onClick={handleImportInventory}
+                    className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    <FileText className="h-4 w-4" />
+                    <span>Import CSV</span>
+                  </button>
                   <button onClick={()=>setShowAddInventoryModal(true)} className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 flex items-center gap-2">
                     <Plus className="h-4 w-4" />
                     Add Item
@@ -9258,6 +9607,20 @@ export default function Dashboard() {
                   <input value={laborQuery} onChange={(e)=>setLaborQuery(e.target.value)} placeholder="Search labor..." className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
                 </div>
                 <div className="flex items-center gap-3">
+                  <button 
+                    onClick={exportLabor}
+                    className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    <FileText className="h-4 w-4" />
+                    <span>Export CSV</span>
+                  </button>
+                  <button 
+                    onClick={handleImportLabor}
+                    className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    <FileText className="h-4 w-4" />
+                    <span>Import CSV</span>
+                  </button>
                   <button onClick={() => setShowAddLaborModal(true)} className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 flex items-center gap-2">
                     <Plus className="h-4 w-4" />
                     Add Labor Item
