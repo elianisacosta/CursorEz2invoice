@@ -164,11 +164,14 @@ import ConfirmDeleteDialog from '@/components/ui/ConfirmDeleteDialog';
 import AnnualVehicleInspectionForm from '@/components/AnnualVehicleInspectionForm';
 
 export default function Dashboard() {
-  const { isFounder, subscriptionBypass, currentTier, canAccessFeature } = useFounder();
+  const { isFounder, subscriptionBypass, simulatedTier, currentTier, canAccessFeature, setSubscriptionBypass, setSimulatedTier } = useFounder();
   const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState('overview');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [userPlanType, setUserPlanType] = useState<string>('starter'); // Track user's actual plan from database
+  
+  // Use simulated tier if active, otherwise use actual plan from database
+  const effectivePlanType = simulatedTier !== 'real' ? simulatedTier : userPlanType;
   const [showCreateInvoiceModal, setShowCreateInvoiceModal] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
   // Helper function to get today's date in YYYY-MM-DD format
@@ -456,10 +459,10 @@ export default function Dashboard() {
   
   // Reset Fleet selection if Starter plan when modal opens
   useEffect(() => {
-    if (showAddCustomerModal && userPlanType === 'starter' && customerForm.is_fleet) {
+    if (showAddCustomerModal && effectivePlanType === 'starter' && customerForm.is_fleet) {
       setCustomerForm(prev => ({ ...prev, is_fleet: false }));
     }
-  }, [showAddCustomerModal, userPlanType, customerForm.is_fleet]);
+  }, [showAddCustomerModal, effectivePlanType, customerForm.is_fleet]);
   
   // Customer notes state
   interface CustomerNote {
@@ -14017,13 +14020,16 @@ export default function Dashboard() {
                           <p className="text-sm text-gray-600">When enabled, you can access all app features without an active subscription.</p>
                         </div>
                         <div className="ml-4">
-                          <div className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                            subscriptionBypass ? 'bg-blue-600' : 'bg-gray-200'
-                          }`}>
+                          <button
+                            onClick={() => setSubscriptionBypass(!subscriptionBypass)}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                              subscriptionBypass ? 'bg-blue-600' : 'bg-gray-200'
+                            }`}
+                          >
                             <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
                               subscriptionBypass ? 'translate-x-6' : 'translate-x-1'
                             }`} />
-                          </div>
+                          </button>
                         </div>
                       </div>
                       
@@ -14068,14 +14074,16 @@ export default function Dashboard() {
                     </div>
                     
                     <div className="space-y-4">
-                      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                        <div className="flex items-start space-x-3">
-                          <AlertTriangle className="h-5 w-5 text-orange-500 mt-0.5" />
-                          <p className="text-sm text-gray-700">
-                            Turn OFF subscription bypass to enable testing mode.
-                          </p>
+                      {simulatedTier !== 'real' && (
+                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                          <div className="flex items-start space-x-3">
+                            <AlertTriangle className="h-5 w-5 text-blue-500 mt-0.5" />
+                            <p className="text-sm text-gray-700">
+                              <strong>Simulation Active:</strong> You are currently viewing the app as a {simulatedTier === 'starter' ? 'Starter' : simulatedTier === 'professional' ? 'Professional' : 'Enterprise'} plan user. Feature restrictions and bay limits are now applied.
+                            </p>
+                          </div>
                         </div>
-                      </div>
+                      )}
                       
                       <div>
                         <h4 className="text-sm font-medium text-gray-900 mb-3">Select Tier to Simulate</h4>
@@ -14084,8 +14092,7 @@ export default function Dashboard() {
                             { 
                               id: 'real', 
                               title: 'Use Real Subscription', 
-                              description: 'Experience your actual subscription tier',
-                              selected: true
+                              description: 'Experience your actual subscription tier (Enterprise with bypass)',
                             },
                             { 
                               id: 'starter', 
@@ -14109,22 +14116,26 @@ export default function Dashboard() {
                               badgeColor: 'bg-yellow-100 text-gray-800'
                             }
                           ].map((option) => (
-                            <div key={option.id} className="flex items-center space-x-3 p-3 border border-gray-200 rounded-lg hover:bg-gray-50">
-                              <div className={`w-4 h-4 rounded-full border-2 ${
-                                option.selected ? 'border-blue-500 bg-blue-500' : 'border-gray-300'
+                            <button
+                              key={option.id}
+                              onClick={() => setSimulatedTier(option.id)}
+                              className="w-full flex items-center space-x-3 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 text-left transition-colors"
+                            >
+                              <div className={`w-4 h-4 rounded-full border-2 flex-shrink-0 ${
+                                simulatedTier === option.id ? 'border-blue-500 bg-blue-500' : 'border-gray-300'
                               }`}>
-                                {option.selected && <div className="w-2 h-2 bg-white rounded-full mx-auto mt-0.5" />}
+                                {simulatedTier === option.id && <div className="w-2 h-2 bg-white rounded-full mx-auto mt-0.5" />}
                               </div>
                               <div className="flex-1">
                                 <h5 className="text-sm font-medium text-gray-900">{option.title}</h5>
                                 <p className="text-sm text-gray-600">{option.description}</p>
                               </div>
                               {option.badge && (
-                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${option.badgeColor}`}>
+                                <span className={`px-2 py-1 rounded-full text-xs font-medium flex-shrink-0 ${option.badgeColor}`}>
                                   {option.badge}
                                 </span>
                               )}
-                            </div>
+                            </button>
                           ))}
                         </div>
                       </div>
@@ -19125,14 +19136,14 @@ export default function Dashboard() {
                     />
                     Individual
                   </label>
-                  <label className={`inline-flex items-center gap-2 ${userPlanType === 'starter' ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                  <label className={`inline-flex items-center gap-2 ${effectivePlanType === 'starter' ? 'opacity-50 cursor-not-allowed' : ''}`}>
                     <input
                       type="radio"
                       name="customer-type"
                       checked={Boolean(customerForm.is_fleet)}
-                      disabled={userPlanType === 'starter'}
+                      disabled={effectivePlanType === 'starter'}
                       onChange={()=> {
-                        if (userPlanType === 'starter') {
+                        if (effectivePlanType === 'starter') {
                           showToast({ 
                             type: 'error', 
                             message: 'Fleet customers are available for Professional and Enterprise plans. Please upgrade to access this feature.' 
@@ -19142,10 +19153,10 @@ export default function Dashboard() {
                         setCustomerForm(prev=>({...prev, is_fleet:true}));
                       }}
                     />
-                    Fleet {userPlanType === 'starter' && <span className="text-xs text-gray-500">(Upgrade Required)</span>}
+                    Fleet {effectivePlanType === 'starter' && <span className="text-xs text-gray-500">(Upgrade Required)</span>}
                   </label>
                 </div>
-                {userPlanType === 'starter' && customerForm.is_fleet && (
+                {effectivePlanType === 'starter' && customerForm.is_fleet && (
                   <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
                     <p className="text-sm text-yellow-800">
                       <strong>Upgrade Required:</strong> Fleet customers are only available for Professional and Enterprise plans. 

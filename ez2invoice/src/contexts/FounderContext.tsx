@@ -66,25 +66,45 @@ export function FounderProvider({ children }: { children: ReactNode }) {
   const isFounder = auth?.isFounder || false;
 
   const getCurrentTier = (): SubscriptionTier => {
+    // If a simulated tier is selected (not 'real'), use that tier even if bypass is active
+    // This allows founders to test how different tiers work
+    if (simulatedTier !== 'real') {
+      return subscriptionTiers.find(tier => tier.id === simulatedTier) || subscriptionTiers[0];
+    }
+    
+    // If bypass is active and user is founder, return enterprise tier
     if (subscriptionBypass && isFounder) {
-      // If bypass is active and user is founder, return enterprise tier
       return subscriptionTiers.find(tier => tier.id === 'enterprise') || subscriptionTiers[2];
     }
     
-    if (simulatedTier === 'real') {
-      // Return actual subscription tier (you'd get this from your database)
-      return subscriptionTiers.find(tier => tier.id === 'enterprise') || subscriptionTiers[2];
-    }
-    
-    // Return simulated tier
-    return subscriptionTiers.find(tier => tier.id === simulatedTier) || subscriptionTiers[0];
+    // Return actual subscription tier (you'd get this from your database)
+    return subscriptionTiers.find(tier => tier.id === 'enterprise') || subscriptionTiers[2];
   };
 
   const currentTier = getCurrentTier();
 
   const canAccessFeature = (feature: string): boolean => {
+    // If a simulated tier is selected, apply that tier's restrictions
+    // This allows founders to test feature restrictions for each tier
+    if (simulatedTier !== 'real') {
+      const tier = getCurrentTier();
+      switch (feature) {
+        case 'analytics':
+          return tier.id === 'professional' || tier.id === 'enterprise';
+        case 'timesheets':
+          return tier.id === 'professional' || tier.id === 'enterprise';
+        case 'accounts_receivable':
+          return tier.id === 'professional' || tier.id === 'enterprise';
+        case 'user_permissions':
+          return tier.id === 'enterprise';
+        default:
+          return true; // Basic features available to all
+      }
+    }
+    
+    // If bypass is active and user is founder, allow everything
     if (subscriptionBypass && isFounder) {
-      return true; // Founder with bypass can access everything
+      return true;
     }
 
     const tier = getCurrentTier();
@@ -104,6 +124,12 @@ export function FounderProvider({ children }: { children: ReactNode }) {
   };
 
   const getBayLimit = (): number => {
+    // If a simulated tier is selected, use that tier's bay limit
+    if (simulatedTier !== 'real') {
+      return getCurrentTier().bayLimit;
+    }
+    
+    // If bypass is active and user is founder, return unlimited
     if (subscriptionBypass && isFounder) {
       return -1; // Unlimited for founder with bypass
     }
