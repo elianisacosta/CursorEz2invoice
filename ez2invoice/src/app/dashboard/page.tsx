@@ -3099,6 +3099,300 @@ export default function Dashboard() {
     URL.revokeObjectURL(url);
   };
 
+  // Export invoices to CSV
+  const exportInvoices = () => {
+    if (!invoices.length) {
+      showToast({ type: 'error', message: 'No invoices to export.' });
+      return;
+    }
+
+    const header = [
+      'Invoice Number',
+      'Customer Name',
+      'Phone Number',
+      'Date Created',
+      'Due Date',
+      'Total Amount',
+      'Paid Amount',
+      'Status'
+    ];
+
+    const rows = invoices.map((invoice) => {
+      const customerName = getInvoiceCustomerName(invoice);
+      const customerPhone = invoice.customer?.phone || '';
+      const dateCreated = invoice.created_at 
+        ? formatDateInTimezone(invoice.created_at, { month: 'short', day: 'numeric', year: 'numeric' })
+        : '';
+      const dueDate = invoice.due_date 
+        ? formatDateInTimezone(invoice.due_date, { month: 'short', day: 'numeric', year: 'numeric' })
+        : '';
+      const totalAmount = invoice.total_amount || 0;
+      const paidAmount = invoice.paid_amount || 0;
+      const balanceDue = totalAmount - paidAmount;
+      
+      // Determine status
+      let status = invoice.status || 'pending';
+      if (totalAmount === 0) {
+        status = 'pending';
+      } else if (balanceDue <= 0.01) {
+        status = 'paid';
+      } else if (paidAmount > 0) {
+        status = 'partial';
+      } else {
+        status = 'unpaid';
+      }
+
+      return [
+        formatInvoiceNumber(invoice.invoice_number),
+        customerName,
+        customerPhone,
+        dateCreated,
+        dueDate,
+        totalAmount.toFixed(2),
+        paidAmount.toFixed(2),
+        status
+      ];
+    });
+
+    const csv = [header, ...rows]
+      .map((row) => row.map((v) => `"${(v || '').toString().replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `invoices-${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    showToast({ type: 'success', message: `Exported ${invoices.length} invoice(s) to CSV.` });
+  };
+
+  // Import invoices from CSV
+  const handleImportInvoices = async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+
+      try {
+        const text = await file.text();
+        const lines = text.split('\n').filter(line => line.trim());
+        if (lines.length < 2) {
+          showToast({ type: 'error', message: 'CSV file must have at least a header row and one data row.' });
+          return;
+        }
+
+        // Parse CSV (handle quoted values)
+        const parseCSVLine = (line: string): string[] => {
+          const result: string[] = [];
+          let current = '';
+          let inQuotes = false;
+          
+          for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            if (char === '"') {
+              if (inQuotes && line[i + 1] === '"') {
+                current += '"';
+                i++; // Skip next quote
+              } else {
+                inQuotes = !inQuotes;
+              }
+            } else if (char === ',' && !inQuotes) {
+              result.push(current.trim());
+              current = '';
+            } else {
+              current += char;
+            }
+          }
+          result.push(current.trim());
+          return result;
+        };
+
+        const header = parseCSVLine(lines[0]);
+        const customerNameIndex = header.findIndex(h => h.toLowerCase().includes('customer') && h.toLowerCase().includes('name'));
+        const phoneIndex = header.findIndex(h => h.toLowerCase().includes('phone'));
+        const dateCreatedIndex = header.findIndex(h => h.toLowerCase().includes('date') && (h.toLowerCase().includes('created') || h.toLowerCase().includes('create')));
+
+        if (customerNameIndex === -1 || phoneIndex === -1 || dateCreatedIndex === -1) {
+          showToast({ 
+            type: 'error', 
+            message: 'CSV must contain columns: Customer Name, Phone Number, and Date Created.' 
+          });
+          return;
+        }
+
+        const shopId = await getShopId();
+        if (!shopId) {
+          showToast({ type: 'error', message: 'Unable to get shop ID. Please try again.' });
+          return;
+        }
+
+        let successCount = 0;
+        let errorCount = 0;
+        const errors: string[] = [];
+
+        // Process each row (skip header)
+        for (let i = 1; i < lines.length; i++) {
+          const row = parseCSVLine(lines[i]);
+          if (row.length < Math.max(customerNameIndex, phoneIndex, dateCreatedIndex) + 1) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: Insufficient columns`);
+            continue;
+          }
+
+          const customerName = row[customerNameIndex]?.trim() || '';
+          const phoneNumber = row[phoneIndex]?.trim() || '';
+          const dateCreatedStr = row[dateCreatedIndex]?.trim() || '';
+
+          if (!customerName || !phoneNumber) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: Missing customer name or phone number`);
+            continue;
+          }
+
+          // Find or create customer
+          let customerId: string | null = null;
+          
+          // Normalize phone numbers for comparison (remove all non-digits)
+          const normalizePhone = (p: string) => p.replace(/\D/g, '');
+          const normalizedSearchPhone = normalizePhone(phoneNumber);
+
+          // Search for existing customer by name and phone
+          const { data: existingCustomers } = await supabase
+            .from('customers')
+            .select('id, first_name, last_name, company, phone')
+            .eq('shop_id', shopId);
+
+          if (existingCustomers) {
+            const matchingCustomer = existingCustomers.find(c => {
+              const customerFullName = c.company || [c.first_name, c.last_name].filter(Boolean).join(' ') || '';
+              const customerPhone = normalizePhone(c.phone || '');
+              return customerFullName.toLowerCase() === customerName.toLowerCase() && 
+                     customerPhone === normalizedSearchPhone;
+            });
+
+            if (matchingCustomer) {
+              customerId = matchingCustomer.id;
+            }
+          }
+
+          // If customer not found, create new customer
+          if (!customerId) {
+            // Try to split customer name into first and last name
+            const nameParts = customerName.trim().split(/\s+/);
+            const firstName = nameParts[0] || '';
+            const lastName = nameParts.slice(1).join(' ') || '';
+
+            const { data: newCustomer, error: customerError } = await supabase
+              .from('customers')
+              .insert({
+                shop_id: shopId,
+                first_name: firstName || null,
+                last_name: lastName || null,
+                company: nameParts.length === 1 ? customerName : null,
+                phone: phoneNumber,
+                is_fleet: false
+              })
+              .select('id')
+              .single();
+
+            if (customerError || !newCustomer) {
+              errorCount++;
+              errors.push(`Row ${i + 1}: Failed to create customer - ${customerError?.message || 'Unknown error'}`);
+              continue;
+            }
+
+            customerId = newCustomer.id;
+          }
+
+          // Parse date created - handle multiple formats
+          let dateCreated: Date;
+          try {
+            // Try various date formats
+            if (dateCreatedStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+              // YYYY-MM-DD format
+              dateCreated = new Date(dateCreatedStr + 'T00:00:00');
+            } else if (dateCreatedStr.match(/^\d{1,2}\/\d{1,2}\/\d{2,4}$/)) {
+              // MM/DD/YYYY or M/D/YY format
+              const parts = dateCreatedStr.split('/');
+              const month = parseInt(parts[0]) - 1;
+              const day = parseInt(parts[1]);
+              const year = parseInt(parts[2]) < 100 ? 2000 + parseInt(parts[2]) : parseInt(parts[2]);
+              dateCreated = new Date(year, month, day, 0, 0, 0, 0);
+            } else if (dateCreatedStr.match(/^[A-Za-z]{3}\s+\d{1,2},\s+\d{4}$/)) {
+              // "Dec 7, 2025" format (exported format)
+              dateCreated = new Date(dateCreatedStr);
+            } else {
+              // Try to parse as-is (ISO string, etc.)
+              dateCreated = new Date(dateCreatedStr);
+            }
+
+            if (isNaN(dateCreated.getTime())) {
+              // If parsing fails, use current date
+              dateCreated = new Date();
+            }
+          } catch {
+            dateCreated = new Date();
+          }
+
+          // Generate invoice number
+          const invoiceCount = invoices.length + successCount + 1;
+          const invoiceNumber = `INV-${String(invoiceCount).padStart(5, '0')}`;
+
+          // Create invoice
+          const { error: invoiceError } = await supabase
+            .from('invoices')
+            .insert({
+              shop_id: shopId,
+              customer_id: customerId,
+              invoice_number: invoiceNumber,
+              status: 'pending',
+              subtotal: 0,
+              tax_rate: 0,
+              tax_amount: 0,
+              total_amount: 0,
+              paid_amount: 0,
+              created_at: dateCreated.toISOString()
+            });
+
+          if (invoiceError) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: Failed to create invoice - ${invoiceError.message}`);
+            continue;
+          }
+
+          successCount++;
+        }
+
+        // Refresh invoices list
+        await fetchInvoices();
+
+        // Show results
+        if (successCount > 0) {
+          showToast({ 
+            type: 'success', 
+            message: `Successfully imported ${successCount} invoice(s).${errorCount > 0 ? ` ${errorCount} error(s).` : ''}` 
+          });
+        } else {
+          showToast({ 
+            type: 'error', 
+            message: `Failed to import invoices.${errors.length > 0 ? ` Errors: ${errors.slice(0, 3).join('; ')}${errors.length > 3 ? '...' : ''}` : ''}` 
+          });
+        }
+      } catch (error: any) {
+        console.error('Error importing invoices:', error);
+        showToast({ type: 'error', message: `Error importing CSV: ${error.message || 'Unknown error'}` });
+      }
+    };
+    input.click();
+  };
+
   // Fetch DOT inspections
   const fetchDotInspections = async () => {
     setDotInspectionsLoading(true);
@@ -9448,12 +9742,18 @@ export default function Dashboard() {
                   </div>
                   <div className="flex flex-col items-start md:items-end space-y-2">
                     <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
-                      <button className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-sm">
+                      <button 
+                        onClick={exportInvoices}
+                        className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-sm"
+                      >
                         <FileText className="h-4 w-4" />
                         <span className="hidden sm:inline">Export CSV</span>
                         <span className="sm:hidden">Export</span>
                       </button>
-                      <button className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-sm">
+                      <button 
+                        onClick={handleImportInvoices}
+                        className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-sm"
+                      >
                         <FileText className="h-4 w-4" />
                         <span className="hidden sm:inline">Import CSV</span>
                         <span className="sm:hidden">Import</span>
