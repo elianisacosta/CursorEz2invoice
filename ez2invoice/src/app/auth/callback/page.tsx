@@ -189,17 +189,19 @@ function AuthCallbackContent() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="text-center">
+      <div className="text-center max-w-md mx-auto px-4">
         {status === 'loading' && (
           <>
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-500 mx-auto mb-4"></div>
             <p className="text-gray-600">Verifying your email...</p>
+            <p className="text-xs text-gray-400 mt-2">Please wait while we process your verification</p>
           </>
         )}
         {status === 'redirecting' && (
           <>
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-500 mx-auto mb-4"></div>
             <p className="text-gray-600">Redirecting to checkout...</p>
+            <p className="text-xs text-gray-400 mt-2">You will be redirected to Stripe in a moment</p>
           </>
         )}
         {status === 'error' && (
@@ -207,10 +209,18 @@ function AuthCallbackContent() {
             <div className="text-red-500 text-4xl mb-4">⚠️</div>
             <p className="text-gray-600 mb-2">Verification failed</p>
             {errorMessage && (
-              <p className="text-sm text-gray-500">{errorMessage}</p>
+              <p className="text-sm text-gray-500 mb-4">{errorMessage}</p>
             )}
             <p className="text-sm text-gray-500 mt-4">Redirecting...</p>
           </>
+        )}
+        {/* Always show debug info in development */}
+        {process.env.NODE_ENV === 'development' && (
+          <div className="mt-8 p-4 bg-gray-100 rounded text-left text-xs">
+            <p><strong>Status:</strong> {status}</p>
+            <p><strong>URL:</strong> {typeof window !== 'undefined' ? window.location.href : 'N/A'}</p>
+            <p><strong>Hash:</strong> {typeof window !== 'undefined' ? window.location.hash.substring(0, 50) : 'N/A'}</p>
+          </div>
         )}
       </div>
     </div>
