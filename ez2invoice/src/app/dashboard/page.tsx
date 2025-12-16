@@ -290,6 +290,18 @@ export default function Dashboard() {
   const [selectedBayForWaitlist, setSelectedBayForWaitlist] = useState<string | null>(null);
   const [newBayName, setNewBayName] = useState('');
   const [settingsSubTab, setSettingsSubTab] = useState('profile');
+  
+  // Shop information state for Organization settings
+  const [shopInfo, setShopInfo] = useState({
+    shop_name: '',
+    address: '',
+    city: '',
+    state: '',
+    zip_code: '',
+    phone: '',
+    email: '' // Will use user email as fallback
+  });
+  const [shopInfoLoading, setShopInfoLoading] = useState(false);
   const [analyticsSubTab, setAnalyticsSubTab] = useState('financials');
   const [analyticsExpanded, setAnalyticsExpanded] = useState(false);
 
@@ -1194,11 +1206,26 @@ export default function Dashboard() {
       if (invoice.shop_id) {
         const { data: shopData } = await supabase
           .from('truck_shops')
-          .select('*')
+          .select('shop_name, address, city, state, zip_code, phone')
           .eq('id', invoice.shop_id)
           .single();
         shop = shopData;
+      } else {
+        // Fallback: get shop from user
+        const shopId = await getShopId();
+        if (shopId) {
+          const { data: shopData } = await supabase
+            .from('truck_shops')
+            .select('shop_name, address, city, state, zip_code, phone')
+            .eq('id', shopId)
+            .single();
+          shop = shopData;
+        }
       }
+      
+      // Get user email for shop email
+      const { data: userData } = await supabase.auth.getUser();
+      const shopEmail = userData?.user?.email || '';
 
       // Get customer information
       const customer = customers.find(c => c.id === invoice.customer_id);
@@ -1350,14 +1377,19 @@ export default function Dashboard() {
         paymentHistoryHtml = '<div style="padding: 8px 0; color: #6b7280;">No payment history</div>';
       }
 
-      // Company information
+      // Company information - use shop data from database
       const companyName = shop?.shop_name || 'Your Company Name';
-      const companyAddress = shop?.address || '456 Company Avenue';
-      const companyCity = shop?.city || 'San Francisco';
-      const companyState = shop?.state || 'CA';
-      const companyZip = shop?.zip_code || '94102';
-      const companyPhone = shop?.phone || '(555) 123-4567';
-      const companyEmail = 'phone@company.com'; // You may want to add this to the shop table
+      const companyAddress = shop?.address || '';
+      const companyCity = shop?.city || '';
+      const companyState = shop?.state || '';
+      const companyZip = shop?.zip_code || '';
+      // Format full address
+      const companyFullAddress = [
+        companyAddress,
+        companyCity ? `${companyCity}${companyState ? `, ${companyState}` : ''}${companyZip ? ` ${companyZip}` : ''}` : ''
+      ].filter(Boolean).join('\n') || 'Address not set';
+      const companyPhone = shop?.phone || '';
+      const companyEmail = shopEmail || '';
 
       // Create print window
       const printWindow = window.open('', '_blank');
@@ -1550,10 +1582,9 @@ export default function Dashboard() {
               </div>
               <div class="company-info">
                 <div class="company-name">${companyName}</div>
-                <div>${companyAddress}</div>
-                <div>${companyCity}, ${companyState} ${companyZip}</div>
-                <div>${companyEmail}</div>
-                <div>${companyPhone}</div>
+                ${companyFullAddress.split('\n').map(line => `<div>${line}</div>`).join('')}
+                ${companyEmail ? `<div>${companyEmail}</div>` : ''}
+                ${companyPhone ? `<div>${companyPhone}</div>` : ''}
               </div>
             </div>
 
@@ -1691,6 +1722,37 @@ export default function Dashboard() {
         .select('*')
         .eq('estimate_id', estimate.id);
       
+      // Fetch shop information
+      const shopId = await getShopId();
+      let shop: any = null;
+      if (shopId) {
+        const { data: shopData } = await supabase
+          .from('truck_shops')
+          .select('shop_name, address, city, state, zip_code, phone')
+          .eq('id', shopId)
+          .single();
+        shop = shopData;
+      }
+      
+      // Get user email for shop email
+      const { data: userData } = await supabase.auth.getUser();
+      const shopEmail = userData?.user?.email || '';
+      
+      // Company information
+      const companyName = shop?.shop_name || 'Your Company Name';
+      const companyAddress = shop?.address || '';
+      const companyCity = shop?.city || '';
+      const companyState = shop?.state || '';
+      const companyZip = shop?.zip_code || '';
+      const companyPhone = shop?.phone || '';
+      const companyEmail = shopEmail;
+      
+      // Format full address
+      const companyFullAddress = [
+        companyAddress,
+        companyCity ? `${companyCity}${companyState ? `, ${companyState}` : ''}${companyZip ? ` ${companyZip}` : ''}` : ''
+      ].filter(Boolean).join('\n') || 'Address not set';
+      
       const printWindow = window.open('', '_blank');
       if (!printWindow) return;
 
@@ -1719,6 +1781,12 @@ export default function Dashboard() {
         </head>
         <body>
           <div class="header">
+            <div style="text-align: right; margin-bottom: 20px;">
+              <div style="font-size: 20px; font-weight: bold; margin-bottom: 5px;">${companyName}</div>
+              ${companyFullAddress ? `<div style="font-size: 12px; color: #666; margin-bottom: 3px;">${companyFullAddress.split('\n').map(line => `<div>${line}</div>`).join('')}</div>` : ''}
+              ${companyEmail ? `<div style="font-size: 12px; color: #666; margin-bottom: 3px;">${companyEmail}</div>` : ''}
+              ${companyPhone ? `<div style="font-size: 12px; color: #666;">${companyPhone}</div>` : ''}
+            </div>
             <h1>ESTIMATE</h1>
             <div class="info-row"><strong>Estimate #:</strong> ${estimate.estimate_number || estimate.id.slice(0, 8)}</div>
             <div class="info-row"><strong>Date:</strong> ${formatDateInTimezone(estimate.created_at)}</div>
@@ -3184,6 +3252,46 @@ export default function Dashboard() {
       });
     }
   }, [activeTab, canAccessFeature, showToast]);
+
+  // Load shop information when Organization settings tab is opened
+  useEffect(() => {
+    const loadShopInfo = async () => {
+      if (activeTab === 'settings' && settingsSubTab === 'organization') {
+        setShopInfoLoading(true);
+        try {
+          const shopId = await getShopId();
+          if (shopId) {
+            const { data: shopData, error } = await supabase
+              .from('truck_shops')
+              .select('shop_name, address, city, state, zip_code, phone')
+              .eq('id', shopId)
+              .single();
+            
+            if (!error && shopData) {
+              // Get user email as fallback for shop email
+              const { data: userData } = await supabase.auth.getUser();
+              const userEmail = userData?.user?.email || '';
+              
+              setShopInfo({
+                shop_name: shopData.shop_name || '',
+                address: shopData.address || '',
+                city: shopData.city || '',
+                state: shopData.state || '',
+                zip_code: shopData.zip_code || '',
+                phone: shopData.phone || '',
+                email: userEmail // Use user email as shop email
+              });
+            }
+          }
+        } catch (error) {
+          console.error('Error loading shop info:', error);
+        } finally {
+          setShopInfoLoading(false);
+        }
+      }
+    };
+    loadShopInfo();
+  }, [activeTab, settingsSubTab]);
 
   // Load DOT inspections when the tab is active
   useEffect(() => {
@@ -5102,8 +5210,24 @@ export default function Dashboard() {
         ? workOrderNumber.padStart(5, '0') 
         : workOrderNumber;
 
-      // Company name from shop settings
+      // Fetch user email for shop email
+      const { data: userData } = await supabase.auth.getUser();
+      const shopEmail = userData?.user?.email || '';
+      
+      // Company information from shop settings
       const companyName = shop?.shop_name || 'Your Company Name';
+      const companyAddress = shop?.address || '';
+      const companyCity = shop?.city || '';
+      const companyState = shop?.state || '';
+      const companyZip = shop?.zip_code || '';
+      const companyPhone = shop?.phone || '';
+      const companyEmail = shopEmail;
+      
+      // Format full address
+      const companyFullAddress = [
+        companyAddress,
+        companyCity ? `${companyCity}${companyState ? `, ${companyState}` : ''}${companyZip ? ` ${companyZip}` : ''}` : ''
+      ].filter(Boolean).join('\n') || 'Address not set';
 
       // Format description as bullet points if it contains line breaks
       // The description field contains: serviceTitle + (description ? ` - ${description}` : '')
@@ -5291,7 +5415,10 @@ export default function Dashboard() {
         <body>
           <div class="header">
             <div class="company-name">${companyName}</div>
-            <div class="form-title">SERVICES WRITE-UP</div>
+            ${companyFullAddress ? `<div style="font-size: 12px; color: #6b7280; margin-top: 5px;">${companyFullAddress.split('\n').map(line => `<div>${line}</div>`).join('')}</div>` : ''}
+            ${companyEmail ? `<div style="font-size: 12px; color: #6b7280; margin-top: 3px;">${companyEmail}</div>` : ''}
+            ${companyPhone ? `<div style="font-size: 12px; color: #6b7280; margin-top: 3px;">${companyPhone}</div>` : ''}
+            <div class="form-title" style="margin-top: 10px;">SERVICES WRITE-UP</div>
           </div>
 
           <div class="top-section">
@@ -13615,10 +13742,63 @@ export default function Dashboard() {
               <div className="flex items-center justify-between">
                 <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
                 <button 
-                  onClick={() => {
-                    // Settings (tax rate, card fee, terms) are already saved automatically via useEffect hooks
-                    // This button provides user feedback that changes are saved
-                    showToast({ type: 'success', message: 'Settings saved successfully!' });
+                  onClick={async () => {
+                    try {
+                      // Save shop information if on Organization tab
+                      if (settingsSubTab === 'organization') {
+                        const shopId = await getShopId();
+                        if (shopId) {
+                          // Parse address into components if it's a single string
+                          let address = shopInfo.address;
+                          let city = shopInfo.city;
+                          let state = shopInfo.state;
+                          let zip_code = shopInfo.zip_code;
+                          
+                          // If address contains multiple lines or comma-separated values, try to parse
+                          if (address && !city && address.includes(',')) {
+                            const parts = address.split(',').map(p => p.trim());
+                            if (parts.length >= 2) {
+                              address = parts[0];
+                              const cityStateZip = parts[parts.length - 1];
+                              // Try to extract city, state, zip from last part
+                              const cityStateZipMatch = cityStateZip.match(/(.+?)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)/);
+                              if (cityStateZipMatch) {
+                                city = cityStateZipMatch[1];
+                                state = cityStateZipMatch[2];
+                                zip_code = cityStateZipMatch[3];
+                              } else {
+                                city = cityStateZip;
+                              }
+                            }
+                          }
+                          
+                          const { error } = await supabase
+                            .from('truck_shops')
+                            .update({
+                              shop_name: shopInfo.shop_name,
+                              address: address,
+                              city: city,
+                              state: state,
+                              zip_code: zip_code,
+                              phone: shopInfo.phone,
+                              updated_at: new Date().toISOString()
+                            })
+                            .eq('id', shopId);
+                          
+                          if (error) {
+                            console.error('Error saving shop info:', error);
+                            showToast({ type: 'error', message: 'Failed to save shop information. Please try again.' });
+                            return;
+                          }
+                        }
+                      }
+                      
+                      // Settings (tax rate, card fee, terms) are already saved automatically via useEffect hooks
+                      showToast({ type: 'success', message: 'Settings saved successfully!' });
+                    } catch (error) {
+                      console.error('Error saving settings:', error);
+                      showToast({ type: 'error', message: 'Failed to save settings. Please try again.' });
+                    }
                   }}
                   className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2"
                 >
@@ -13765,8 +13945,10 @@ export default function Dashboard() {
                         <label className="block text-sm font-medium text-gray-700 mb-2">Shop Name</label>
                         <input
                           type="text"
-                          defaultValue="R&P Truck Service"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          value={shopInfo.shop_name}
+                          onChange={(e) => setShopInfo(prev => ({ ...prev, shop_name: e.target.value }))}
+                          disabled={shopInfoLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                         />
                       </div>
                       <div>
@@ -13774,28 +13956,70 @@ export default function Dashboard() {
                         <input
                           type="text"
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          placeholder="Optional"
                         />
                       </div>
                       <div className="md:col-span-2">
                         <label className="block text-sm font-medium text-gray-700 mb-2">Address</label>
                         <textarea
                           rows={3}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          value={shopInfo.address}
+                          onChange={(e) => setShopInfo(prev => ({ ...prev, address: e.target.value }))}
+                          disabled={shopInfoLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                          placeholder="Street address"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">City</label>
+                        <input
+                          type="text"
+                          value={shopInfo.city}
+                          onChange={(e) => setShopInfo(prev => ({ ...prev, city: e.target.value }))}
+                          disabled={shopInfoLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">State</label>
+                        <input
+                          type="text"
+                          value={shopInfo.state}
+                          onChange={(e) => setShopInfo(prev => ({ ...prev, state: e.target.value }))}
+                          disabled={shopInfoLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">ZIP Code</label>
+                        <input
+                          type="text"
+                          value={shopInfo.zip_code}
+                          onChange={(e) => setShopInfo(prev => ({ ...prev, zip_code: e.target.value }))}
+                          disabled={shopInfoLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                         />
                       </div>
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Phone</label>
                         <input
                           type="tel"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          value={shopInfo.phone}
+                          onChange={(e) => setShopInfo(prev => ({ ...prev, phone: e.target.value }))}
+                          disabled={shopInfoLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                         />
                       </div>
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
                         <input
                           type="email"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          value={shopInfo.email}
+                          onChange={(e) => setShopInfo(prev => ({ ...prev, email: e.target.value }))}
+                          disabled={shopInfoLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                         />
+                        <p className="text-xs text-gray-500 mt-1">Email used for business communications</p>
                       </div>
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Website</label>
