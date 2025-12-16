@@ -3450,6 +3450,187 @@ export default function Dashboard() {
     showToast({ type: 'success', message: `Exported ${laborItems.length} labor item(s) to CSV.` });
   };
 
+  // Import customers from CSV
+  const handleImportCustomers = async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+
+      try {
+        const text = await file.text();
+        const lines = text.split('\n').filter(line => line.trim());
+        if (lines.length < 2) {
+          showToast({ type: 'error', message: 'CSV file must have at least a header row and one data row.' });
+          return;
+        }
+
+        // Parse CSV (handle quoted values)
+        const parseCSVLine = (line: string): string[] => {
+          const result: string[] = [];
+          let current = '';
+          let inQuotes = false;
+          
+          for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            if (char === '"') {
+              if (inQuotes && line[i + 1] === '"') {
+                current += '"';
+                i++;
+              } else {
+                inQuotes = !inQuotes;
+              }
+            } else if (char === ',' && !inQuotes) {
+              result.push(current.trim());
+              current = '';
+            } else {
+              current += char;
+            }
+          }
+          result.push(current.trim());
+          return result;
+        };
+
+        const header = parseCSVLine(lines[0]);
+        const customerNameIndex = header.findIndex(h => 
+          (h.toLowerCase().includes('customer') && h.toLowerCase().includes('name')) ||
+          h.toLowerCase() === 'name'
+        );
+        const phoneIndex = header.findIndex(h => 
+          h.toLowerCase().includes('phone')
+        );
+        const addressIndex = header.findIndex(h => 
+          h.toLowerCase().includes('address')
+        );
+        const emailIndex = header.findIndex(h => 
+          h.toLowerCase().includes('email')
+        );
+
+        if (customerNameIndex === -1 || phoneIndex === -1 || addressIndex === -1 || emailIndex === -1) {
+          showToast({ 
+            type: 'error', 
+            message: 'CSV must contain columns: Customer Name (or Name), Phone Number, Address, and Email.' 
+          });
+          return;
+        }
+
+        const shopId = await getShopId();
+        if (!shopId) {
+          showToast({ type: 'error', message: 'Unable to get shop ID. Please try again.' });
+          return;
+        }
+
+        let successCount = 0;
+        let errorCount = 0;
+        const errors: string[] = [];
+
+        // Process each row (skip header)
+        for (let i = 1; i < lines.length; i++) {
+          const row = parseCSVLine(lines[i]);
+          if (row.length < Math.max(customerNameIndex, phoneIndex, addressIndex, emailIndex) + 1) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: Insufficient columns`);
+            continue;
+          }
+
+          const customerName = row[customerNameIndex]?.trim() || '';
+          const phoneNumber = row[phoneIndex]?.trim() || '';
+          const address = row[addressIndex]?.trim() || '';
+          const email = row[emailIndex]?.trim() || '';
+
+          if (!customerName || !phoneNumber) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: Missing customer name or phone number`);
+            continue;
+          }
+
+          // Check if customer already exists (by phone number)
+          const normalizePhone = (p: string) => p.replace(/\D/g, '');
+          const normalizedSearchPhone = normalizePhone(phoneNumber);
+
+          const { data: existingCustomers } = await supabase
+            .from('customers')
+            .select('id, phone')
+            .eq('shop_id', shopId);
+
+          if (existingCustomers) {
+            const matchingCustomer = existingCustomers.find(c => {
+              const customerPhone = normalizePhone(c.phone || '');
+              return customerPhone === normalizedSearchPhone;
+            });
+
+            if (matchingCustomer) {
+              // Customer already exists, skip
+              errorCount++;
+              errors.push(`Row ${i + 1}: Customer with phone ${phoneNumber} already exists`);
+              continue;
+            }
+          }
+
+          // Try to split customer name into first and last name
+          // If it looks like a company name (no spaces or all caps), use as company
+          const nameParts = customerName.trim().split(/\s+/);
+          const isLikelyCompany = nameParts.length === 1 || customerName === customerName.toUpperCase();
+          
+          let firstName: string | null = null;
+          let lastName: string | null = null;
+          let company: string | null = null;
+
+          if (isLikelyCompany || nameParts.length === 1) {
+            company = customerName;
+          } else {
+            firstName = nameParts[0] || null;
+            lastName = nameParts.slice(1).join(' ') || null;
+          }
+
+          // Create customer
+          const { error: customerError } = await supabase
+            .from('customers')
+            .insert({
+              shop_id: shopId,
+              first_name: firstName,
+              last_name: lastName,
+              company: company,
+              phone: phoneNumber,
+              email: email || null,
+              address: address || null,
+              is_fleet: false
+            });
+
+          if (customerError) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: Failed to create customer - ${customerError.message}`);
+            continue;
+          }
+
+          successCount++;
+        }
+
+        // Refresh customers list
+        fetchCustomers();
+
+        // Show results
+        if (successCount > 0) {
+          showToast({ 
+            type: 'success', 
+            message: `Successfully imported ${successCount} customer(s).${errorCount > 0 ? ` ${errorCount} error(s).` : ''}` 
+          });
+        } else {
+          showToast({ 
+            type: 'error', 
+            message: `Failed to import customers.${errors.length > 0 ? ` Errors: ${errors.slice(0, 3).join('; ')}${errors.length > 3 ? '...' : ''}` : ''}` 
+          });
+        }
+      } catch (error: any) {
+        console.error('Error importing customers:', error);
+        showToast({ type: 'error', message: `Error importing CSV: ${error.message || 'Unknown error'}` });
+      }
+    };
+    input.click();
+  };
+
   // Import labor items from CSV
   const handleImportLabor = async () => {
     const input = document.createElement('input');
@@ -9090,13 +9271,14 @@ export default function Dashboard() {
                   <button
                     onClick={() => {
                       const rows = customers.map(c => ({
-                        Name: [c.first_name, c.last_name].filter(Boolean).join(' ').trim(),
+                        Name: [c.first_name, c.last_name].filter(Boolean).join(' ').trim() || c.company || '',
                         Email: c.email || '',
                         Phone: c.phone || '',
+                        Address: c.address || '',
                         City: c.city || '',
                         State: c.state || '',
                       }));
-                      const header = Object.keys(rows[0] || { Name: '', Email: '', Phone: '', City: '', State: '' }).join(',');
+                      const header = Object.keys(rows[0] || { Name: '', Email: '', Phone: '', Address: '', City: '', State: '' }).join(',');
                       const csv = [header, ...rows.map(r => Object.values(r).map(v => `"${String(v).replaceAll('"','""')}"`).join(','))].join('\n');
                       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
                       const url = URL.createObjectURL(blob);
@@ -9106,6 +9288,13 @@ export default function Dashboard() {
                   >
                     <Download className="h-4 w-4" />
                     Export CSV
+                  </button>
+                  <button
+                    onClick={handleImportCustomers}
+                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2"
+                  >
+                    <FileText className="h-4 w-4" />
+                    Import CSV
                   </button>
                   <button
                     onClick={() => { 
