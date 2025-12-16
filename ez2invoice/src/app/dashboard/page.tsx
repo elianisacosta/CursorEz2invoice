@@ -168,6 +168,7 @@ export default function Dashboard() {
   const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState('overview');
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [userPlanType, setUserPlanType] = useState<string>('starter'); // Track user's actual plan from database
   const [showCreateInvoiceModal, setShowCreateInvoiceModal] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
   // Helper function to get today's date in YYYY-MM-DD format
@@ -378,6 +379,36 @@ export default function Dashboard() {
       setAnalyticsExpanded(true);
     }
   }, [activeTab]);
+
+  // Fetch user's plan type from database
+  useEffect(() => {
+    const fetchUserPlan = async () => {
+      try {
+        const { data: userData } = await supabase.auth.getUser();
+        if (userData?.user?.id) {
+          const { data: userRecord } = await supabase
+            .from('users')
+            .select('plan_type')
+            .eq('id', userData.user.id)
+            .maybeSingle();
+          
+          if (userRecord?.plan_type) {
+            setUserPlanType(userRecord.plan_type);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching user plan:', error);
+      }
+    };
+    fetchUserPlan();
+  }, []);
+
+  // Reset Fleet selection if Starter plan when modal opens
+  useEffect(() => {
+    if (showAddCustomerModal && userPlanType === 'starter' && customerForm.is_fleet) {
+      setCustomerForm(prev => ({ ...prev, is_fleet: false }));
+    }
+  }, [showAddCustomerModal, userPlanType, customerForm.is_fleet]);
   
   // Work order history and move modals
   const [showWorkOrderHistoryModal, setShowWorkOrderHistoryModal] = useState(false);
@@ -19094,16 +19125,36 @@ export default function Dashboard() {
                     />
                     Individual
                   </label>
-                  <label className="inline-flex items-center gap-2">
+                  <label className={`inline-flex items-center gap-2 ${userPlanType === 'starter' ? 'opacity-50 cursor-not-allowed' : ''}`}>
                     <input
                       type="radio"
                       name="customer-type"
                       checked={Boolean(customerForm.is_fleet)}
-                      onChange={()=> setCustomerForm(prev=>({...prev, is_fleet:true}))}
+                      disabled={userPlanType === 'starter'}
+                      onChange={()=> {
+                        if (userPlanType === 'starter') {
+                          showToast({ 
+                            type: 'error', 
+                            message: 'Fleet customers are available for Professional and Enterprise plans. Please upgrade to access this feature.' 
+                          });
+                          return;
+                        }
+                        setCustomerForm(prev=>({...prev, is_fleet:true}));
+                      }}
                     />
-                    Fleet
+                    Fleet {userPlanType === 'starter' && <span className="text-xs text-gray-500">(Upgrade Required)</span>}
                   </label>
                 </div>
+                {userPlanType === 'starter' && customerForm.is_fleet && (
+                  <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                    <p className="text-sm text-yellow-800">
+                      <strong>Upgrade Required:</strong> Fleet customers are only available for Professional and Enterprise plans. 
+                      <Link href="/pricing" className="text-primary-600 hover:text-primary-700 underline ml-1">
+                        Upgrade to Professional
+                      </Link>
+                    </p>
+                  </div>
+                )}
               </div>
               {/* Basic Customer Info */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
