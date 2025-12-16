@@ -9743,7 +9743,7 @@ export default function Dashboard() {
                                   </span>
                                 </div>
                                 <div className="text-sm text-gray-600">
-                                  {formatDateInTimezone(invoice.created_at)}
+                                  {formatDateInTimezone((invoice as any).invoice_date || invoice.created_at)}
                                 </div>
                                 <div className="text-sm text-gray-600">
                                   {formatDateInTimezone(invoice.due_date)}
@@ -9811,10 +9811,14 @@ export default function Dashboard() {
 
                                       // Set up the edit modal
                       setEditingInvoice(invoice);
+                      // Convert created_at to YYYY-MM-DD format for the date input
+                      const invoiceDate = invoice.created_at 
+                        ? new Date(invoice.created_at).toISOString().split('T')[0]
+                        : getTodayDate();
                       setInvoiceFormData({
                         customer_id: invoice.customer_id || '',
                         work_order_id: invoice.work_order_id || '',
-                        invoice_date: (invoice as any).invoice_date || getTodayDate(),
+                        invoice_date: invoiceDate,
                         due_date: invoice.due_date || '',
                         tax_rate: defaultTaxRate / 100, // Always use tax rate from settings
                         notes: (invoice as any).notes || '',
@@ -15919,8 +15923,15 @@ export default function Dashboard() {
                       // Determine invoice status: 'unpaid' if total > 0, otherwise 'pending'
                       const invoiceStatus = totalAmount > 0 ? 'unpaid' : 'pending';
 
-                      // Create invoice - Supabase will automatically set created_at with default value
+                      // Create invoice - set created_at from invoice_date form field
                       // Try to include internal_notes, but if column doesn't exist, create without it
+                      const invoiceDateObj = invoiceFormData.invoice_date 
+                        ? new Date(invoiceFormData.invoice_date + 'T00:00:00')
+                        : new Date();
+                      const invoiceCreatedAt = !isNaN(invoiceDateObj.getTime()) 
+                        ? invoiceDateObj.toISOString()
+                        : new Date().toISOString();
+                      
                       let insertData: any = {
                         shop_id: shopId,
                         customer_id: invoiceFormData.customer_id,
@@ -15932,8 +15943,8 @@ export default function Dashboard() {
                         tax_amount: taxAmount,
                         total_amount: totalAmount,
                         due_date: invoiceFormData.due_date || null,
-                        notes: invoiceFormData.notes || null
-                        // created_at will be set automatically by Supabase default
+                        notes: invoiceFormData.notes || null,
+                        created_at: invoiceCreatedAt
                       };
 
                       // Try to include internal_notes
