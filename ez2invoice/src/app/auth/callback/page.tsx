@@ -66,10 +66,13 @@ function AuthCallbackContent() {
           }
         } else {
           // No code, try to get session from URL hash (access_token)
+          // Supabase automatically processes the hash token, we just need to wait and get the session
           try {
-            const { data, error } = await supabase.auth.getSessionFromUrl({
-              storeSession: true,
-            });
+            // Wait a moment for Supabase to process the hash token
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Get the session (Supabase should have processed the hash token by now)
+            const { data, error } = await supabase.auth.getSession();
             if (error) {
               authError = error;
             } else {
