@@ -34,9 +34,9 @@ export async function POST(req: NextRequest) {
     // Get the user's stripe_customer_id from the users table
     const { data: userRecord, error: userError } = await supabase
       .from('users')
-      .select('stripe_customer_id')
+      .select('stripe_customer_id, email')
       .eq('id', user.id)
-      .single();
+      .maybeSingle();
 
     if (userError) {
       console.error('Error fetching user record:', userError);
@@ -46,13 +46,52 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const stripeCustomerId = userRecord?.stripe_customer_id;
+    let stripeCustomerId = userRecord?.stripe_customer_id;
 
+    // If user doesn't have a stripe_customer_id, try to find or create one
     if (!stripeCustomerId) {
-      return NextResponse.json(
-        { error: 'No Stripe customer ID found. Please contact support.' },
-        { status: 400 }
-      );
+      const userEmail = user.email || userRecord?.email;
+      
+      if (!userEmail) {
+        return NextResponse.json(
+          { error: 'No email found. Please contact support.' },
+          { status: 400 }
+        );
+      }
+
+      try {
+        // Search for existing Stripe customer by email
+        const customers = await stripe.customers.list({
+          email: userEmail,
+          limit: 1,
+        });
+
+        if (customers.data.length > 0) {
+          // Found existing customer
+          stripeCustomerId = customers.data[0].id;
+          
+          // Update user record with the found customer ID
+          await supabase
+            .from('users')
+            .update({
+              stripe_customer_id: stripeCustomerId,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', user.id);
+        } else {
+          // No existing customer found - user hasn't subscribed yet
+          return NextResponse.json(
+            { error: 'No active subscription found. Please subscribe to a plan first.' },
+            { status: 400 }
+          );
+        }
+      } catch (stripeError: any) {
+        console.error('Error searching for Stripe customer:', stripeError);
+        return NextResponse.json(
+          { error: 'Unable to access billing information. Please contact support.' },
+          { status: 500 }
+        );
+      }
     }
 
     // Create Stripe billing portal session

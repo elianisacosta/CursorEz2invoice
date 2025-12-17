@@ -15399,6 +15399,12 @@ export default function Dashboard() {
                                 return;
                               }
 
+                              // Show loading state
+                              showToast({
+                                type: 'info',
+                                message: 'Opening billing portal...'
+                              });
+
                               // Call the API to create portal session
                               const response = await fetch('/api/stripe/create-portal-session', {
                                 method: 'POST',
@@ -15413,7 +15419,16 @@ export default function Dashboard() {
                               const data = await response.json();
 
                               if (!response.ok) {
-                                throw new Error(data.error || 'Failed to create billing portal session');
+                                // Provide helpful error messages
+                                let errorMessage = data.error || 'Failed to create billing portal session';
+                                
+                                if (errorMessage.includes('No active subscription')) {
+                                  errorMessage = 'No active subscription found. Please subscribe to a plan first.';
+                                } else if (errorMessage.includes('No Stripe customer')) {
+                                  errorMessage = 'No billing account found. Please complete your subscription setup.';
+                                }
+                                
+                                throw new Error(errorMessage);
                               }
 
                               if (data.url) {
@@ -15426,11 +15441,11 @@ export default function Dashboard() {
                               console.error('Error opening billing portal:', error);
                               showToast({
                                 type: 'error',
-                                message: error.message || 'Failed to open billing portal. Please try again.'
+                                message: error.message || 'Failed to open billing portal. Please try again or contact support.'
                               });
                             }
                           }}
-                          className="bg-primary-500 text-white px-6 py-3 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2"
+                          className="bg-primary-500 text-white px-6 py-3 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           <CreditCard className="h-5 w-5" />
                           <span>Manage Billing</span>
