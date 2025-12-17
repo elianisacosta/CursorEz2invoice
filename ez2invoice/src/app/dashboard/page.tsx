@@ -12437,12 +12437,6 @@ export default function Dashboard() {
               ? ((vipCustomers - lastQuarterVIP) / lastQuarterVIP) * 100 
               : 0;
             
-            // Customer Segments
-            const vipSegment = customerSpending.filter(cs => cs.totalSpent >= 5000);
-            const premiumSegment = customerSpending.filter(cs => cs.totalSpent >= 2000 && cs.totalSpent < 5000);
-            const standardSegment = customerSpending.filter(cs => cs.totalSpent >= 500 && cs.totalSpent < 2000);
-            const newSegment = customerSpending.filter(cs => cs.totalSpent < 500);
-            
             // Top Spending Customers (extended to 8)
             const topCustomers = [...customerSpending]
               .sort((a, b) => b.totalSpent - a.totalSpent)
@@ -13803,83 +13797,6 @@ export default function Dashboard() {
                         <p className="text-sm text-gray-500 mt-3">
                           <a href="#" className="text-primary-600 hover:underline">Search for a customer to view their details</a>
                         </p>
-                      </div>
-                    </div>
-
-                    {/* Customer Segments */}
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900 mb-2">Customer Segments</h3>
-                      <p className="text-sm text-gray-500 mb-4">Distribution of customers by spending tier</p>
-                      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                        <div className="space-y-4">
-                          {/* VIP Segment */}
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between text-sm">
-                              <span className="font-medium text-gray-900">VIP ($5,000+)</span>
-                              <div className="flex items-center gap-2">
-                                <span className="text-gray-900">{vipSegment.length} customers</span>
-                                <span className="text-gray-500">({totalCustomers > 0 ? ((vipSegment.length / totalCustomers) * 100).toFixed(0) : 0}%)</span>
-                              </div>
-                            </div>
-                            <div className="w-full bg-gray-200 rounded-full h-3">
-                              <div 
-                                className="bg-purple-500 h-3 rounded-full transition-all"
-                                style={{ width: `${totalCustomers > 0 ? (vipSegment.length / totalCustomers) * 100 : 0}%` }}
-                              />
-                            </div>
-                          </div>
-
-                          {/* Premium Segment */}
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between text-sm">
-                              <span className="font-medium text-gray-900">Premium ($2,000-$4,999)</span>
-                              <div className="flex items-center gap-2">
-                                <span className="text-gray-900">{premiumSegment.length} customers</span>
-                                <span className="text-gray-500">({totalCustomers > 0 ? ((premiumSegment.length / totalCustomers) * 100).toFixed(0) : 0}%)</span>
-                              </div>
-                            </div>
-                            <div className="w-full bg-gray-200 rounded-full h-3">
-                              <div 
-                                className="bg-blue-500 h-3 rounded-full transition-all"
-                                style={{ width: `${totalCustomers > 0 ? (premiumSegment.length / totalCustomers) * 100 : 0}%` }}
-                              />
-                            </div>
-                          </div>
-
-                          {/* Standard Segment */}
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between text-sm">
-                              <span className="font-medium text-gray-900">Standard ($500-$1,999)</span>
-                              <div className="flex items-center gap-2">
-                                <span className="text-gray-900">{standardSegment.length} customers</span>
-                                <span className="text-gray-500">({totalCustomers > 0 ? ((standardSegment.length / totalCustomers) * 100).toFixed(0) : 0}%)</span>
-                              </div>
-                            </div>
-                            <div className="w-full bg-gray-200 rounded-full h-3">
-                              <div 
-                                className="bg-green-500 h-3 rounded-full transition-all"
-                                style={{ width: `${totalCustomers > 0 ? (standardSegment.length / totalCustomers) * 100 : 0}%` }}
-                              />
-                            </div>
-                          </div>
-
-                          {/* New Segment */}
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between text-sm">
-                              <span className="font-medium text-gray-900">New ($0-$499)</span>
-                              <div className="flex items-center gap-2">
-                                <span className="text-gray-900">{newSegment.length} customers</span>
-                                <span className="text-gray-500">({totalCustomers > 0 ? ((newSegment.length / totalCustomers) * 100).toFixed(0) : 0}%)</span>
-                              </div>
-                            </div>
-                            <div className="w-full bg-gray-200 rounded-full h-3">
-                              <div 
-                                className="bg-gray-500 h-3 rounded-full transition-all"
-                                style={{ width: `${totalCustomers > 0 ? (newSegment.length / totalCustomers) * 100 : 0}%` }}
-                              />
-                            </div>
-                          </div>
-                        </div>
                       </div>
                     </div>
 
