@@ -538,9 +538,9 @@ export default function Dashboard() {
     enable_fleet_discounts: false
   });
   
-  // Reset Fleet selection if Starter plan when modal opens
+  // Reset Fleet selection if not Professional/Enterprise plan when modal opens
   useEffect(() => {
-    if (showAddCustomerModal && effectivePlanType === 'starter' && customerForm.is_fleet) {
+    if (showAddCustomerModal && effectivePlanType !== 'professional' && effectivePlanType !== 'enterprise' && customerForm.is_fleet) {
       setCustomerForm(prev => ({ ...prev, is_fleet: false }));
     }
   }, [showAddCustomerModal, effectivePlanType, customerForm.is_fleet]);
@@ -20649,14 +20649,14 @@ export default function Dashboard() {
                     />
                     Individual
                   </label>
-                  <label className={`inline-flex items-center gap-2 ${effectivePlanType === 'starter' ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                  <label className={`inline-flex items-center gap-2 ${effectivePlanType !== 'professional' && effectivePlanType !== 'enterprise' ? 'opacity-50 cursor-not-allowed' : ''}`}>
                     <input
                       type="radio"
                       name="customer-type"
                       checked={Boolean(customerForm.is_fleet)}
-                      disabled={effectivePlanType === 'starter'}
+                      disabled={effectivePlanType !== 'professional' && effectivePlanType !== 'enterprise'}
                       onChange={()=> {
-                        if (effectivePlanType === 'starter') {
+                        if (effectivePlanType !== 'professional' && effectivePlanType !== 'enterprise') {
                           showToast({ 
                             type: 'error', 
                             message: 'Fleet customers are available for Professional and Enterprise plans. Please upgrade to access this feature.' 
@@ -20666,10 +20666,10 @@ export default function Dashboard() {
                         setCustomerForm(prev=>({...prev, is_fleet:true}));
                       }}
                     />
-                    Fleet {effectivePlanType === 'starter' && <span className="text-xs text-gray-500">(Upgrade Required)</span>}
+                    Fleet {(effectivePlanType !== 'professional' && effectivePlanType !== 'enterprise') && <span className="text-xs text-gray-500">(Upgrade Required)</span>}
                   </label>
                 </div>
-                {effectivePlanType === 'starter' && customerForm.is_fleet && (
+                {(effectivePlanType !== 'professional' && effectivePlanType !== 'enterprise') && customerForm.is_fleet && (
                   <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
                     <p className="text-sm text-yellow-800">
                       <strong>Upgrade Required:</strong> Fleet customers are only available for Professional and Enterprise plans. 
