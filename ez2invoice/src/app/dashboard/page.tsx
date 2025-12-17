@@ -15409,6 +15409,9 @@ export default function Dashboard() {
                         <p className="text-sm text-gray-600 mt-1">
                           {(() => {
                             // Get actual subscription tier from database, not simulated/founder tier
+                            if (!userPlanType || userPlanType === null) {
+                              return 'No active subscription';
+                            }
                             const actualTier = subscriptionTiers.find(tier => tier.id === userPlanType) || subscriptionTiers[0];
                             return `${actualTier.name} - ${actualTier.price}`;
                           })()}
