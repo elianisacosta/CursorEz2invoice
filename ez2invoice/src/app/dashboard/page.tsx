@@ -157,7 +157,7 @@ import {
   Camera,
   Image as ImageIcon
 } from 'lucide-react';
-import { useFounder } from '@/contexts/FounderContext';
+import { useFounder, subscriptionTiers } from '@/contexts/FounderContext';
 import AppHeader from '@/components/AppHeader';
 import { useToast } from '@/components/ui/useToast';
 import ConfirmDeleteDialog from '@/components/ui/ConfirmDeleteDialog';
