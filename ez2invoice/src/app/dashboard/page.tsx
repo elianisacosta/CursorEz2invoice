@@ -464,6 +464,42 @@ export default function Dashboard() {
     handleCheckoutSession();
   }, []);
 
+  // Check if user has active subscription and block access if not
+  useEffect(() => {
+    const checkSubscriptionAccess = async () => {
+      try {
+        const { data: userData } = await supabase.auth.getUser();
+        if (userData?.user?.id) {
+          const { data: userRecord } = await supabase
+            .from('users')
+            .select('plan_type, stripe_customer_id')
+            .eq('id', userData.user.id)
+            .maybeSingle();
+          
+          // Check if user has no active subscription (plan_type is null)
+          // Founders are exempt from this check
+          const founderEmails = ['acostaelianis@yahoo.com', 'founder@ez2invoice.com', 'admin@ez2invoice.com'];
+          const isFounder = founderEmails.includes(userData.user.email?.toLowerCase() || '');
+          
+          if (!isFounder && (!userRecord?.plan_type || userRecord.plan_type === null)) {
+            // User has no active subscription - redirect to pricing
+            showToast({
+              type: 'error',
+              message: 'Your subscription has ended. Please subscribe to continue using EZ2Invoice.'
+            });
+            setTimeout(() => {
+              window.location.href = '/pricing';
+            }, 2000);
+            return;
+          }
+        }
+      } catch (error) {
+        console.error('Error checking subscription access:', error);
+      }
+    };
+    checkSubscriptionAccess();
+  }, []);
+
   // Ensure shop exists for the user (create if it doesn't exist)
   useEffect(() => {
     const ensureShopExists = async () => {

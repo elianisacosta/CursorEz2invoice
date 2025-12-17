@@ -79,10 +79,10 @@ function LoginForm() {
               return;
             }
 
-            // If user has a stripe_customer_id, they likely have a subscription
-            // Or if plan_type is not 'starter' (meaning they've upgraded)
-            const hasSubscription = userRecord?.stripe_customer_id || 
-                                   (userRecord?.plan_type && userRecord.plan_type !== 'starter');
+            // Check if user has an active subscription
+            // plan_type must exist and not be null (null means subscription ended)
+            // Having stripe_customer_id alone doesn't mean active subscription
+            const hasSubscription = userRecord?.plan_type && userRecord.plan_type !== null;
 
             if (hasSubscription) {
               // User has an active subscription, redirect to dashboard
