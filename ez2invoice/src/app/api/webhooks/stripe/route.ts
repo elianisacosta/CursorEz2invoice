@@ -71,9 +71,9 @@ export async function POST(req: NextRequest) {
 
         // Get customer email from session
         const customerEmail = session.customer_email || 
-          (typeof session.customer_details === 'object' && session.customer_details?.email)
-          ? session.customer_details.email
-          : null;
+          (typeof session.customer_details === 'object' && session.customer_details?.email
+            ? session.customer_details.email
+            : null);
 
         if (!customerEmail) {
           console.error('No customer email in checkout session');
