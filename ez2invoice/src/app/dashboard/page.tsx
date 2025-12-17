@@ -15350,7 +15350,11 @@ export default function Dashboard() {
                       <div>
                         <h3 className="text-lg font-semibold text-gray-900">Current Subscription</h3>
                         <p className="text-sm text-gray-600 mt-1">
-                          {currentTier.name} - {currentTier.price}
+                          {(() => {
+                            // Get actual subscription tier from database, not simulated/founder tier
+                            const actualTier = subscriptionTiers.find(tier => tier.id === userPlanType) || subscriptionTiers[0];
+                            return `${actualTier.name} - ${actualTier.price}`;
+                          })()}
                         </p>
                       </div>
                       <div className="flex items-center space-x-2">
@@ -15377,7 +15381,13 @@ export default function Dashboard() {
                     <div className="space-y-6">
                       <div className="p-4 bg-gray-50 rounded-lg">
                         <h4 className="font-medium text-gray-900">Current Plan</h4>
-                        <p className="text-sm text-gray-600">{currentTier.name} - {currentTier.price}</p>
+                        <p className="text-sm text-gray-600">
+                          {(() => {
+                            // Get actual subscription tier from database, not simulated/founder tier
+                            const actualTier = subscriptionTiers.find(tier => tier.id === userPlanType) || subscriptionTiers[0];
+                            return `${actualTier.name} - ${actualTier.price}`;
+                          })()}
+                        </p>
                       </div>
                       
                       <div>
