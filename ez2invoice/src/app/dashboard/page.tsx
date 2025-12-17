@@ -168,13 +168,14 @@ export default function Dashboard() {
   const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState('overview');
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [userPlanType, setUserPlanType] = useState<string>('starter'); // Track user's actual plan from database
+  const [userPlanType, setUserPlanType] = useState<string | null>('starter'); // Track user's actual plan from database (null = no subscription)
   
   // Use simulated tier if active, otherwise use actual plan from database
   // When 'real' is selected and bypass is active, use 'enterprise' (bypass mode)
+  // If userPlanType is null, treat as 'starter' for UI purposes (but access is blocked)
   const effectivePlanType = simulatedTier !== 'real' 
     ? simulatedTier 
-    : (subscriptionBypass && isFounder ? 'enterprise' : userPlanType);
+    : (subscriptionBypass && isFounder ? 'enterprise' : (userPlanType || 'starter'));
   const [showCreateInvoiceModal, setShowCreateInvoiceModal] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
   // Helper function to get today's date in YYYY-MM-DD format
@@ -15440,6 +15441,9 @@ export default function Dashboard() {
                         <p className="text-sm text-gray-600">
                           {(() => {
                             // Get actual subscription tier from database, not simulated/founder tier
+                            if (!userPlanType || userPlanType === null) {
+                              return 'No active subscription';
+                            }
                             const actualTier = subscriptionTiers.find(tier => tier.id === userPlanType) || subscriptionTiers[0];
                             return `${actualTier.name} - ${actualTier.price}`;
                           })()}
