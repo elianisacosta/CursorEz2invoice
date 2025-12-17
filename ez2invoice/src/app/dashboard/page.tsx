@@ -938,13 +938,23 @@ export default function Dashboard() {
   const fetchEstimates = async () => {
     setEstimatesLoading(true);
     try {
-      const { data, error } = await supabase
+      const shopId = await getShopId();
+      if (!shopId) {
+        console.warn('No shop_id found, skipping estimates fetch');
+        setEstimates([]);
+        return;
+      }
+
+      let query = supabase
         .from('estimates')
         .select(`
           *,
           customer:customers(id, first_name, last_name, email, phone, company)
         `)
+        .eq('shop_id', shopId)
         .order('created_at', { ascending: false });
+      
+      const { data, error } = await query;
       
       // Ensure shop_id is included in the data
       if (data) {
@@ -3082,9 +3092,17 @@ export default function Dashboard() {
   const fetchLaborItems = async () => {
     setLaborLoading(true);
     try {
+      const shopId = await getShopId();
+      if (!shopId) {
+        console.warn('No shop_id found, skipping labor items fetch');
+        setLaborItems([]);
+        return;
+      }
+
       const { data, error } = await supabase
         .from('labor_items')
         .select('*')
+        .eq('shop_id', shopId)
         .order('created_at', { ascending: false });
       if (data) setLaborItems(data as unknown as LaborItem[]);
       if (error) console.error('Error fetching labor items:', error);
@@ -3103,9 +3121,17 @@ export default function Dashboard() {
   const fetchInventory = async () => {
     setInventoryLoading(true);
     try {
+      const shopId = await getShopId();
+      if (!shopId) {
+        console.warn('No shop_id found, skipping inventory fetch');
+        setInventory([]);
+        return;
+      }
+
       const { data, error } = await supabase
         .from('parts')
         .select('*')
+        .eq('shop_id', shopId)
         .order('created_at', { ascending: false });
       if (data) setInventory(data as unknown as InventoryItem[]);
       if (error) console.error('Error fetching inventory:', error);
@@ -4504,9 +4530,17 @@ export default function Dashboard() {
   const fetchCustomers = async () => {
     setCustomersLoading(true);
     try {
+      const shopId = await getShopId();
+      if (!shopId) {
+        console.warn('No shop_id found, skipping customers fetch');
+        setCustomers([]);
+        return;
+      }
+
       const { data, error } = await supabase
         .from('customers')
         .select('*')
+        .eq('shop_id', shopId)
         .order('created_at', { ascending: false });
       if (data) setCustomers(data as unknown as Customer[]);
       if (error) console.error('Error fetching customers:', error);
@@ -4566,9 +4600,17 @@ export default function Dashboard() {
   // Data fetching functions
   const fetchEmployees = async () => {
     try {
+      const shopId = await getShopId();
+      if (!shopId) {
+        console.warn('No shop_id found, skipping employees fetch');
+        setEmployees([]);
+        return;
+      }
+
       const { data, error } = await supabase
         .from('employees')
         .select('*')
+        .eq('shop_id', shopId)
         .order('created_at', { ascending: false });
       
       if (data) {
