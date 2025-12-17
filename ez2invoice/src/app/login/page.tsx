@@ -55,7 +55,29 @@ function LoginForm() {
               .from('users')
               .select('plan_type, stripe_customer_id')
               .eq('id', data.user.id)
-              .single();
+              .maybeSingle(); // Use maybeSingle instead of single to handle missing records
+
+            // If user record doesn't exist, create it with default 'starter' plan
+            if (!userRecord && !userError) {
+              // User record doesn't exist, create it
+              const { error: insertError } = await supabase
+                .from('users')
+                .insert({
+                  id: data.user.id,
+                  email: data.user.email || email,
+                  plan_type: 'starter',
+                });
+
+              if (insertError) {
+                console.error('Error creating user record:', insertError);
+              }
+              
+              // New user, redirect to pricing
+              setTimeout(() => {
+                window.location.href = '/pricing';
+              }, 1000);
+              return;
+            }
 
             // If user has a stripe_customer_id, they likely have a subscription
             // Or if plan_type is not 'starter' (meaning they've upgraded)

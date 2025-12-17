@@ -398,6 +398,72 @@ export default function Dashboard() {
     }
   }, [activeTab]);
 
+  // Handle Stripe checkout session completion
+  useEffect(() => {
+    const handleCheckoutSession = async () => {
+      // Check for session_id in URL (from Stripe checkout success redirect)
+      const urlParams = new URLSearchParams(window.location.search);
+      const sessionId = urlParams.get('session_id');
+      
+      if (sessionId) {
+        try {
+          // Get the current session token
+          const { data: { session } } = await supabase.auth.getSession();
+          
+          if (!session?.access_token) {
+            console.error('No access token available');
+            return;
+          }
+
+          // Call API to verify checkout session and save customer ID
+          const response = await fetch('/api/stripe/verify-checkout-session', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              sessionId: sessionId,
+              accessToken: session.access_token,
+            }),
+          });
+
+          const result = await response.json();
+
+          if (response.ok && result.success) {
+            // Update local plan type state
+            if (result.planType) {
+              setUserPlanType(result.planType);
+            }
+            
+            // Remove session_id from URL to clean it up
+            urlParams.delete('session_id');
+            const newUrl = window.location.pathname + (urlParams.toString() ? `?${urlParams.toString()}` : '');
+            window.history.replaceState({}, '', newUrl);
+            
+            showToast({
+              type: 'success',
+              message: 'Subscription activated successfully!',
+            });
+          } else {
+            console.error('Error verifying checkout session:', result.error);
+            showToast({
+              type: 'error',
+              message: result.error || 'Failed to verify subscription. Please contact support.',
+            });
+          }
+        } catch (error: any) {
+          console.error('Error handling checkout session:', error);
+          showToast({
+            type: 'error',
+            message: 'Error processing subscription. Please contact support.',
+          });
+        }
+      }
+    };
+    
+    handleCheckoutSession();
+  }, []);
+
   // Fetch user's plan type from database
   useEffect(() => {
     const fetchUserPlan = async () => {
