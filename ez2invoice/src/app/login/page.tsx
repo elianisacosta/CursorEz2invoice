@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/lib/supabase';
 import { Eye, EyeOff, Mail, Lock, Zap } from 'lucide-react';
 
 function LoginForm() {
@@ -48,10 +49,37 @@ function LoginForm() {
             window.location.href = '/dashboard';
           }, 1000);
         } else {
-          // Redirect regular users to pricing or home
-          setTimeout(() => {
-            window.location.href = '/pricing';
-          }, 1000);
+          // Check if user has an active subscription
+          try {
+            const { data: userRecord, error: userError } = await supabase
+              .from('users')
+              .select('plan_type, stripe_customer_id')
+              .eq('id', data.user.id)
+              .single();
+
+            // If user has a stripe_customer_id, they likely have a subscription
+            // Or if plan_type is not 'starter' (meaning they've upgraded)
+            const hasSubscription = userRecord?.stripe_customer_id || 
+                                   (userRecord?.plan_type && userRecord.plan_type !== 'starter');
+
+            if (hasSubscription) {
+              // User has an active subscription, redirect to dashboard
+              setTimeout(() => {
+                window.location.href = '/dashboard';
+              }, 1000);
+            } else {
+              // User doesn't have a subscription, redirect to pricing
+              setTimeout(() => {
+                window.location.href = '/pricing';
+              }, 1000);
+            }
+          } catch (err) {
+            console.error('Error checking subscription status:', err);
+            // On error, redirect to pricing to be safe
+            setTimeout(() => {
+              window.location.href = '/pricing';
+            }, 1000);
+          }
         }
       }
     } catch (err) {
