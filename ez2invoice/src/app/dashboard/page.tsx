@@ -464,6 +464,23 @@ export default function Dashboard() {
     handleCheckoutSession();
   }, []);
 
+  // Ensure shop exists for the user (create if it doesn't exist)
+  useEffect(() => {
+    const ensureShopExists = async () => {
+      try {
+        const shopId = await getShopId();
+        if (!shopId) {
+          console.warn('No shop found for user. Attempting to create shop...');
+          // getShopId() already tries to create the shop, but if it fails due to RLS,
+          // we'll show a helpful message. The shop creation will be retried on next action.
+        }
+      } catch (error) {
+        console.error('Error ensuring shop exists:', error);
+      }
+    };
+    ensureShopExists();
+  }, []);
+
   // Fetch user's plan type from database
   useEffect(() => {
     const fetchUserPlan = async () => {
@@ -2349,6 +2366,19 @@ export default function Dashboard() {
       if (!shopData) {
         // Get user email for shop name
         const shopName = userEmail.split('@')[0].replace(/[^a-zA-Z0-9]/g, ' ') + ' Shop';
+        
+        // Try to get plan_type from user record
+        let planType = 'starter';
+        if (existingUser || publicUserId) {
+          const { data: userRecord } = await supabase
+            .from('users')
+            .select('plan_type')
+            .eq('id', publicUserId)
+            .maybeSingle();
+          if (userRecord?.plan_type) {
+            planType = userRecord.plan_type;
+          }
+        }
         
         const { data: newShop, error: createError } = await supabase
           .from('truck_shops')
@@ -7290,7 +7320,20 @@ export default function Dashboard() {
         return;
       }
       
-      const shopId = await getShopId();
+      let shopId = await getShopId();
+      
+      // If no shop exists, try to create it automatically
+      if (!shopId) {
+        // Retry shop creation
+        shopId = await getShopId();
+        if (!shopId) {
+          showToast({
+            type: 'error',
+            message: 'Could not create bay. Your shop needs to be set up. Please contact support or ensure RLS policies are configured correctly.'
+          });
+          return;
+        }
+      }
     
     const bayName = newBayName.trim();
     
@@ -7329,9 +7372,27 @@ export default function Dashboard() {
         
         // Check if it's an RLS error or shop not found error
         if (errorMsg.includes('row-level security') || errorMsg.includes('RLS') || !shopId) {
-          alert(`Error: Could not create bay. You need to set up your shop first.\n\nSOLUTION:\n1. Go to your Supabase SQL Editor\n2. Run the contents of create-shop-setup.sql file\n3. This will create your shop automatically\n\nOr manually create a shop in the truck_shops table with your user_id.`);
+          // Try to create shop one more time before showing error
+          const retryShopId = await getShopId();
+          if (!retryShopId) {
+            showToast({
+              type: 'error',
+              message: 'Could not create bay. Your shop setup is required. Please ensure the setup_user_shop() function exists in Supabase or contact support.'
+            });
+            console.error('Shop setup required. Please ensure RLS policies allow shop creation.');
+          } else {
+            // Shop was created, retry bay creation silently
+            // The user will need to click Add Bay again, but the shop is now set up
+            showToast({
+              type: 'success',
+              message: 'Shop has been set up. Please try adding the bay again.'
+            });
+          }
         } else {
-          alert(`Error creating bay: ${errorMsg}`);
+          showToast({
+            type: 'error',
+            message: `Error creating bay: ${errorMsg}`
+          });
         }
         return;
       }
