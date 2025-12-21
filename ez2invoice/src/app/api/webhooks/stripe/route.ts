@@ -46,8 +46,10 @@ export async function POST(req: NextRequest) {
 
   // Handle the event
   try {
+    console.log(`Received webhook event: ${event.type}`);
     switch (event.type) {
       case 'checkout.session.completed': {
+        console.log('Processing checkout.session.completed event');
         const session = event.data.object as Stripe.Checkout.Session;
         
         // Only process subscription checkouts
@@ -181,9 +183,9 @@ export async function POST(req: NextRequest) {
             .eq('id', shopRecord.id);
         }
 
-        console.log(`Successfully updated user ${userRecord.id} with customer ID ${customerId} and plan ${planType}`);
-        break;
-      }
+            console.log(`✅ Successfully updated user ${userRecord.id} with customer ID ${customerId} and plan ${planType}`);
+            break;
+          }
 
       case 'customer.subscription.updated':
       case 'customer.subscription.deleted': {
@@ -209,10 +211,12 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ received: true });
         }
 
+        console.log(`Processing ${event.type} event for customer ${customerId}`);
+        
         if (event.type === 'customer.subscription.deleted') {
           // Subscription cancelled and period ended - block access completely
           // Set plan_type to null to indicate no active subscription
-          console.log(`Subscription deleted for customer ${customerId}, blocking access`);
+          console.log(`❌ Subscription deleted for customer ${customerId}, blocking access`);
           
           await supabase
             .from('users')
@@ -239,56 +243,99 @@ export async function POST(req: NextRequest) {
               .eq('id', shopRecord.id);
           }
         } else {
-          // Subscription updated - update plan type
-          const priceId = subscription.items.data[0]?.price.id;
-          const price = subscription.items.data[0]?.price;
-
-          let planType = 'starter';
-          if (price?.metadata?.plan_type) {
-            planType = price.metadata.plan_type;
-          } else if (price?.metadata?.plan) {
-            planType = price.metadata.plan;
-          } else {
-            const amount = price?.unit_amount || 0;
-            if (amount >= 16000) {
-              planType = 'professional';
-            } else if (amount >= 8000) {
-              planType = 'starter';
-            }
-          }
-
-          await supabase
-            .from('users')
-            .update({
-              plan_type: planType,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', userRecord.id);
-
-          // Update shop plan type too
-          const { data: shopRecord } = await supabase
-            .from('truck_shops')
-            .select('id')
-            .eq('user_id', userRecord.id)
-            .maybeSingle();
-
-          if (shopRecord) {
+          // Subscription updated - check status and update plan type accordingly
+          const subscriptionStatus = subscription.status;
+          const cancelAtPeriodEnd = subscription.cancel_at_period_end;
+          
+          console.log(`Subscription updated for customer ${customerId}: status=${subscriptionStatus}, cancel_at_period_end=${cancelAtPeriodEnd}`);
+          
+          // If subscription is actually canceled, past_due, or unpaid, block access
+          if (subscriptionStatus === 'canceled' || 
+              subscriptionStatus === 'past_due' || 
+              subscriptionStatus === 'unpaid' ||
+              subscriptionStatus === 'incomplete_expired') {
+            console.log(`Subscription ${subscriptionStatus} for customer ${customerId}, blocking access`);
+            
             await supabase
+              .from('users')
+              .update({
+                plan_type: null, // Block access
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', userRecord.id);
+
+            // Update shop plan type too
+            const { data: shopRecord } = await supabase
               .from('truck_shops')
+              .select('id')
+              .eq('user_id', userRecord.id)
+              .maybeSingle();
+
+            if (shopRecord) {
+              await supabase
+                .from('truck_shops')
+                .update({
+                  plan_type: null, // Block access
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', shopRecord.id);
+            }
+          } else if (subscriptionStatus === 'active' || subscriptionStatus === 'trialing') {
+            // Subscription is active - update plan type based on current subscription
+            // Note: If cancel_at_period_end is true, subscription is still active until period ends
+            const priceId = subscription.items.data[0]?.price.id;
+            const price = subscription.items.data[0]?.price;
+
+            let planType = 'starter';
+            if (price?.metadata?.plan_type) {
+              planType = price.metadata.plan_type;
+            } else if (price?.metadata?.plan) {
+              planType = price.metadata.plan;
+            } else {
+              const amount = price?.unit_amount || 0;
+              if (amount >= 16000) {
+                planType = 'professional';
+              } else if (amount >= 8000) {
+                planType = 'starter';
+              }
+            }
+
+            console.log(`Subscription active for customer ${customerId}, updating to ${planType} plan${cancelAtPeriodEnd ? ' (cancels at period end)' : ''}`);
+
+            await supabase
+              .from('users')
               .update({
                 plan_type: planType,
                 updated_at: new Date().toISOString(),
               })
-              .eq('id', shopRecord.id);
+              .eq('id', userRecord.id);
+
+            // Update shop plan type too
+            const { data: shopRecord } = await supabase
+              .from('truck_shops')
+              .select('id')
+              .eq('user_id', userRecord.id)
+              .maybeSingle();
+
+            if (shopRecord) {
+              await supabase
+                .from('truck_shops')
+                .update({
+                  plan_type: planType,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', shopRecord.id);
+            }
           }
         }
         break;
       }
 
       default:
-        console.log(`Unhandled event type: ${event.type}`);
+        console.log(`⚠️ Unhandled event type: ${event.type}`);
     }
 
+    console.log(`✅ Successfully processed webhook event: ${event.type}`);
     return NextResponse.json({ received: true });
   } catch (error: any) {
     console.error('Error processing webhook:', error);

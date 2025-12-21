@@ -31,6 +31,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Check if user is a founder
+    const founderEmails = ['acostaelianis@yahoo.com', 'founder@ez2invoice.com', 'admin@ez2invoice.com'];
+    const isFounder = user.email ? founderEmails.includes(user.email.toLowerCase()) : false;
+
     // Get the user's stripe_customer_id from the users table
     const { data: userRecord, error: userError } = await supabase
       .from('users')
@@ -79,11 +83,43 @@ export async function POST(req: NextRequest) {
             })
             .eq('id', user.id);
         } else {
-          // No existing customer found - user hasn't subscribed yet
-          return NextResponse.json(
-            { error: 'No active subscription found. Please subscribe to a plan first.' },
-            { status: 400 }
-          );
+          // No existing customer found
+          // If user is a founder, create a Stripe customer for them so they can access billing portal
+          if (isFounder) {
+            try {
+              // Create a Stripe customer for the founder
+              const newCustomer = await stripe.customers.create({
+                email: userEmail,
+                metadata: {
+                  user_id: user.id,
+                  is_founder: 'true',
+                },
+              });
+              
+              stripeCustomerId = newCustomer.id;
+              
+              // Update user record with the new customer ID
+              await supabase
+                .from('users')
+                .update({
+                  stripe_customer_id: stripeCustomerId,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', user.id);
+            } catch (createError: any) {
+              console.error('Error creating Stripe customer for founder:', createError);
+              return NextResponse.json(
+                { error: 'Unable to set up billing account. Please contact support.' },
+                { status: 500 }
+              );
+            }
+          } else {
+            // No existing customer found - user hasn't subscribed yet
+            return NextResponse.json(
+              { error: 'No active subscription found. Please subscribe to a plan first.' },
+              { status: 400 }
+            );
+          }
         }
       } catch (stripeError: any) {
         console.error('Error searching for Stripe customer:', stripeError);

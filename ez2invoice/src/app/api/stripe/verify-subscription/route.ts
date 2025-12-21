@@ -1,0 +1,182 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { stripe } from '@/lib/stripe';
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { accessToken } = body;
+
+    if (!accessToken) {
+      return NextResponse.json(
+        { error: 'Unauthorized - No access token provided' },
+        { status: 401 }
+      );
+    }
+
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
+
+    const { data: { user }, error: authError } = await supabase.auth.getUser(accessToken);
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized - Invalid session' },
+        { status: 401 }
+      );
+    }
+
+    // Get user's stripe_customer_id from database
+    const { data: userRecord, error: userError } = await supabase
+      .from('users')
+      .select('stripe_customer_id, plan_type')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (userError) {
+      console.error('Error fetching user record:', userError);
+      return NextResponse.json(
+        { error: 'Failed to fetch user information' },
+        { status: 500 }
+      );
+    }
+
+    if (!userRecord?.stripe_customer_id) {
+      // No Stripe customer ID means no subscription
+      return NextResponse.json({
+        hasActiveSubscription: false,
+        planType: null,
+      });
+    }
+
+    // Check subscription status directly from Stripe
+    try {
+      const subscriptions = await stripe.subscriptions.list({
+        customer: userRecord.stripe_customer_id,
+        status: 'all',
+        limit: 1,
+      });
+
+      if (subscriptions.data.length === 0) {
+        // No subscriptions found in Stripe
+        // Update database to reflect this
+        await supabase
+          .from('users')
+          .update({
+            plan_type: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', user.id);
+
+        return NextResponse.json({
+          hasActiveSubscription: false,
+          planType: null,
+        });
+      }
+
+      const subscription = subscriptions.data[0];
+      const subscriptionStatus = subscription.status;
+
+      // Check if subscription is actually active
+      if (subscriptionStatus === 'active' || subscriptionStatus === 'trialing') {
+        // Determine plan type from subscription
+        const price = subscription.items.data[0]?.price;
+        let planType = 'starter';
+
+        if (price?.metadata?.plan_type) {
+          planType = price.metadata.plan_type;
+        } else if (price?.metadata?.plan) {
+          planType = price.metadata.plan;
+        } else {
+          const amount = price?.unit_amount || 0;
+          if (amount >= 16000) {
+            planType = 'professional';
+          } else if (amount >= 8000) {
+            planType = 'starter';
+          }
+        }
+
+        // Update database if it's out of sync
+        if (userRecord.plan_type !== planType) {
+          await supabase
+            .from('users')
+            .update({
+              plan_type: planType,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', user.id);
+
+          // Also update shop
+          const { data: shopRecord } = await supabase
+            .from('truck_shops')
+            .select('id')
+            .eq('user_id', user.id)
+            .maybeSingle();
+
+          if (shopRecord) {
+            await supabase
+              .from('truck_shops')
+              .update({
+                plan_type: planType,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', shopRecord.id);
+          }
+        }
+
+        return NextResponse.json({
+          hasActiveSubscription: true,
+          planType,
+        });
+      } else {
+        // Subscription is canceled, past_due, etc. - no active subscription
+        // Update database to reflect this
+        await supabase
+          .from('users')
+          .update({
+            plan_type: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', user.id);
+
+        // Also update shop
+        const { data: shopRecord } = await supabase
+          .from('truck_shops')
+          .select('id')
+          .eq('user_id', user.id)
+          .maybeSingle();
+
+        if (shopRecord) {
+          await supabase
+            .from('truck_shops')
+            .update({
+              plan_type: null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', shopRecord.id);
+        }
+
+        return NextResponse.json({
+          hasActiveSubscription: false,
+          planType: null,
+        });
+      }
+    } catch (stripeError: any) {
+      console.error('Error checking Stripe subscription:', stripeError);
+      // If Stripe check fails, trust the database
+      return NextResponse.json({
+        hasActiveSubscription: userRecord.plan_type !== null,
+        planType: userRecord.plan_type,
+      });
+    }
+  } catch (error: any) {
+    console.error('Error verifying subscription:', error);
+    return NextResponse.json(
+      { error: 'Unable to verify subscription', details: error.message },
+      { status: 500 }
+    );
+  }
+}
+

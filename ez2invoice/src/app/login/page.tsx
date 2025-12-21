@@ -82,7 +82,37 @@ function LoginForm() {
             // Check if user has an active subscription
             // plan_type must exist and not be null (null means subscription ended)
             // Having stripe_customer_id alone doesn't mean active subscription
-            const hasSubscription = userRecord?.plan_type && userRecord.plan_type !== null;
+            let hasSubscription = userRecord?.plan_type && userRecord.plan_type !== null;
+
+            // If database shows no subscription but user has stripe_customer_id,
+            // verify directly with Stripe (webhook might not have fired yet)
+            if (!hasSubscription && userRecord?.stripe_customer_id) {
+              try {
+                const { data: { session } } = await supabase.auth.getSession();
+                if (session?.access_token) {
+                  const verifyResponse = await fetch('/api/stripe/verify-subscription', {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                      accessToken: session.access_token,
+                    }),
+                  });
+
+                  if (verifyResponse.ok) {
+                    const verifyData = await verifyResponse.json();
+                    if (verifyData.hasActiveSubscription) {
+                      hasSubscription = true;
+                      console.log('Subscription verified from Stripe, plan:', verifyData.planType);
+                    }
+                  }
+                }
+              } catch (verifyError) {
+                console.error('Error verifying subscription from Stripe:', verifyError);
+                // Continue with database value if verification fails
+              }
+            }
 
             if (hasSubscription) {
               // User has an active subscription, redirect to dashboard

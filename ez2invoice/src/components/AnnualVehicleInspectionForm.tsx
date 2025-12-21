@@ -59,6 +59,9 @@ interface AnnualVehicleInspectionFormData {
   // Defects and Corrective Actions
   defectsAndCorrectiveActions: string;
   
+  // Notes
+  notes: string;
+  
   // Certification
   inspectorSignature: string;
   inspectorPrintedName: string;
@@ -205,6 +208,7 @@ const initialFormData: AnnualVehicleInspectionFormData = {
     }
   },
   defectsAndCorrectiveActions: '',
+  notes: '',
   inspectorSignature: '',
   inspectorPrintedName: '',
   certificationDate: new Date().toISOString().split('T')[0]
@@ -281,7 +285,7 @@ export default function AnnualVehicleInspectionForm({ initialData, onSave, onClo
           <style>
             /* Smaller page margins so the form uses more space */
             @page {
-              margin: 0.3in;
+              margin: 0.25in;
             }
 
             html, body {
@@ -293,7 +297,92 @@ export default function AnnualVehicleInspectionForm({ initialData, onSave, onClo
             #annual-inspection-print-form {
               max-width: 100% !important;
               margin: 0 !important;
-              padding: 0 !important;
+              padding: 0.25in !important;
+            }
+
+            /* Comprehensive print spacing optimizations */
+            @media print {
+              /* Reduce all margins and padding */
+              #annual-inspection-print-form > * {
+                margin-top: 0.15rem !important;
+                margin-bottom: 0.15rem !important;
+              }
+
+              /* Title section */
+              #annual-inspection-print-form > div:first-child {
+                margin-bottom: 0.2rem !important;
+              }
+
+              /* Reduce grid gaps */
+              .grid {
+                gap: 0.2rem !important;
+              }
+
+              /* Reduce section spacing */
+              .mb-6, .mb-4 {
+                margin-bottom: 0.2rem !important;
+              }
+
+              /* Reduce label margins */
+              label {
+                margin-bottom: 0.1rem !important;
+                margin-top: 0.1rem !important;
+              }
+
+              /* Reduce input padding */
+              input, textarea {
+                padding-top: 0.15rem !important;
+                padding-bottom: 0.15rem !important;
+                padding-left: 0.25rem !important;
+                padding-right: 0.25rem !important;
+              }
+
+              /* Reduce component spacing */
+              .space-y-4 > * + *, .space-y-3 > * + * {
+                margin-top: 0.15rem !important;
+              }
+
+              /* Reduce component padding */
+              .border {
+                padding: 0.25rem !important;
+              }
+
+              /* Reduce row padding */
+              .py-1 {
+                padding-top: 0.1rem !important;
+                padding-bottom: 0.1rem !important;
+              }
+
+              /* Reduce textarea height */
+              textarea {
+                min-height: auto !important;
+                height: auto !important;
+                resize: none !important;
+                background: white !important;
+              }
+
+              /* Keep Defects and Notes together */
+              .print\\:break-inside-avoid {
+                break-inside: avoid !important;
+                page-break-inside: avoid !important;
+              }
+
+              /* Reduce line height */
+              * {
+                line-height: 1.2 !important;
+              }
+
+              /* Reduce checkbox/radio size */
+              input[type="checkbox"], input[type="radio"] {
+                width: 0.75rem !important;
+                height: 0.75rem !important;
+                margin: 0 !important;
+              }
+
+              /* Remove min-heights */
+              * {
+                min-height: 0 !important;
+              }
             }
           </style>
         </head>
@@ -336,144 +425,135 @@ export default function AnnualVehicleInspectionForm({ initialData, onSave, onClo
           </div>
 
         {/* Form Content - Wrapped in print container */}
-        <div id="annual-inspection-print-form" className="dot-inspection-print p-8 print:p-6">
+        <div id="annual-inspection-print-form" className="dot-inspection-print p-8 print:p-4">
           {/* Title */}
-          <div className="text-center mb-6 print:mb-4">
-            <h1 className="text-2xl font-bold mb-2 print:text-base print:mb-1">ANNUAL VEHICLE INSPECTION REPORT</h1>
-            <p className="text-sm text-gray-600 print:text-xs">FMCSA Compliance — 49 CFR §396.17 & Appendix G</p>
+          <div className="text-center mb-6 print:mb-2">
+            <h1 className="text-2xl font-bold mb-2 print:text-sm print:mb-0.5 print:leading-tight">ANNUAL VEHICLE INSPECTION REPORT</h1>
+            <p className="text-sm text-gray-600 print:text-[10px] print:leading-tight">FMCSA Compliance — 49 CFR §396.17 & Appendix G</p>
           </div>
 
           {/* Motor Carrier and Inspector Section */}
-          <div className="grid grid-cols-2 gap-6 mb-6 print:gap-4 print:mb-4">
+          <div className="grid grid-cols-2 gap-6 mb-6 print:gap-2 print:mb-2">
             <div>
-              <label className="block text-xs font-semibold mb-1">Motor Carrier</label>
-              <input
-                type="text"
-                value={formData.motorCarrier}
-                onChange={(e) => setFormData(prev => ({ ...prev, motorCarrier: e.target.value }))}
-                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none"
-              />
-              <label className="block text-xs font-semibold mb-1 mt-2">Address</label>
-              <input
-                type="text"
-                value={formData.motorCarrierAddress}
-                onChange={(e) => setFormData(prev => ({ ...prev, motorCarrierAddress: e.target.value }))}
-                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold mb-1">Inspector Name</label>
-              <input
-                type="text"
-                value={formData.inspectorName}
-                onChange={(e) => setFormData(prev => ({ ...prev, inspectorName: e.target.value }))}
-                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none"
-              />
-              <label className="block text-xs font-semibold mb-1 mt-2">Address</label>
-              <input
-                type="text"
-                value={formData.inspectorAddress}
-                onChange={(e) => setFormData(prev => ({ ...prev, inspectorAddress: e.target.value }))}
-                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none"
-              />
-            </div>
-          </div>
-
-          {/* Inspection Details Section */}
-          <div className="grid grid-cols-2 gap-6 mb-6 print:gap-4 print:mb-4">
-            <div>
-              <label className="block text-xs font-semibold mb-1">Date of Inspection</label>
+              <label className="block text-xs font-semibold mb-1 print:mb-0.5 print:text-[10px]">Date of Inspection</label>
               <input
                 type="date"
                 value={formData.dateOfInspection}
                 onChange={(e) => setFormData(prev => ({ ...prev, dateOfInspection: e.target.value }))}
-                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none"
+                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
               />
-              <label className="block text-xs font-semibold mb-1 mt-2">City, State, Zip</label>
+              <label className="block text-xs font-semibold mb-1 mt-2 print:mb-0.5 print:mt-1 print:text-[10px]">Motor Carrier</label>
+              <input
+                type="text"
+                value={formData.motorCarrier}
+                onChange={(e) => setFormData(prev => ({ ...prev, motorCarrier: e.target.value }))}
+                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
+              />
+              <label className="block text-xs font-semibold mb-1 mt-2 print:mb-0.5 print:mt-1 print:text-[10px]">Address</label>
+              <input
+                type="text"
+                value={formData.motorCarrierAddress}
+                onChange={(e) => setFormData(prev => ({ ...prev, motorCarrierAddress: e.target.value }))}
+                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
+              />
+              <label className="block text-xs font-semibold mb-1 mt-2 print:mb-0.5 print:mt-1 print:text-[10px]">City, State, Zip</label>
               <input
                 type="text"
                 value={formData.inspectionCityStateZip}
                 onChange={(e) => setFormData(prev => ({ ...prev, inspectionCityStateZip: e.target.value }))}
-                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none"
+                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
               />
+              {/* FMCSA Checkbox */}
+              <div className="mt-2 print:mt-1">
+                <label className="flex items-center gap-2 print:gap-1">
+                  <input
+                    type="checkbox"
+                    checked={formData.inspectorMeetsFMCSA}
+                    onChange={(e) => setFormData(prev => ({ ...prev, inspectorMeetsFMCSA: e.target.checked }))}
+                    className="w-4 h-4 print:w-3 print:h-3"
+                  />
+                  <span className="text-sm print:text-[10px] print:leading-tight">Inspector meets FMCSA §396.19</span>
+                </label>
+              </div>
             </div>
             <div>
-              <label className="block text-xs font-semibold mb-1">Inspector Company</label>
+              <label className="block text-xs font-semibold mb-1 print:mb-0.5 print:text-[10px]">Inspector Name</label>
+              <input
+                type="text"
+                value={formData.inspectorName}
+                onChange={(e) => setFormData(prev => ({ ...prev, inspectorName: e.target.value }))}
+                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
+              />
+              <label className="block text-xs font-semibold mb-1 mt-2 print:mb-0.5 print:mt-1 print:text-[10px]">Inspector Company</label>
               <input
                 type="text"
                 value={formData.inspectorCompany}
                 onChange={(e) => setFormData(prev => ({ ...prev, inspectorCompany: e.target.value }))}
-                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none"
+                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
               />
-              <label className="block text-xs font-semibold mb-1 mt-2">City, State, Zip</label>
+              <label className="block text-xs font-semibold mb-1 mt-2 print:mb-0.5 print:mt-1 print:text-[10px]">Address</label>
+              <input
+                type="text"
+                value={formData.inspectorAddress}
+                onChange={(e) => setFormData(prev => ({ ...prev, inspectorAddress: e.target.value }))}
+                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
+              />
+              <label className="block text-xs font-semibold mb-1 mt-2 print:mb-0.5 print:mt-1 print:text-[10px]">City, State, Zip</label>
               <input
                 type="text"
                 value={formData.inspectorCompanyCityStateZip}
                 onChange={(e) => setFormData(prev => ({ ...prev, inspectorCompanyCityStateZip: e.target.value }))}
-                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none"
+                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
               />
             </div>
           </div>
 
-          {/* FMCSA Checkbox */}
-          <div className="mb-6 print:mb-4">
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={formData.inspectorMeetsFMCSA}
-                onChange={(e) => setFormData(prev => ({ ...prev, inspectorMeetsFMCSA: e.target.checked }))}
-                className="w-4 h-4"
-              />
-              <span className="text-sm">Inspector meets FMCSA §396.19</span>
-            </label>
-          </div>
-
           {/* Report and Vehicle Identification */}
-          <div className="grid grid-cols-3 gap-4 mb-6 print:gap-3 print:mb-4">
+          <div className="grid grid-cols-3 gap-4 mb-6 print:gap-2 print:mb-2">
             <div>
-              <label className="block text-xs font-semibold mb-1">Report (Optional) #</label>
+              <label className="block text-xs font-semibold mb-1 print:mb-0.5 print:text-[10px]">Report (Optional) #</label>
               <input
                 type="text"
                 value={formData.reportNumber}
                 onChange={(e) => setFormData(prev => ({ ...prev, reportNumber: e.target.value }))}
-                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none"
+                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold mb-1">Unit #</label>
+              <label className="block text-xs font-semibold mb-1 print:mb-0.5 print:text-[10px]">Unit #</label>
               <input
                 type="text"
                 value={formData.unitNumber}
                 onChange={(e) => setFormData(prev => ({ ...prev, unitNumber: e.target.value }))}
-                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none"
+                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold mb-1">VIN</label>
+              <label className="block text-xs font-semibold mb-1 print:mb-0.5 print:text-[10px]">VIN</label>
               <input
                 type="text"
                 value={formData.vin}
                 onChange={(e) => setFormData(prev => ({ ...prev, vin: e.target.value }))}
-                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none"
+                className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-0 print:border-b print:rounded-none print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
               />
             </div>
           </div>
 
           {/* Vehicle Type */}
-          <div className="mb-6 print:mb-4">
-            <label className="block text-xs font-semibold mb-2">Vehicle Type</label>
-            <div className="flex items-center gap-4">
+          <div className="mb-6 print:mb-2">
+            <label className="block text-xs font-semibold mb-2 print:mb-1 print:text-[10px]">Vehicle Type</label>
+            <div className="flex items-center gap-4 print:gap-2">
               {(['Tractor', 'Trailer', 'Truck', 'Other'] as const).map((type) => (
-                <label key={type} className="flex items-center gap-2">
+                <label key={type} className="flex items-center gap-2 print:gap-1">
                   <input
                     type="radio"
                     name="vehicleType"
                     value={type}
                     checked={formData.vehicleType === type}
                     onChange={(e) => setFormData(prev => ({ ...prev, vehicleType: e.target.value as any }))}
-                    className="w-4 h-4"
+                    className="w-4 h-4 print:w-3 print:h-3"
                   />
-                  <span className="text-sm">{type}</span>
+                  <span className="text-sm print:text-[10px] print:leading-tight">{type}</span>
                 </label>
               ))}
               {formData.vehicleType === 'Other' && (
@@ -482,17 +562,17 @@ export default function AnnualVehicleInspectionForm({ initialData, onSave, onClo
                   value={formData.vehicleTypeOther}
                   onChange={(e) => setFormData(prev => ({ ...prev, vehicleTypeOther: e.target.value }))}
                   placeholder="Specify"
-                  className="px-2 py-1 border border-gray-300 rounded text-sm flex-1 max-w-xs print:border-0 print:border-b print:rounded-none"
+                  className="px-2 py-1 border border-gray-300 rounded text-sm flex-1 max-w-xs print:border-0 print:border-b print:rounded-none print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
                 />
               )}
             </div>
           </div>
 
           {/* Inspection Components - Two Column Layout */}
-          <div className="mb-6 print:mb-4">
-            <div className="grid grid-cols-2 gap-6 print:gap-4">
+          <div className="mb-6 print:mb-2">
+            <div className="grid grid-cols-2 gap-6 print:gap-2">
               {/* Left Column */}
-              <div className="space-y-4 print:space-y-3">
+              <div className="space-y-4 print:space-y-1.5">
                 {[
                   'brakeSystem',
                   'couplingDevices',
@@ -503,14 +583,14 @@ export default function AnnualVehicleInspectionForm({ initialData, onSave, onClo
                 ].map((key) => {
                   const component = formData.components[key as keyof typeof formData.components];
                   return (
-                    <div key={key} className="border border-gray-300 rounded p-3 print:border-gray-800 print:p-2 print:rounded-none print:border-2">
+                    <div key={key} className="border border-gray-300 rounded p-3 print:border-gray-800 print:p-2 print:rounded-none print:border">
                       <div className="grid grid-cols-[1fr_auto_auto] gap-2 mb-2 print:gap-2 print:mb-2 print:border-b print:border-gray-800 print:pb-1">
                         <div className="font-semibold text-xs print:text-[9px] print:font-bold">{component.name}</div>
                         <div className="text-xs text-center print:text-[9px] print:font-semibold">Pass</div>
                         <div className="text-xs text-center print:text-[9px] print:font-semibold">Fail</div>
                       </div>
                       {component.items.map((item, idx) => (
-                        <div key={idx} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs py-1 border-t border-gray-200 print:border-gray-400 print:gap-2 print:py-1 print:text-[9px] print:border-t print:border-gray-300">
+                        <div key={idx} className="grid grid-cols-[1fr_auto_auto] gap-2 text-sm py-0.5 border-t border-gray-200 print:border-gray-400 print:gap-2 print:py-0.5 print:text-[10px] print:border-t print:border-gray-300">
                           <div className="pl-2 print:pl-1">{item.name}</div>
                           <div className="text-center">
                             <input
@@ -536,7 +616,7 @@ export default function AnnualVehicleInspectionForm({ initialData, onSave, onClo
               </div>
 
               {/* Right Column */}
-              <div className="space-y-4 print:space-y-3">
+              <div className="space-y-4 print:space-y-1.5">
                 {[
                   'steeringMechanism',
                   'suspension',
@@ -548,21 +628,21 @@ export default function AnnualVehicleInspectionForm({ initialData, onSave, onClo
                 ].map((key) => {
                   const component = formData.components[key as keyof typeof formData.components];
                   return (
-                    <div key={key} className="border border-gray-300 rounded p-3 print:border-gray-800 print:p-2 print:rounded-none print:border-2">
-                      <div className="grid grid-cols-[1fr_auto_auto] gap-2 mb-2 print:gap-2 print:mb-2 print:border-b print:border-gray-800 print:pb-1">
-                        <div className="font-semibold text-xs print:text-[9px] print:font-bold">{component.name}</div>
-                        <div className="text-xs text-center print:text-[9px] print:font-semibold">Pass</div>
-                        <div className="text-xs text-center print:text-[9px] print:font-semibold">Fail</div>
+                    <div key={key} className="border border-gray-300 rounded p-3 print:border-gray-800 print:p-1 print:rounded-none print:border">
+                      <div className="grid grid-cols-[1fr_auto_auto] gap-2 mb-2 print:gap-1 print:mb-1 print:border-b print:border-gray-800 print:pb-0.5">
+                        <div className="font-semibold text-xs print:text-[8px] print:font-bold print:leading-tight">{component.name}</div>
+                        <div className="text-xs text-center print:text-[8px] print:font-semibold print:leading-tight">Pass</div>
+                        <div className="text-xs text-center print:text-[8px] print:font-semibold print:leading-tight">Fail</div>
                       </div>
                       {component.items.map((item, idx) => (
-                        <div key={idx} className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs py-1 border-t border-gray-200 print:border-gray-400 print:gap-2 print:py-1 print:text-[9px] print:border-t print:border-gray-300">
-                          <div className="pl-2 print:pl-1">{item.name}</div>
+                        <div key={idx} className="grid grid-cols-[1fr_auto_auto] gap-2 text-sm py-0.5 border-t border-gray-200 print:border-gray-400 print:gap-1 print:py-0.5 print:text-[9px] print:border-t print:border-gray-300 print:leading-tight">
+                          <div className="pl-2 print:pl-0.5">{item.name}</div>
                           <div className="text-center">
                             <input
                               type="checkbox"
                               checked={item.pass}
                               onChange={(e) => handleItemChange(key as keyof typeof formData.components, idx, 'pass', e.target.checked)}
-                              className="w-4 h-4 print:w-3 print:h-3"
+                              className="w-4 h-4 print:w-2.5 print:h-2.5"
                             />
                           </div>
                           <div className="text-center">
@@ -570,7 +650,7 @@ export default function AnnualVehicleInspectionForm({ initialData, onSave, onClo
                               type="checkbox"
                               checked={item.fail}
                               onChange={(e) => handleItemChange(key as keyof typeof formData.components, idx, 'fail', e.target.checked)}
-                              className="w-4 h-4 print:w-3 print:h-3"
+                              className="w-4 h-4 print:w-2.5 print:h-2.5"
                             />
                           </div>
                         </div>
@@ -582,56 +662,73 @@ export default function AnnualVehicleInspectionForm({ initialData, onSave, onClo
             </div>
           </div>
 
-          {/* Defects and Corrective Actions */}
-          <div className="mb-6 print:mb-4">
-            <h3 className="font-semibold text-sm mb-2 print:text-xs print:mb-2 print:font-bold">DEFECTS AND CORRECTIVE ACTIONS</h3>
-            <textarea
-              value={formData.defectsAndCorrectiveActions}
-              onChange={(e) => setFormData(prev => ({ ...prev, defectsAndCorrectiveActions: e.target.value }))}
-              rows={6}
-              className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-gray-800 print:rows-4 print:text-xs print:p-2 print:border-2"
-              placeholder="Enter defects and corrective actions..."
-            />
+          {/* Defects and Corrective Actions + Notes */}
+          <div className="mb-6 print:mb-2 print:break-inside-avoid">
+            <div className="grid grid-cols-1 md:grid-cols-[3fr_1fr] gap-4 print:grid-cols-[3fr_1fr] print:gap-2">
+              {/* Defects and Corrective Actions - Left Column */}
+              <div>
+                <h3 className="font-semibold text-sm mb-2 print:text-[10px] print:mb-1 print:font-bold print:leading-tight">DEFECTS AND CORRECTIVE ACTIONS</h3>
+                <textarea
+                  value={formData.defectsAndCorrectiveActions}
+                  onChange={(e) => setFormData(prev => ({ ...prev, defectsAndCorrectiveActions: e.target.value }))}
+                  rows={6}
+                  className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-gray-800 print:rows-2 print:text-[9px] print:p-1 print:border print:leading-tight print:resize-none"
+                  placeholder="Enter defects and corrective actions..."
+                />
+              </div>
+              
+              {/* Notes - Right Column */}
+              <div>
+                <label className="block text-xs font-semibold mb-1 print:mb-0.5 print:text-[10px] print:font-bold print:leading-tight">Notes:</label>
+                <textarea
+                  value={formData.notes}
+                  onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
+                  rows={6}
+                  className="w-full px-2 py-1 border border-gray-300 rounded text-sm print:border-gray-800 print:rows-2 print:text-[9px] print:p-1 print:border print:leading-tight print:resize-none print:bg-white"
+                  placeholder="Enter notes..."
+                />
+              </div>
+            </div>
           </div>
 
           {/* Certification */}
-          <div className="mb-6 print:mb-4">
-            <p className="text-sm mb-4 print:text-xs print:mb-3">
+          <div className="mb-6 print:mb-2">
+            <p className="text-sm mb-4 print:text-[10px] print:mb-1 print:leading-tight">
               I certify that this vehicle has passed the Annual Inspection in accordance with 49 CFR §396.17.
             </p>
-            <div className="grid grid-cols-3 gap-4 print:gap-3">
+            <div className="grid grid-cols-3 gap-4 print:gap-2">
               <div>
-                <label className="block text-xs font-semibold mb-1">Inspector Signature</label>
+                <label className="block text-xs font-semibold mb-1 print:mb-0.5 print:text-[10px]">Inspector Signature</label>
                 <input
                   type="text"
                   value={formData.inspectorSignature}
                   onChange={(e) => setFormData(prev => ({ ...prev, inspectorSignature: e.target.value }))}
-                  className="w-full px-2 py-1 border-b border-gray-300 text-sm print:border-gray-800"
+                  className="w-full px-2 py-1 border-b border-gray-300 text-sm print:border-gray-800 print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold mb-1">Printed Name</label>
+                <label className="block text-xs font-semibold mb-1 print:mb-0.5 print:text-[10px]">Printed Name</label>
                 <input
                   type="text"
                   value={formData.inspectorPrintedName}
                   onChange={(e) => setFormData(prev => ({ ...prev, inspectorPrintedName: e.target.value }))}
-                  className="w-full px-2 py-1 border-b border-gray-300 text-sm print:border-gray-800"
+                  className="w-full px-2 py-1 border-b border-gray-300 text-sm print:border-gray-800 print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold mb-1">Date</label>
+                <label className="block text-xs font-semibold mb-1 print:mb-0.5 print:text-[10px]">Date</label>
                 <input
                   type="date"
                   value={formData.certificationDate}
                   onChange={(e) => setFormData(prev => ({ ...prev, certificationDate: e.target.value }))}
-                  className="w-full px-2 py-1 border-b border-gray-300 text-sm print:border-gray-800"
+                  className="w-full px-2 py-1 border-b border-gray-300 text-sm print:border-gray-800 print:px-1 print:py-0.5 print:text-[10px] print:leading-tight"
                 />
               </div>
             </div>
           </div>
 
           {/* Footer */}
-          <div className="text-center text-xs text-gray-500 mt-8 print:mt-4 print:text-[8px]">
+          <div className="text-center text-xs text-gray-500 mt-8 print:mt-1 print:text-[7px] print:leading-tight">
             <p>© 2025 EZ2Invoice™. All rights reserved. Unauthorized reproduction or distribution is prohibited.</p>
           </div>
         </div>

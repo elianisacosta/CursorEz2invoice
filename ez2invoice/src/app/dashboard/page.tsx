@@ -993,7 +993,7 @@ export default function Dashboard() {
     setEstimatesLoading(true);
     try {
       const shopId = await getShopId();
-      if (!shopId) {
+      if (!shopId && !isFounder) {
         console.warn('No shop_id found, skipping estimates fetch');
         setEstimates([]);
         return;
@@ -1004,11 +1004,22 @@ export default function Dashboard() {
         .select(`
           *,
           customer:customers(id, first_name, last_name, email, phone, company)
-        `)
-        .eq('shop_id', shopId)
-        .order('created_at', { ascending: false });
+        `);
       
-      const { data, error } = await query;
+      // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
+      // For regular users: only include data with matching shop_id
+      if (shopId) {
+        if (isFounder) {
+          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
+        } else {
+          query = query.eq('shop_id', shopId);
+        }
+      } else if (isFounder) {
+        // Founder but no shop_id yet - show all data (for old data without shop_id)
+        query = query.is('shop_id', null);
+      }
+
+      const { data, error } = await query.order('created_at', { ascending: false });
       
       // Ensure shop_id is included in the data
       if (data) {
@@ -1071,8 +1082,14 @@ export default function Dashboard() {
         .order('created_at', { ascending: false });
       
       // Filter by shop_id if available
+      // For founders: includes data with shop_id OR shop_id IS NULL (to get old data)
+      // For regular users: only includes data with matching shop_id
       if (shopId) {
-        query = query.eq('shop_id', shopId);
+        if (isFounder) {
+          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
+        } else {
+          query = query.eq('shop_id', shopId);
+        }
       }
       
       const { data, error } = await query;
@@ -2527,22 +2544,35 @@ export default function Dashboard() {
     setWorkOrdersLoading(true);
     try {
       const shopId = await getShopId();
-      if (!shopId) {
+      if (!shopId && !isFounder) {
         console.warn('No shop_id found, skipping work orders fetch');
         setWorkOrders([]);
         return;
       }
 
-      const { data, error } = await supabase
+      let query = supabase
         .from('work_orders')
         .select(`
           *,
           customers (first_name, last_name, email, phone),
           trucks (make, model, vin, license_plate, year),
           service_bays (bay_name, bay_number)
-        `)
-        .eq('shop_id', shopId)
-        .order('created_at', { ascending: false });
+        `);
+      
+      // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
+      // For regular users: only include data with matching shop_id
+      if (shopId) {
+        if (isFounder) {
+          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
+        } else {
+          query = query.eq('shop_id', shopId);
+        }
+      } else if (isFounder) {
+        // Founder but no shop_id yet - show all data (for old data without shop_id)
+        query = query.is('shop_id', null);
+      }
+
+      const { data, error } = await query.order('created_at', { ascending: false });
 
       if (error) {
         console.error('Error fetching work orders:', error);
@@ -2717,14 +2747,27 @@ export default function Dashboard() {
         if (!bayStatusMap[bayName]) continue;
         
         // Fetch work orders for this bay
-        const { data: bayWorkOrders, error: woError } = await supabase
+        let bayWorkOrdersQuery = supabase
           .from('work_orders')
           .select(`
             *,
             customers (id, first_name, last_name, company),
             trucks (id, license_plate, vin, make, model, year)
-          `)
-          .eq('shop_id', shopId)
+          `);
+        
+        // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
+        // For regular users: only include data with matching shop_id
+        if (shopId) {
+          if (isFounder) {
+            bayWorkOrdersQuery = bayWorkOrdersQuery.or(`shop_id.eq.${shopId},shop_id.is.null`);
+          } else {
+            bayWorkOrdersQuery = bayWorkOrdersQuery.eq('shop_id', shopId);
+          }
+        } else if (isFounder) {
+          bayWorkOrdersQuery = bayWorkOrdersQuery.is('shop_id', null);
+        }
+        
+        const { data: bayWorkOrders, error: woError } = await bayWorkOrdersQuery
           .eq('bay_id', bay.id)
           .not('status', 'eq', 'completed')
           .not('status', 'eq', 'cancelled')
@@ -3160,21 +3203,65 @@ export default function Dashboard() {
     setLaborLoading(true);
     try {
       const shopId = await getShopId();
-      if (!shopId) {
+      
+      if (!shopId && !isFounder) {
         console.warn('No shop_id found, skipping labor items fetch');
         setLaborItems([]);
         return;
       }
 
-      const { data, error } = await supabase
+      let query = supabase
         .from('labor_items')
-        .select('*')
-        .eq('shop_id', shopId)
-        .order('created_at', { ascending: false });
-      if (data) setLaborItems(data as unknown as LaborItem[]);
-      if (error) console.error('Error fetching labor items:', error);
+        .select('*');
+      
+      // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
+      // For regular users: only include data with matching shop_id
+      if (shopId) {
+        if (isFounder) {
+          // Founder: get data with matching shop_id OR null shop_id (old data)
+          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
+        } else {
+          query = query.eq('shop_id', shopId);
+        }
+      } else if (isFounder) {
+        // Founder but no shop_id yet - only show old data without shop_id
+        // Don't filter at all would show everything, so we filter for null shop_id
+        query = query.is('shop_id', null);
+      }
+
+      const { data, error } = await query.order('created_at', { ascending: false });
+      
+      if (error) {
+        // Check if it's an RLS error, empty error object, or missing column error
+        const errorStringified = JSON.stringify(error);
+        const isEmptyErrorObject = errorStringified === '{}' || errorStringified === 'null' || errorStringified === '{}';
+        const errorCode = (error as any)?.code || '';
+        const errorMessage = (error as any)?.message || '';
+        const errorKeys = Object.keys(error || {});
+        const hasNoErrorProperties = errorKeys.length === 0;
+        const isMissingColumnError = errorCode === '42703' || errorMessage?.includes('does not exist') || errorMessage?.includes('column');
+        
+        // If it's an empty error, RLS error, or missing column error, silently set empty array
+        // This prevents Next.js error overlay from appearing for harmless schema/RLS errors
+        if (isEmptyErrorObject || hasNoErrorProperties || errorCode === '42501' || errorCode === '42703' || errorMessage?.includes('row-level security') || errorMessage?.includes('RLS') || isMissingColumnError) {
+          // DO NOT log schema/RLS errors - silently handle them
+          setLaborItems([]);
+        } else if (errorMessage && errorMessage.trim().length > 0) {
+          // Only log errors that have actual error messages and aren't schema/RLS related
+          console.error('Error fetching labor items:', error);
+          setLaborItems([]);
+        } else {
+          // Silent handling for errors without messages
+          setLaborItems([]);
+        }
+      } else if (data) {
+        setLaborItems(data as unknown as LaborItem[]);
+      } else {
+        setLaborItems([]);
+      }
     } catch (err) {
       console.error('Error in fetchLaborItems:', err);
+      setLaborItems([]);
     } finally {
       setLaborLoading(false);
     }
@@ -3189,17 +3276,30 @@ export default function Dashboard() {
     setInventoryLoading(true);
     try {
       const shopId = await getShopId();
-      if (!shopId) {
+      if (!shopId && !isFounder) {
         console.warn('No shop_id found, skipping inventory fetch');
         setInventory([]);
         return;
       }
 
-      const { data, error } = await supabase
+      let query = supabase
         .from('parts')
-        .select('*')
-        .eq('shop_id', shopId)
-        .order('created_at', { ascending: false });
+        .select('*');
+      
+      // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
+      // For regular users: only include data with matching shop_id
+      if (shopId) {
+        if (isFounder) {
+          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
+        } else {
+          query = query.eq('shop_id', shopId);
+        }
+      } else if (isFounder) {
+        // Founder but no shop_id yet - show all data (for old data without shop_id)
+        query = query.is('shop_id', null);
+      }
+
+      const { data, error } = await query.order('created_at', { ascending: false });
       if (data) setInventory(data as unknown as InventoryItem[]);
       if (error) console.error('Error fetching inventory:', error);
     } catch (err) {
@@ -3252,6 +3352,7 @@ export default function Dashboard() {
           vehicleTypeOther: formData.vehicleTypeOther,
           components: formData.components,
           defectsAndCorrectiveActions: formData.defectsAndCorrectiveActions,
+          notes: formData.notes,
           inspectorSignature: formData.inspectorSignature,
           inspectorPrintedName: formData.inspectorPrintedName,
           certificationDate: formData.certificationDate,
@@ -4303,7 +4404,16 @@ export default function Dashboard() {
         .order('date', { ascending: false });
 
       if (shopId) {
-        query = query.eq('shop_id', shopId);
+        // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
+        // For regular users: only include data with matching shop_id
+        if (isFounder) {
+          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
+        } else {
+          query = query.eq('shop_id', shopId);
+        }
+      } else if (isFounder) {
+        // Founder but no shop_id yet - show all data (for old data without shop_id)
+        query = query.is('shop_id', null);
       }
 
       const { data, error } = await query;
@@ -4598,17 +4708,30 @@ export default function Dashboard() {
     setCustomersLoading(true);
     try {
       const shopId = await getShopId();
-      if (!shopId) {
+      if (!shopId && !isFounder) {
         console.warn('No shop_id found, skipping customers fetch');
         setCustomers([]);
         return;
       }
 
-      const { data, error } = await supabase
+      let query = supabase
         .from('customers')
-        .select('*')
-        .eq('shop_id', shopId)
-        .order('created_at', { ascending: false });
+        .select('*');
+      
+      // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
+      // For regular users: only include data with matching shop_id
+      if (shopId) {
+        if (isFounder) {
+          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
+        } else {
+          query = query.eq('shop_id', shopId);
+        }
+      } else if (isFounder) {
+        // Founder but no shop_id yet - show all data (for old data without shop_id)
+        query = query.is('shop_id', null);
+      }
+
+      const { data, error } = await query.order('created_at', { ascending: false });
       if (data) setCustomers(data as unknown as Customer[]);
       if (error) console.error('Error fetching customers:', error);
     } catch (err) {
@@ -4668,17 +4791,30 @@ export default function Dashboard() {
   const fetchEmployees = async () => {
     try {
       const shopId = await getShopId();
-      if (!shopId) {
+      if (!shopId && !isFounder) {
         console.warn('No shop_id found, skipping employees fetch');
         setEmployees([]);
         return;
       }
 
-      const { data, error } = await supabase
+      let query = supabase
         .from('employees')
-        .select('*')
-        .eq('shop_id', shopId)
-        .order('created_at', { ascending: false });
+        .select('*');
+      
+      // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
+      // For regular users: only include data with matching shop_id
+      if (shopId) {
+        if (isFounder) {
+          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
+        } else {
+          query = query.eq('shop_id', shopId);
+        }
+      } else if (isFounder) {
+        // Founder but no shop_id yet - show all data (for old data without shop_id)
+        query = query.is('shop_id', null);
+      }
+
+      const { data, error } = await query.order('created_at', { ascending: false });
       
       if (data) {
         setEmployees(data);
