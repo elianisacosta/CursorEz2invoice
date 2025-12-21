@@ -76,6 +76,13 @@ function SignUpForm() {
           localStorage.removeItem('pending_planName');
         }
       } else {
+        // Log signup response for debugging
+        console.log('Signup response:', {
+          user: data?.user,
+          session: data?.session,
+          needsConfirmation: data?.user && !data?.user?.email_confirmed_at
+        });
+        
         if (isFounder) {
           setSuccess('Founder account created successfully! Redirecting to dashboard...');
           // Clear stored priceId for founders
@@ -85,7 +92,18 @@ function SignUpForm() {
             window.location.href = '/dashboard';
           }, 2000);
         } else {
-          setSuccess('Account created successfully! Please check your email to verify your account.');
+          // Check if email confirmation is actually needed
+          if (data?.user && !data?.user?.email_confirmed_at) {
+            setSuccess('Account created successfully! Please check your email to verify your account. If you don\'t see the email, check your spam folder.');
+          } else if (data?.user?.email_confirmed_at) {
+            // Email already confirmed (shouldn't happen normally)
+            setSuccess('Account created successfully! Redirecting...');
+            setTimeout(() => {
+              window.location.href = '/dashboard';
+            }, 1500);
+          } else {
+            setSuccess('Account created successfully! Please check your email to verify your account.');
+          }
         }
       }
     } catch (err) {
@@ -279,11 +297,19 @@ function SignUpForm() {
                           ? `${baseUrl}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
                           : `${baseUrl}/auth/callback?next=/dashboard`;
                         
-                        const { error: resendError } = await resendConfirmation(email, redirectTo);
+                        const { data: resendData, error: resendError } = await resendConfirmation(email, redirectTo);
                         if (resendError) {
                           console.error('Resend confirmation error:', resendError);
-                          setError(`Failed to resend email: ${resendError.message || 'Unknown error'}. Please check your email address and try again.`);
+                          // Provide more helpful error messages
+                          let errorMessage = resendError.message || 'Unknown error';
+                          if (errorMessage.includes('rate limit') || errorMessage.includes('5 seconds')) {
+                            errorMessage = 'Please wait a few seconds before requesting another email.';
+                          } else if (errorMessage.includes('not found') || errorMessage.includes('does not exist')) {
+                            errorMessage = 'No account found with this email. Please create an account first.';
+                          }
+                          setError(`Failed to resend email: ${errorMessage}`);
                         } else {
+                          console.log('Resend confirmation response:', resendData);
                           setSuccess('Confirmation email resent! Please check your inbox (and spam folder).');
                         }
                         setLoading(false);
