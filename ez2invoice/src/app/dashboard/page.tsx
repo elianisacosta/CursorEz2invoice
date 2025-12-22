@@ -169,6 +169,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('overview');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [userPlanType, setUserPlanType] = useState<string | null>('starter'); // Track user's actual plan from database (null = no subscription)
+  const [isVerifyingCheckout, setIsVerifyingCheckout] = useState(false); // Track if we're verifying a checkout session
   
   // Use simulated tier if active, otherwise use actual plan from database
   // When 'real' is selected and bypass is active, use 'enterprise' (bypass mode)
@@ -407,14 +408,20 @@ export default function Dashboard() {
       const sessionId = urlParams.get('session_id');
       
       if (sessionId) {
+        setIsVerifyingCheckout(true);
         try {
           // Get the current session token
           const { data: { session } } = await supabase.auth.getSession();
           
           if (!session?.access_token) {
             console.error('No access token available');
+            setIsVerifyingCheckout(false);
             return;
           }
+
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:410',message:'Verifying checkout session',data:{sessionId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+          // #endregion
 
           // Call API to verify checkout session and save customer ID
           const response = await fetch('/api/stripe/verify-checkout-session', {
@@ -429,6 +436,10 @@ export default function Dashboard() {
           });
 
           const result = await response.json();
+
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:435',message:'Checkout session verification result',data:{success:response.ok&&result.success,planType:result.planType,error:result.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+          // #endregion
 
           if (response.ok && result.success) {
             // Update local plan type state
@@ -458,6 +469,8 @@ export default function Dashboard() {
             type: 'error',
             message: 'Error processing subscription. Please contact support.',
           });
+        } finally {
+          setIsVerifyingCheckout(false);
         }
       }
     };
@@ -468,6 +481,14 @@ export default function Dashboard() {
   // Check if user has active subscription and block access if not
   useEffect(() => {
     const checkSubscriptionAccess = async () => {
+      // Don't check subscription if we're currently verifying a checkout session
+      if (isVerifyingCheckout) {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:485',message:'Skipping subscription check - verifying checkout',data:{isVerifyingCheckout},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
+        return;
+      }
+
       try {
         const { data: userData } = await supabase.auth.getUser();
         if (userData?.user?.id) {
@@ -477,12 +498,19 @@ export default function Dashboard() {
             .eq('id', userData.user.id)
             .maybeSingle();
           
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:495',message:'Subscription check result',data:{hasUserRecord:!!userRecord,planType:userRecord?.plan_type,stripeCustomerId:!!userRecord?.stripe_customer_id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+          // #endregion
+          
           // Check if user has no active subscription (plan_type is null)
           // Founders are exempt from this check
           const founderEmails = ['acostaelianis@yahoo.com', 'founder@ez2invoice.com', 'admin@ez2invoice.com'];
           const isFounder = founderEmails.includes(userData.user.email?.toLowerCase() || '');
           
           if (!isFounder && (!userRecord?.plan_type || userRecord.plan_type === null)) {
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:502',message:'Redirecting to pricing - no subscription',data:{planType:userRecord?.plan_type},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+            // #endregion
             // User has no active subscription - redirect to pricing
             showToast({
               type: 'error',
@@ -498,8 +526,14 @@ export default function Dashboard() {
         console.error('Error checking subscription access:', error);
       }
     };
-    checkSubscriptionAccess();
-  }, []);
+    
+    // Add a delay to ensure checkout verification completes first, or wait for verification to finish
+    const timer = setTimeout(() => {
+      checkSubscriptionAccess();
+    }, isVerifyingCheckout ? 3000 : 1000); // Wait longer if verifying checkout
+    
+    return () => clearTimeout(timer);
+  }, [isVerifyingCheckout]);
 
   // Ensure shop exists for the user (create if it doesn't exist)
   useEffect(() => {
