@@ -94,14 +94,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signUp = async (email: string, password: string, userData?: any, redirectTo?: string) => {
     // Use NEXT_PUBLIC_SITE_URL for production, fallback to window.location.origin for development
     const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
+    const finalRedirectTo = redirectTo ?? `${baseUrl}/auth/callback?next=/dashboard`;
+    
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: userData,
-        emailRedirectTo: redirectTo ?? `${baseUrl}/auth/callback?next=/dashboard`
+        emailRedirectTo: finalRedirectTo
       }
     });
+    
     return { data, error };
   };
 
