@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Get user's stripe_customer_id from database
-    const { data: userRecord, error: userError } = await supabase
+    let { data: userRecord, error: userError } = await supabase
       .from('users')
       .select('stripe_customer_id, plan_type')
       .eq('id', user.id)
@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
             })
             .eq('id', user.id);
           
-          // Now check subscriptions for this customer
+          // Now check subscriptions for this customer - update userRecord
           userRecord = { ...userRecord, stripe_customer_id: customer.id };
         } else {
           // #region agent log
