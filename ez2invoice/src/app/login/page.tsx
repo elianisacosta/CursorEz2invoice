@@ -126,10 +126,10 @@ function LoginForm() {
                     // #endregion
                   }
                 }
-              } catch (verifyError) {
+              } catch (verifyError: any) {
                 console.error('Error verifying subscription from Stripe:', verifyError);
                 // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:120',message:'verify-subscription exception',data:{error:verifyError?.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:120',message:'verify-subscription exception',data:{error:verifyError?.message || String(verifyError)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
                 // #endregion
                 // Continue with database value if verification fails
               }
