@@ -118,15 +118,19 @@ function LoginForm() {
                     fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:107',message:'verify-subscription API response',data:{hasActiveSubscription:verifyData.hasActiveSubscription,planType:verifyData.planType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
                     // #endregion
                     
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:118',message:'verify-subscription response received',data:{hasActiveSubscription:verifyData.hasActiveSubscription,planType:verifyData.planType,fullResponse:JSON.stringify(verifyData)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                    // #endregion
+                    
                     if (verifyData.hasActiveSubscription) {
                       hasSubscription = true;
                       console.log('Subscription verified from Stripe, plan:', verifyData.planType);
                       // #region agent log
-                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:122',message:'Subscription verified from Stripe - setting hasSubscription to true',data:{planType:verifyData.planType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:124',message:'Subscription verified from Stripe - setting hasSubscription to true',data:{planType:verifyData.planType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
                       // #endregion
                     } else {
                       // #region agent log
-                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:126',message:'Stripe verification returned no active subscription',data:{hasActiveSubscription:verifyData.hasActiveSubscription},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:128',message:'Stripe verification returned no active subscription',data:{hasActiveSubscription:verifyData.hasActiveSubscription,planType:verifyData.planType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
                       // #endregion
                     }
                   } else {

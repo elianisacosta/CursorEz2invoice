@@ -44,15 +44,61 @@ export async function POST(req: NextRequest) {
     }
 
     if (!userRecord?.stripe_customer_id) {
-      // No Stripe customer ID means no subscription
-      return NextResponse.json({
-        hasActiveSubscription: false,
-        planType: null,
-      });
+      // No Stripe customer ID in database - try to find customer by email
+      // This handles cases where user just paid but stripe_customer_id wasn't saved yet
+      try {
+        // #region agent log
+        console.log('No stripe_customer_id in database, searching Stripe by email:', user.email);
+        // #endregion
+        
+        const customers = await stripe.customers.list({
+          email: user.email,
+          limit: 1,
+        });
+        
+        if (customers.data.length > 0) {
+          const customer = customers.data[0];
+          // #region agent log
+          console.log('Found Stripe customer by email:', customer.id);
+          // #endregion
+          
+          // Update database with stripe_customer_id
+          await supabase
+            .from('users')
+            .update({
+              stripe_customer_id: customer.id,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', user.id);
+          
+          // Now check subscriptions for this customer
+          userRecord = { ...userRecord, stripe_customer_id: customer.id };
+        } else {
+          // #region agent log
+          console.log('No Stripe customer found by email');
+          // #endregion
+          // No Stripe customer found by email either
+          return NextResponse.json({
+            hasActiveSubscription: false,
+            planType: null,
+          });
+        }
+      } catch (emailSearchError: any) {
+        console.error('Error searching Stripe by email:', emailSearchError);
+        // If email search fails, return no subscription
+        return NextResponse.json({
+          hasActiveSubscription: false,
+          planType: null,
+        });
+      }
     }
 
     // Check subscription status directly from Stripe
     try {
+      // #region agent log
+      console.log('Checking Stripe subscriptions for customer:', userRecord.stripe_customer_id);
+      // #endregion
+      
       const subscriptions = await stripe.subscriptions.list({
         customer: userRecord.stripe_customer_id,
         status: 'all',
@@ -67,6 +113,12 @@ export async function POST(req: NextRequest) {
           status: sub.status,
           current_period_end: sub.current_period_end,
           cancel_at_period_end: sub.cancel_at_period_end,
+          cancel_at: sub.cancel_at,
+          items: sub.items.data.map(item => ({
+            price_id: item.price.id,
+            amount: item.price.unit_amount,
+            metadata: item.price.metadata
+          }))
         });
       });
       // #endregion
@@ -90,8 +142,24 @@ export async function POST(req: NextRequest) {
 
       // Find the first active subscription (not just the first one)
       // A subscription can be 'active', 'trialing', or 'past_due' (still has access)
+      // Also check for subscriptions that are scheduled to cancel but still active
       const activeSubscription = subscriptions.data.find(
-        sub => sub.status === 'active' || sub.status === 'trialing' || sub.status === 'past_due'
+        sub => {
+          const isActive = sub.status === 'active' || sub.status === 'trialing' || sub.status === 'past_due';
+          const isScheduledCancel = sub.status === 'active' && sub.cancel_at_period_end === true;
+          // #region agent log
+          console.log('Checking subscription:', {
+            id: sub.id,
+            status: sub.status,
+            cancel_at_period_end: sub.cancel_at_period_end,
+            current_period_end: sub.current_period_end,
+            isActive,
+            isScheduledCancel,
+            matches: isActive || isScheduledCancel
+          });
+          // #endregion
+          return isActive || isScheduledCancel;
+        }
       );
 
       if (!activeSubscription) {
@@ -206,10 +274,14 @@ export async function POST(req: NextRequest) {
         id: subscription.id,
         status: subscription.status,
         cancel_at_period_end: subscription.cancel_at_period_end,
+        current_period_end: subscription.current_period_end,
+        price_id: subscription.items.data[0]?.price.id,
+        amount: subscription.items.data[0]?.price.unit_amount,
       });
       // #endregion
 
       // Check if subscription is actually active
+      // Include 'past_due' as still having access (user can still use service)
       if (subscriptionStatus === 'active' || subscriptionStatus === 'trialing' || subscriptionStatus === 'past_due') {
         // Determine plan type from subscription
         const price = subscription.items.data[0]?.price;
