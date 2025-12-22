@@ -23,9 +23,17 @@ export default function Home() {
     // Only run on client side
     if (typeof window === 'undefined') return;
     
+    // Only redirect if we're coming from an auth flow (check URL hash or query params)
+    const hasAuthParams = window.location.hash.includes('access_token') || 
+                          window.location.hash.includes('code') ||
+                          window.location.search.includes('code');
+    
     // Check for pending priceId in localStorage
     const pendingPriceId = localStorage.getItem('pending_priceId');
-    if (pendingPriceId) {
+    
+    // Only redirect if we have auth params AND pending priceId (user is coming from email confirmation)
+    // Otherwise, clear stale localStorage entries to prevent unwanted redirects
+    if (hasAuthParams && pendingPriceId) {
       // Small delay to ensure auth state is ready
       const timer = setTimeout(() => {
         // Redirect to callback page to handle Stripe checkout
@@ -33,6 +41,11 @@ export default function Home() {
       }, 500);
       
       return () => clearTimeout(timer);
+    } else if (pendingPriceId && !hasAuthParams) {
+      // Clear stale localStorage entries if user is just visiting homepage normally
+      // This prevents redirect loops and unwanted signup page displays
+      localStorage.removeItem('pending_priceId');
+      localStorage.removeItem('pending_planName');
     }
   }, [router]);
 
