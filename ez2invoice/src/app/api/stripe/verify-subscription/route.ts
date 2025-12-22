@@ -88,11 +88,129 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      const subscription = subscriptions.data[0];
+      // Find the first active subscription (not just the first one)
+      // A subscription can be 'active', 'trialing', or 'past_due' (still has access)
+      const activeSubscription = subscriptions.data.find(
+        sub => sub.status === 'active' || sub.status === 'trialing' || sub.status === 'past_due'
+      );
+
+      if (!activeSubscription) {
+        // No active subscription found - check if any are scheduled to cancel
+        const scheduledCancel = subscriptions.data.find(
+          sub => sub.status === 'active' && sub.cancel_at_period_end === true
+        );
+        
+        if (scheduledCancel) {
+          // Subscription is active but scheduled to cancel - still grant access until period ends
+          const subscription = scheduledCancel;
+          const subscriptionStatus = subscription.status;
+          
+          // #region agent log
+          console.log('Found subscription scheduled to cancel but still active:', {
+            id: subscription.id,
+            status: subscription.status,
+            cancel_at_period_end: subscription.cancel_at_period_end,
+            current_period_end: subscription.current_period_end,
+          });
+          // #endregion
+          
+          // Continue to process this subscription as active
+          const price = subscription.items.data[0]?.price;
+          let planType = 'starter';
+
+          if (price?.metadata?.plan_type) {
+            planType = price.metadata.plan_type;
+          } else if (price?.metadata?.plan) {
+            planType = price.metadata.plan;
+          } else {
+            const amount = price?.unit_amount || 0;
+            if (amount >= 16000) {
+              planType = 'professional';
+            } else if (amount >= 8000) {
+              planType = 'starter';
+            }
+          }
+
+          // Update database if it's out of sync
+          if (userRecord.plan_type !== planType) {
+            await supabase
+              .from('users')
+              .update({
+                plan_type: planType,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', user.id);
+
+            // Also update shop
+            const { data: shopRecord } = await supabase
+              .from('truck_shops')
+              .select('id')
+              .eq('user_id', user.id)
+              .maybeSingle();
+
+            if (shopRecord) {
+              await supabase
+                .from('truck_shops')
+                .update({
+                  plan_type: planType,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', shopRecord.id);
+            }
+          }
+
+          return NextResponse.json({
+            hasActiveSubscription: true,
+            planType,
+          });
+        }
+        
+        // No active subscriptions found
+        // Update database to reflect this
+        await supabase
+          .from('users')
+          .update({
+            plan_type: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', user.id);
+
+        // Also update shop
+        const { data: shopRecord } = await supabase
+          .from('truck_shops')
+          .select('id')
+          .eq('user_id', user.id)
+          .maybeSingle();
+
+        if (shopRecord) {
+          await supabase
+            .from('truck_shops')
+            .update({
+              plan_type: null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', shopRecord.id);
+        }
+
+        return NextResponse.json({
+          hasActiveSubscription: false,
+          planType: null,
+        });
+      }
+
+      const subscription = activeSubscription;
       const subscriptionStatus = subscription.status;
 
+      // #region agent log
+      console.log('Found active subscription:', {
+        id: subscription.id,
+        status: subscription.status,
+        cancel_at_period_end: subscription.cancel_at_period_end,
+      });
+      // #endregion
+
       // Check if subscription is actually active
-      if (subscriptionStatus === 'active' || subscriptionStatus === 'trialing') {
+      if (subscriptionStatus === 'active' || subscriptionStatus === 'trialing' || subscriptionStatus === 'past_due') {
         // Determine plan type from subscription
         const price = subscription.items.data[0]?.price;
         let planType = 'starter';
