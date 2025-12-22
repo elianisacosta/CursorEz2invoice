@@ -72,7 +72,12 @@ export async function POST(req: NextRequest) {
             .eq('id', user.id);
           
           // Now check subscriptions for this customer - update userRecord
-          userRecord = { ...userRecord, stripe_customer_id: customer.id };
+          // Handle case where userRecord might be null
+          userRecord = { 
+            ...(userRecord || {}), 
+            stripe_customer_id: customer.id,
+            plan_type: userRecord?.plan_type || null
+          };
         } else {
           // #region agent log
           console.log('No Stripe customer found by email');
@@ -91,6 +96,14 @@ export async function POST(req: NextRequest) {
           planType: null,
         });
       }
+    }
+
+    // Ensure userRecord exists and has stripe_customer_id
+    if (!userRecord || !userRecord.stripe_customer_id) {
+      return NextResponse.json({
+        hasActiveSubscription: false,
+        planType: null,
+      });
     }
 
     // Check subscription status directly from Stripe
@@ -369,8 +382,8 @@ export async function POST(req: NextRequest) {
       console.error('Error checking Stripe subscription:', stripeError);
       // If Stripe check fails, trust the database
       return NextResponse.json({
-        hasActiveSubscription: userRecord.plan_type !== null,
-        planType: userRecord.plan_type,
+        hasActiveSubscription: userRecord?.plan_type !== null && userRecord?.plan_type !== undefined,
+        planType: userRecord?.plan_type || null,
       });
     }
   } catch (error: any) {
