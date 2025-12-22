@@ -447,6 +447,10 @@ export default function Dashboard() {
               setUserPlanType(result.planType);
             }
             
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:448',message:'Checkout verification successful, updating planType',data:{planType:result.planType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+            // #endregion
+            
             // Remove session_id from URL to clean it up
             urlParams.delete('session_id');
             const newUrl = window.location.pathname + (urlParams.toString() ? `?${urlParams.toString()}` : '');
@@ -456,6 +460,32 @@ export default function Dashboard() {
               type: 'success',
               message: 'Subscription activated successfully!',
             });
+            
+            // Refresh user record from database to ensure we have the latest plan_type
+            try {
+              const { data: { user: currentUser } } = await supabase.auth.getUser();
+              if (currentUser?.id) {
+                const { data: refreshedUserRecord } = await supabase
+                  .from('users')
+                  .select('plan_type, stripe_customer_id')
+                  .eq('id', currentUser.id)
+                  .maybeSingle();
+                
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:465',message:'Refreshed user record after checkout',data:{planType:refreshedUserRecord?.plan_type,matchesResult:refreshedUserRecord?.plan_type===result.planType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                // #endregion
+                
+                if (refreshedUserRecord?.plan_type) {
+                  setUserPlanType(refreshedUserRecord.plan_type);
+                }
+              }
+            } catch (refreshError) {
+              console.error('Error refreshing user record:', refreshError);
+            }
+            
+            // Wait a moment for database to be fully updated before allowing subscription check
+            // This ensures the subscription check sees the updated plan_type
+            await new Promise(resolve => setTimeout(resolve, 500));
           } else {
             console.error('Error verifying checkout session:', result.error);
             showToast({
@@ -528,12 +558,19 @@ export default function Dashboard() {
     };
     
     // Add a delay to ensure checkout verification completes first, or wait for verification to finish
+    // If verifying checkout, wait longer to ensure database is updated
+    const delay = isVerifyingCheckout ? 4000 : 1000;
+    
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:520',message:'Scheduling subscription check',data:{isVerifyingCheckout,delay},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
+    
     const timer = setTimeout(() => {
       checkSubscriptionAccess();
-    }, isVerifyingCheckout ? 3000 : 1000); // Wait longer if verifying checkout
+    }, delay);
     
     return () => clearTimeout(timer);
-  }, [isVerifyingCheckout]);
+  }, [isVerifyingCheckout, userPlanType]); // Also depend on userPlanType so it re-runs when plan is updated
 
   // Ensure shop exists for the user (create if it doesn't exist)
   useEffect(() => {
