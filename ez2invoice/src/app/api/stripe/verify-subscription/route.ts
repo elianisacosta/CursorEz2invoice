@@ -56,8 +56,20 @@ export async function POST(req: NextRequest) {
       const subscriptions = await stripe.subscriptions.list({
         customer: userRecord.stripe_customer_id,
         status: 'all',
-        limit: 1,
+        limit: 10, // Increase limit to catch all subscriptions
       });
+
+      // #region agent log
+      console.log('Stripe subscriptions found:', subscriptions.data.length, 'for customer:', userRecord.stripe_customer_id);
+      subscriptions.data.forEach((sub, idx) => {
+        console.log(`Subscription ${idx}:`, {
+          id: sub.id,
+          status: sub.status,
+          current_period_end: sub.current_period_end,
+          cancel_at_period_end: sub.cancel_at_period_end,
+        });
+      });
+      // #endregion
 
       if (subscriptions.data.length === 0) {
         // No subscriptions found in Stripe

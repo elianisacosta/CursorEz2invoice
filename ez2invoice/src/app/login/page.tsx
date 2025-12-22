@@ -84,12 +84,20 @@ function LoginForm() {
             // Having stripe_customer_id alone doesn't mean active subscription
             let hasSubscription = userRecord?.plan_type && userRecord.plan_type !== null;
 
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:85',message:'Initial subscription check',data:{hasSubscription,planType:userRecord?.plan_type,stripeCustomerId:!!userRecord?.stripe_customer_id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+            // #endregion
+
             // If database shows no subscription but user has stripe_customer_id,
             // verify directly with Stripe (webhook might not have fired yet)
             if (!hasSubscription && userRecord?.stripe_customer_id) {
               try {
                 const { data: { session } } = await supabase.auth.getSession();
                 if (session?.access_token) {
+                  // #region agent log
+                  fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:92',message:'Calling verify-subscription API',data:{stripeCustomerId:userRecord.stripe_customer_id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                  // #endregion
+                  
                   const verifyResponse = await fetch('/api/stripe/verify-subscription', {
                     method: 'POST',
                     headers: {
@@ -102,17 +110,34 @@ function LoginForm() {
 
                   if (verifyResponse.ok) {
                     const verifyData = await verifyResponse.json();
+                    
+                    // #region agent log
+                    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:107',message:'verify-subscription API response',data:{hasActiveSubscription:verifyData.hasActiveSubscription,planType:verifyData.planType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                    // #endregion
+                    
                     if (verifyData.hasActiveSubscription) {
                       hasSubscription = true;
                       console.log('Subscription verified from Stripe, plan:', verifyData.planType);
                     }
+                  } else {
+                    // #region agent log
+                    const errorData = await verifyResponse.json().catch(() => ({}));
+                    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:115',message:'verify-subscription API error',data:{status:verifyResponse.status,error:errorData.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                    // #endregion
                   }
                 }
               } catch (verifyError) {
                 console.error('Error verifying subscription from Stripe:', verifyError);
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:120',message:'verify-subscription exception',data:{error:verifyError?.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                // #endregion
                 // Continue with database value if verification fails
               }
             }
+
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:127',message:'Final subscription check before redirect',data:{hasSubscription,willRedirectTo:hasSubscription?'dashboard':'pricing'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+            // #endregion
 
             if (hasSubscription) {
               // User has an active subscription, redirect to dashboard
