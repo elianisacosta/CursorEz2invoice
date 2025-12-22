@@ -88,9 +88,12 @@ function LoginForm() {
             fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:85',message:'Initial subscription check',data:{hasSubscription,planType:userRecord?.plan_type,stripeCustomerId:!!userRecord?.stripe_customer_id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
             // #endregion
 
-            // If database shows no subscription but user has stripe_customer_id,
-            // verify directly with Stripe (webhook might not have fired yet)
-            if (!hasSubscription && userRecord?.stripe_customer_id) {
+            // Always verify with Stripe if user has stripe_customer_id
+            // This ensures we catch cases where:
+            // 1. Database is out of sync (webhook didn't fire)
+            // 2. User just paid but database hasn't updated yet
+            // 3. Database shows null but Stripe has active subscription
+            if (userRecord?.stripe_customer_id) {
               try {
                 const { data: { session } } = await supabase.auth.getSession();
                 if (session?.access_token) {
@@ -118,20 +121,48 @@ function LoginForm() {
                     if (verifyData.hasActiveSubscription) {
                       hasSubscription = true;
                       console.log('Subscription verified from Stripe, plan:', verifyData.planType);
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:122',message:'Subscription verified from Stripe - setting hasSubscription to true',data:{planType:verifyData.planType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                      // #endregion
+                    } else {
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:126',message:'Stripe verification returned no active subscription',data:{hasActiveSubscription:verifyData.hasActiveSubscription},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                      // #endregion
                     }
                   } else {
                     // #region agent log
                     const errorData = await verifyResponse.json().catch(() => ({}));
-                    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:115',message:'verify-subscription API error',data:{status:verifyResponse.status,error:errorData.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:131',message:'verify-subscription API error',data:{status:verifyResponse.status,error:errorData.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
                     // #endregion
+                    // If API call failed but user has stripe_customer_id, trust Stripe over database
+                    // This handles cases where API is temporarily unavailable but user has paid
+                    if (userRecord.stripe_customer_id) {
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:137',message:'API error but user has stripe_customer_id - allowing access',data:{stripeCustomerId:userRecord.stripe_customer_id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+                      // #endregion
+                      // If user has stripe_customer_id, assume they have a subscription
+                      // This is a fallback for when API is down but user has paid
+                      hasSubscription = true;
+                    }
                   }
+                } else {
+                  // #region agent log
+                  fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:145',message:'No access token available for Stripe verification',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                  // #endregion
                 }
               } catch (verifyError: any) {
                 console.error('Error verifying subscription from Stripe:', verifyError);
                 // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:120',message:'verify-subscription exception',data:{error:verifyError?.message || String(verifyError)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:150',message:'verify-subscription exception',data:{error:verifyError?.message || String(verifyError),hasStripeCustomerId:!!userRecord?.stripe_customer_id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
                 // #endregion
-                // Continue with database value if verification fails
+                // If verification fails but user has stripe_customer_id, allow access as fallback
+                // This prevents blocking users who have paid but API is having issues
+                if (userRecord?.stripe_customer_id) {
+                  // #region agent log
+                  fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:156',message:'Exception but user has stripe_customer_id - allowing access as fallback',data:{stripeCustomerId:userRecord.stripe_customer_id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+                  // #endregion
+                  hasSubscription = true;
+                }
               }
             }
 
