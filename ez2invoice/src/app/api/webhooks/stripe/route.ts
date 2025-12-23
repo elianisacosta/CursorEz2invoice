@@ -5,43 +5,57 @@ import Stripe from 'stripe';
 
 // Use SERVICE_ROLE key to bypass RLS for webhook operations
 // This is REQUIRED - webhooks need to bypass RLS to update user records
-if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  console.error('[Webhook] ❌ CRITICAL: SUPABASE_SERVICE_ROLE_KEY not set! Webhook updates will fail if RLS is enabled.');
-  throw new Error('SUPABASE_SERVICE_ROLE_KEY environment variable is required for webhook operations');
-}
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-console.log('[Webhook] ✅ Using SERVICE_ROLE_KEY for webhook operations (RLS bypass enabled)');
-
-// Get webhook secret from environment variable
-const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-// Verify Stripe mode consistency
-const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
-if (stripeSecretKey) {
-  const isTestMode = stripeSecretKey.startsWith('sk_test_');
-  const isLiveMode = stripeSecretKey.startsWith('sk_live_');
-  const webhookIsTest = webhookSecret?.startsWith('whsec_test_') || webhookSecret?.startsWith('whsec_');
-  const webhookIsLive = webhookSecret?.startsWith('whsec_live_');
-  
-  console.log(`[Webhook] Stripe mode check:`, {
-    secretKeyMode: isTestMode ? 'TEST' : isLiveMode ? 'LIVE' : 'UNKNOWN',
-    webhookSecretPrefix: webhookSecret ? webhookSecret.substring(0, 10) + '...' : 'NOT SET',
-  });
-  
-  // Note: Webhook secrets don't have test/live prefixes in the same way, but we log for visibility
-  if (!webhookSecret) {
-    console.error('[Webhook] ❌ STRIPE_WEBHOOK_SECRET is not set!');
-  } else {
-    console.log('[Webhook] ✅ Webhook secret is configured');
+// Note: Check happens at runtime, not module load time, to allow builds without env vars
+function getSupabaseClient() {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.error('[Webhook] ❌ CRITICAL: SUPABASE_SERVICE_ROLE_KEY not set! Webhook updates will fail if RLS is enabled.');
+    throw new Error('SUPABASE_SERVICE_ROLE_KEY environment variable is required for webhook operations');
   }
+  
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+  
+  console.log('[Webhook] ✅ Using SERVICE_ROLE_KEY for webhook operations (RLS bypass enabled)');
+  return supabase;
 }
 
 export async function POST(req: NextRequest) {
+  // Get webhook secret from environment variable (at runtime, not module load time)
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  
+  // Initialize Supabase client at runtime (not module load time)
+  // Check for SERVICE_ROLE_KEY first to provide better error message
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.error('[Webhook] ❌ CRITICAL: SUPABASE_SERVICE_ROLE_KEY not set! Webhook updates will fail if RLS is enabled.');
+    return NextResponse.json(
+      { error: 'SUPABASE_SERVICE_ROLE_KEY environment variable is required for webhook operations' },
+      { status: 500 }
+    );
+  }
+  
+  const supabase = getSupabaseClient();
+  
+  // Verify Stripe mode consistency (at runtime)
+  const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+  if (stripeSecretKey) {
+    const isTestMode = stripeSecretKey.startsWith('sk_test_');
+    const isLiveMode = stripeSecretKey.startsWith('sk_live_');
+    
+    console.log(`[Webhook] Stripe mode check:`, {
+      secretKeyMode: isTestMode ? 'TEST' : isLiveMode ? 'LIVE' : 'UNKNOWN',
+      webhookSecretPrefix: webhookSecret ? webhookSecret.substring(0, 10) + '...' : 'NOT SET',
+    });
+    
+    // Note: Webhook secrets don't have test/live prefixes in the same way, but we log for visibility
+    if (!webhookSecret) {
+      console.error('[Webhook] ❌ STRIPE_WEBHOOK_SECRET is not set!');
+    } else {
+      console.log('[Webhook] ✅ Webhook secret is configured');
+    }
+  }
+  
   const body = await req.text();
   const signature = req.headers.get('stripe-signature');
 
