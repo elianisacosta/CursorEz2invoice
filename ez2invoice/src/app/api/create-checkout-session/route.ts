@@ -4,6 +4,12 @@ import { createClient } from '@supabase/supabase-js';
 
 export async function POST(req: NextRequest) {
   try {
+    // Log Stripe mode being used for checkout session creation
+    const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+    const isTestMode = stripeSecretKey?.startsWith('sk_test_');
+    const isLiveMode = stripeSecretKey?.startsWith('sk_live_');
+    console.log(`[CreateCheckoutSession] Creating checkout session in ${isTestMode ? 'TEST' : isLiveMode ? 'LIVE' : 'UNKNOWN'} mode`);
+    
     const { priceId, customerEmail, couponId, discounts, accessToken, userId } = await req.json();
 
     if (!priceId) {
