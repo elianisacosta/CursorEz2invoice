@@ -3,6 +3,7 @@
 import { Check } from 'lucide-react';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/lib/supabase';
 
 type Plan = {
   name: string;
@@ -177,12 +178,17 @@ function PlanCheckoutButton({ plan }: { plan: Plan }) {
     }
 
     try {
+      // Get access token for linking Stripe session to Supabase user
+      const { data: { session } } = await supabase.auth.getSession();
+      
       const res = await fetch('/api/create-checkout-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           priceId: plan.priceId,
           customerEmail: user.email,
+          accessToken: session?.access_token,
+          userId: user.id,
         }),
       });
 

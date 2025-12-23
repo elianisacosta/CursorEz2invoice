@@ -44,6 +44,8 @@ function AuthCompleteContent() {
               body: JSON.stringify({
                 priceId: priceId,
                 customerEmail: session.user.email,
+                accessToken: session.access_token,
+                userId: session.user.id,
               }),
             });
 

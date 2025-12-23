@@ -1,12 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { stripe } from '@/lib/stripe';
+import { createClient } from '@supabase/supabase-js';
 
 export async function POST(req: NextRequest) {
   try {
-    const { priceId, customerEmail, couponId, discounts } = await req.json();
+    const { priceId, customerEmail, couponId, discounts, accessToken, userId } = await req.json();
 
     if (!priceId) {
       return NextResponse.json({ error: 'Missing priceId' }, { status: 400 });
+    }
+
+    // If accessToken is provided, verify user and get userId
+    let supabaseUserId = userId;
+    if (accessToken && !supabaseUserId) {
+      const supabase = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      );
+      const { data: { user }, error: authError } = await supabase.auth.getUser(accessToken);
+      if (!authError && user) {
+        supabaseUserId = user.id;
+      }
     }
 
     // Build session configuration
@@ -26,6 +40,16 @@ export async function POST(req: NextRequest) {
       // This allows customers to enter Stripe Promotion Codes (not just Coupons)
       allow_promotion_codes: true,
     };
+
+    // Link Stripe session to Supabase user via client_reference_id
+    // This allows webhook to correctly associate the subscription with the user
+    if (supabaseUserId) {
+      sessionConfig.client_reference_id = supabaseUserId;
+      sessionConfig.metadata = {
+        supabase_user_id: supabaseUserId,
+      };
+      console.log(`[CreateCheckoutSession] Linking session to Supabase user: ${supabaseUserId}`);
+    }
 
     // Add discounts if provided (for auto-apply discounts)
     // discounts should be an array like: [{ coupon: 'COUPON_ID' }]

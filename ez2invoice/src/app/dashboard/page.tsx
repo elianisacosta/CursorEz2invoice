@@ -567,6 +567,76 @@ export default function Dashboard() {
           recentCheckoutTimestamp,
         });
 
+        // If user has active plan, verify it's truly active (not expired)
+        if (hasActivePlan) {
+          console.log('[Dashboard] User has plan_type in DB, verifying subscription status');
+          
+          // Verify with Stripe to check if subscription is truly active
+          try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session?.access_token && hasStripeCustomerId) {
+              const verifyResponse = await fetch('/api/stripe/verify-subscription', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  accessToken: session.access_token,
+                }),
+              });
+
+              if (verifyResponse.ok) {
+                const verifyData = await verifyResponse.json();
+                console.log('[Dashboard] Stripe verification result:', {
+                  hasActiveSubscription: verifyData.hasActiveSubscription,
+                  planType: verifyData.planType,
+                  subscriptionStatus: verifyData.subscriptionStatus,
+                  currentPeriodEnd: verifyData.currentPeriodEnd,
+                });
+                
+                // Only show "ended" if status is canceled/unpaid/past_due AND period_end < now
+                if (verifyData.hasActiveSubscription && (verifyData.subscriptionStatus === 'active' || verifyData.subscriptionStatus === 'trialing')) {
+                  // Update local state if different
+                  if (verifyData.planType !== planType) {
+                    setUserPlanType(verifyData.planType);
+                  }
+                  console.log('[Dashboard] ✅ User has active subscription:', verifyData.planType);
+                  // Clear grace period timestamp if subscription is confirmed
+                  if (typeof window !== 'undefined' && recentCheckoutTimestamp) {
+                    localStorage.removeItem('recent_checkout_timestamp');
+                  }
+                  return; // User has active subscription, allow access
+                } else if (verifyData.subscriptionStatus === 'canceled' || verifyData.subscriptionStatus === 'unpaid' || verifyData.subscriptionStatus === 'past_due') {
+                  const now = Math.floor(Date.now() / 1000);
+                  if (verifyData.currentPeriodEnd && verifyData.currentPeriodEnd < now) {
+                    // Subscription truly ended - redirect to pricing
+                    console.log('[Dashboard] ❌ Subscription ended - status:', verifyData.subscriptionStatus, 'period_end:', verifyData.currentPeriodEnd, 'now:', now);
+                    showToast({
+                      type: 'error',
+                      message: 'Your subscription has ended. Please subscribe to continue using EZ2Invoice.'
+                    });
+                    setTimeout(() => {
+                      window.location.href = '/pricing';
+                    }, 2000);
+                    return;
+                  } else {
+                    // Still within period, grant access
+                    console.log('[Dashboard] ✅ Subscription within period, granting access');
+                    return;
+                  }
+                }
+              }
+            }
+          } catch (verifyError) {
+            console.error('[Dashboard] Error verifying subscription:', verifyError);
+            // If verification fails but we have plan_type, allow access (trust DB)
+            if (hasActivePlan) {
+              console.log('[Dashboard] ✅ Verification failed but plan_type exists, allowing access');
+              return;
+            }
+          }
+        }
+
         // If user has stripe_customer_id but no plan_type, verify with Stripe
         // This handles cases where webhook hasn't fired yet or DB is out of sync
         if (hasStripeCustomerId && !hasActivePlan) {
@@ -589,7 +659,7 @@ export default function Dashboard() {
                 const verifyData = await verifyResponse.json();
                 console.log('[Dashboard] Stripe verification result:', verifyData);
                 
-                if (verifyData.hasActiveSubscription && verifyData.planType) {
+                if (verifyData.hasActiveSubscription && (verifyData.subscriptionStatus === 'active' || verifyData.subscriptionStatus === 'trialing')) {
                   // Update local state
                   setUserPlanType(verifyData.planType);
                   console.log('[Dashboard] ✅ Subscription verified from Stripe, plan:', verifyData.planType);
@@ -602,19 +672,15 @@ export default function Dashboard() {
           }
         }
 
-        // If user has active plan, allow access
-        if (hasActivePlan) {
-          console.log('[Dashboard] ✅ User has active subscription:', planType);
-          // Clear grace period timestamp if subscription is confirmed
-          if (typeof window !== 'undefined' && recentCheckoutTimestamp) {
-            localStorage.removeItem('recent_checkout_timestamp');
-          }
-          return;
-        }
+        // If no subscription found, check if we should poll (within grace period or recent checkout)
+        const shouldPoll = isWithinGracePeriod || recentCheckoutTimestamp;
+        const pollStartTime = recentCheckoutTimestamp ? parseInt(recentCheckoutTimestamp) : Date.now();
+        const pollDurationMs = 30 * 1000; // 30 seconds
+        const timeSinceCheckout = Date.now() - pollStartTime;
+        const isWithinPollWindow = timeSinceCheckout < pollDurationMs;
 
-        // If within grace period, show loading message and retry
-        if (isWithinGracePeriod) {
-          console.log('[Dashboard] ⏳ Within grace period - showing loading and retrying');
+        if (shouldPoll && isWithinPollWindow) {
+          console.log('[Dashboard] ⏳ No subscription found, polling DB (attempt will retry)');
           showToast({
             type: 'info',
             message: 'Setting up your subscription... Please wait.',
@@ -627,15 +693,25 @@ export default function Dashboard() {
           return;
         }
 
-        // No active subscription and grace period expired - redirect to pricing
-        console.log('[Dashboard] ❌ No active subscription - redirecting to pricing');
-        showToast({
-          type: 'error',
-          message: 'Your subscription has ended. Please subscribe to continue using EZ2Invoice.'
-        });
-        setTimeout(() => {
-          window.location.href = '/pricing';
-        }, 2000);
+        // No active subscription found after polling window - redirect to pricing
+        // But only if we're sure it's not just a delay (check if user has stripe_customer_id)
+        if (!hasStripeCustomerId) {
+          console.log('[Dashboard] ❌ No subscription and no Stripe customer ID - redirecting to pricing');
+          showToast({
+            type: 'error',
+            message: 'Please subscribe to continue using EZ2Invoice.'
+          });
+          setTimeout(() => {
+            window.location.href = '/pricing';
+          }, 2000);
+        } else {
+          // User has Stripe customer but no plan - might be webhook delay, show message
+          console.log('[Dashboard] ⚠️ User has Stripe customer but no plan_type - might be webhook delay');
+          showToast({
+            type: 'info',
+            message: 'Your subscription is being activated. Please refresh the page in a moment.',
+          });
+        }
       } catch (error) {
         console.error('[Dashboard] Error checking subscription access:', error);
       }

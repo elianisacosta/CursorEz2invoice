@@ -124,6 +124,8 @@ function AuthCallbackContent() {
               body: JSON.stringify({
                 priceId: priceId,
                 customerEmail: customerEmail,
+                accessToken: session.access_token,
+                userId: session.user.id,
               }),
             });
 

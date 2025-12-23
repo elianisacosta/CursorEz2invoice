@@ -344,6 +344,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({
           hasActiveSubscription: true,
           planType,
+          subscriptionStatus: subscriptionStatus,
+          currentPeriodEnd: subscription.current_period_end,
         });
       } else {
         // Subscription is canceled, past_due, etc. - no active subscription

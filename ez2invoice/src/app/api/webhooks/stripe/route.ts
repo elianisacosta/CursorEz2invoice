@@ -3,10 +3,15 @@ import { stripe } from '@/lib/stripe';
 import { createClient } from '@supabase/supabase-js';
 import Stripe from 'stripe';
 
+// Use SERVICE_ROLE key to bypass RLS for webhook operations
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+
+if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  console.warn('[Webhook] ⚠️ SUPABASE_SERVICE_ROLE_KEY not set, using ANON_KEY (RLS may block updates)');
+}
 
 // Get webhook secret from environment variable
 const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -123,32 +128,66 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        console.log(`Processing checkout completion for customer ${customerId}, plan: ${planType}`);
+        console.log(`[Webhook] Processing checkout completion for customer ${customerId}, plan: ${planType}`);
 
-        // Find user by email in Supabase
-        const { data: userRecord, error: userError } = await supabase
-          .from('users')
-          .select('id')
-          .eq('email', customerEmail)
-          .maybeSingle();
-
-        if (userError) {
-          console.error('Error finding user:', userError);
-          return NextResponse.json(
-            { error: 'Failed to find user' },
-            { status: 500 }
-          );
+        // Try to get Supabase user ID from client_reference_id (set during checkout session creation)
+        let userId: string | null = null;
+        if (session.client_reference_id) {
+          userId = session.client_reference_id;
+          console.log(`[Webhook] Found Supabase user ID from client_reference_id: ${userId}`);
+        } else if (session.metadata?.supabase_user_id) {
+          userId = session.metadata.supabase_user_id;
+          console.log(`[Webhook] Found Supabase user ID from metadata: ${userId}`);
         }
 
+        // Find user by ID if we have it, otherwise fall back to email lookup
+        let userRecord: { id: string } | null = null;
+        if (userId) {
+          const { data, error } = await supabase
+            .from('users')
+            .select('id')
+            .eq('id', userId)
+            .maybeSingle();
+          
+          if (error) {
+            console.error('[Webhook] Error finding user by ID:', error);
+          } else if (data) {
+            userRecord = data;
+            console.log(`[Webhook] Found user by ID: ${userId}`);
+          }
+        }
+
+        // Fall back to email lookup if user not found by ID
         if (!userRecord) {
-          console.error(`User not found for email: ${customerEmail}`);
-          return NextResponse.json(
-            { error: 'User not found' },
-            { status: 404 }
-          );
+          console.log(`[Webhook] User not found by ID, trying email lookup: ${customerEmail}`);
+          const { data, error: userError } = await supabase
+            .from('users')
+            .select('id')
+            .eq('email', customerEmail)
+            .maybeSingle();
+
+          if (userError) {
+            console.error('[Webhook] Error finding user by email:', userError);
+            return NextResponse.json(
+              { error: 'Failed to find user' },
+              { status: 500 }
+            );
+          }
+
+          if (!data) {
+            console.error(`[Webhook] User not found for email: ${customerEmail}`);
+            return NextResponse.json(
+              { error: 'User not found' },
+              { status: 404 }
+            );
+          }
+          
+          userRecord = data;
+          console.log(`[Webhook] Found user by email: ${userRecord.id}`);
         }
 
         // Update user record with stripe_customer_id and plan_type
+        // Use service role key to bypass RLS
         const { error: updateError } = await supabase
           .from('users')
           .update({
@@ -157,6 +196,12 @@ export async function POST(req: NextRequest) {
             updated_at: new Date().toISOString(),
           })
           .eq('id', userRecord.id);
+        
+        console.log(`[Webhook] Updating user ${userRecord.id}:`, {
+          stripe_customer_id: customerId,
+          plan_type: planType,
+          updateError: updateError?.message,
+        });
 
         if (updateError) {
           console.error('Error updating user record:', updateError);

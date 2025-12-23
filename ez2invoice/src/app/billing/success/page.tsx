@@ -40,31 +40,26 @@ function BillingSuccessContent() {
           return;
         }
 
-        console.log(`[BillingSuccess] Verifying checkout session: ${sessionId}`);
+        console.log(`[BillingSuccess] Syncing checkout session: ${sessionId}`);
         setMessage('Verifying your payment...');
 
-        // Call API to verify checkout session and update DB
-        const response = await fetch('/api/stripe/verify-checkout-session', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            sessionId: sessionId,
-            accessToken: session.access_token,
-          }),
+        // Call sync API to retrieve checkout session from Stripe and upsert subscription into DB
+        const syncUrl = `/api/stripe/sync?session_id=${encodeURIComponent(sessionId)}&access_token=${encodeURIComponent(session.access_token)}`;
+        const response = await fetch(syncUrl, {
+          method: 'GET',
         });
 
         const result = await response.json();
 
-        console.log(`[BillingSuccess] Verification result:`, {
+        console.log(`[BillingSuccess] Sync result:`, {
           success: response.ok && result.success,
           planType: result.planType,
+          subscriptionStatus: result.subscriptionStatus,
           error: result.error,
         });
 
         if (!response.ok || !result.success) {
-          throw new Error(result.error || 'Failed to verify checkout session');
+          throw new Error(result.error || 'Failed to sync checkout session');
         }
 
         // Wait a moment for database to sync
