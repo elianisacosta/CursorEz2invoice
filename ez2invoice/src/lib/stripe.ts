@@ -8,6 +8,17 @@ function getStripe(): Stripe {
     if (!secretKey) {
       throw new Error('STRIPE_SECRET_KEY environment variable is not set');
     }
+    
+    // Detect Stripe mode from secret key
+    const isTestMode = secretKey.startsWith('sk_test_');
+    const isLiveMode = secretKey.startsWith('sk_live_');
+    
+    if (!isTestMode && !isLiveMode) {
+      console.warn('[Stripe] ⚠️ Unknown Stripe key format. Expected sk_test_ or sk_live_');
+    }
+    
+    console.log(`[Stripe] ✅ Initializing Stripe client in ${isTestMode ? 'TEST' : isLiveMode ? 'LIVE' : 'UNKNOWN'} mode`);
+    
     stripeInstance = new Stripe(secretKey, {
       apiVersion: '2024-06-20',
     });

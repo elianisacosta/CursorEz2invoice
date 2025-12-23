@@ -20,6 +20,27 @@ console.log('[Webhook] ✅ Using SERVICE_ROLE_KEY for webhook operations (RLS by
 // Get webhook secret from environment variable
 const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
+// Verify Stripe mode consistency
+const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+if (stripeSecretKey) {
+  const isTestMode = stripeSecretKey.startsWith('sk_test_');
+  const isLiveMode = stripeSecretKey.startsWith('sk_live_');
+  const webhookIsTest = webhookSecret?.startsWith('whsec_test_') || webhookSecret?.startsWith('whsec_');
+  const webhookIsLive = webhookSecret?.startsWith('whsec_live_');
+  
+  console.log(`[Webhook] Stripe mode check:`, {
+    secretKeyMode: isTestMode ? 'TEST' : isLiveMode ? 'LIVE' : 'UNKNOWN',
+    webhookSecretPrefix: webhookSecret ? webhookSecret.substring(0, 10) + '...' : 'NOT SET',
+  });
+  
+  // Note: Webhook secrets don't have test/live prefixes in the same way, but we log for visibility
+  if (!webhookSecret) {
+    console.error('[Webhook] ❌ STRIPE_WEBHOOK_SECRET is not set!');
+  } else {
+    console.log('[Webhook] ✅ Webhook secret is configured');
+  }
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.text();
   const signature = req.headers.get('stripe-signature');

@@ -80,17 +80,24 @@ function BillingSuccessContent() {
         const maxAttempts = 30; // 30 attempts * 1 second = 30 seconds
         const pollInterval = 1000; // 1 second
         
-        while (attempts < maxAttempts) {
-          const { data: userRecord } = await supabase
-            .from('users')
-            .select('plan_type, stripe_customer_id')
-            .eq('id', user.id)
-            .maybeSingle();
-          
-          console.log(`[BillingSuccess] Poll attempt ${attempts + 1}/${maxAttempts}:`, {
-            planType: userRecord?.plan_type,
-            hasStripeCustomerId: !!userRecord?.stripe_customer_id,
-          });
+          while (attempts < maxAttempts) {
+            // VERIFICATION: Querying same table/fields that webhook upserts
+            // Table: users, Fields: plan_type, stripe_customer_id
+            const { data: userRecord } = await supabase
+              .from('users')
+              .select('plan_type, stripe_customer_id')
+              .eq('id', user.id)
+              .maybeSingle();
+            
+            console.log(`[BillingSuccess] Poll attempt ${attempts + 1}/${maxAttempts} - Status read from DB:`, {
+              table: 'users',
+              fieldsRead: {
+                plan_type: userRecord?.plan_type || 'NULL',
+                stripe_customer_id: userRecord?.stripe_customer_id ? 'SET' : 'NULL',
+              },
+              planType: userRecord?.plan_type,
+              hasStripeCustomerId: !!userRecord?.stripe_customer_id,
+            });
 
           // Check if subscription is active/trialing in DB
           if (userRecord?.plan_type && userRecord?.stripe_customer_id) {

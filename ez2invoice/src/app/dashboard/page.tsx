@@ -547,6 +547,15 @@ export default function Dashboard() {
           : false;
 
         // Get user record from database
+        // VERIFICATION: This queries the same table/fields that the webhook upserts
+        // Table: users
+        // Fields: plan_type, stripe_customer_id, updated_at
+        console.log(`[Dashboard] Querying subscription status for user ${userId}:`, {
+          table: 'users',
+          fields: ['plan_type', 'stripe_customer_id', 'updated_at'],
+          query: { id: userId },
+        });
+        
         const { data: userRecord } = await supabase
           .from('users')
           .select('plan_type, stripe_customer_id, updated_at')
@@ -557,9 +566,15 @@ export default function Dashboard() {
         const planType = userRecord?.plan_type;
         const hasActivePlan = planType !== null && planType !== undefined;
 
-        console.log('[Dashboard] Subscription check:', {
+        console.log('[Dashboard] Subscription status read from DB:', {
           userId,
           userEmail,
+          table: 'users',
+          fieldsRead: {
+            stripe_customer_id: hasStripeCustomerId ? 'SET' : 'NULL',
+            plan_type: planType || 'NULL',
+            updated_at: userRecord?.updated_at || 'NULL',
+          },
           hasStripeCustomerId,
           planType,
           hasActivePlan,
@@ -695,7 +710,7 @@ export default function Dashboard() {
 
         // No active subscription found after 30 second polling window - redirect to pricing
         if (!hasStripeCustomerId) {
-          console.log('[Dashboard] ❌ No subscription and no Stripe customer ID - redirecting to pricing');
+          console.log('[Dashboard] ❌ Redirect decision: REDIRECT TO PRICING - Status: NO_STRIPE_CUSTOMER_ID, reason: no_subscription');
           showToast({
             type: 'error',
             message: 'Please subscribe to continue using EZ2Invoice.'
@@ -705,7 +720,7 @@ export default function Dashboard() {
           }, 2000);
         } else {
           // User has Stripe customer but no plan after polling - subscription may have ended
-          console.log('[Dashboard] ❌ User has Stripe customer but no plan_type after polling - redirecting to pricing');
+          console.log('[Dashboard] ❌ Redirect decision: REDIRECT TO PRICING - Status: NO_PLAN_TYPE, reason: polling_timeout, hasStripeCustomerId:', hasStripeCustomerId);
           showToast({
             type: 'error',
             message: 'Your subscription has ended. Please subscribe to continue using EZ2Invoice.',
