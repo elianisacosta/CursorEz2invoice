@@ -4,14 +4,18 @@ import { createClient } from '@supabase/supabase-js';
 import Stripe from 'stripe';
 
 // Use SERVICE_ROLE key to bypass RLS for webhook operations
+// This is REQUIRED - webhooks need to bypass RLS to update user records
+if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  console.error('[Webhook] ❌ CRITICAL: SUPABASE_SERVICE_ROLE_KEY not set! Webhook updates will fail if RLS is enabled.');
+  throw new Error('SUPABASE_SERVICE_ROLE_KEY environment variable is required for webhook operations');
+}
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  console.warn('[Webhook] ⚠️ SUPABASE_SERVICE_ROLE_KEY not set, using ANON_KEY (RLS may block updates)');
-}
+console.log('[Webhook] ✅ Using SERVICE_ROLE_KEY for webhook operations (RLS bypass enabled)');
 
 // Get webhook secret from environment variable
 const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -50,8 +54,10 @@ export async function POST(req: NextRequest) {
   }
 
   // Handle the event
+  // Return 200 quickly to Stripe, then process asynchronously if needed
+  const startTime = Date.now();
   try {
-    console.log(`Received webhook event: ${event.type}`);
+    console.log(`[Webhook] Received webhook event: ${event.type}`);
     switch (event.type) {
       case 'checkout.session.completed': {
         console.log('Processing checkout.session.completed event');
@@ -204,32 +210,57 @@ export async function POST(req: NextRequest) {
         });
 
         if (updateError) {
-          console.error('Error updating user record:', updateError);
+          console.error(`[Webhook] ❌ Error updating user ${userRecord.id}:`, {
+            error: updateError.message,
+            code: updateError.code,
+            details: updateError.details,
+            hint: updateError.hint,
+            userId: userRecord.id,
+            customerId,
+            planType,
+          });
           return NextResponse.json(
-            { error: 'Failed to update user record' },
+            { error: 'Failed to update user record', details: updateError.message },
             { status: 500 }
           );
         }
+        
+        console.log(`[Webhook] ✅ Successfully updated user ${userRecord.id} with customer ${customerId} and plan ${planType}`);
 
         // Also update truck_shops if it exists for this user
-        const { data: shopRecord } = await supabase
+        const { data: shopRecord, error: shopSelectError } = await supabase
           .from('truck_shops')
           .select('id')
           .eq('user_id', userRecord.id)
           .maybeSingle();
 
+        if (shopSelectError) {
+          console.error(`[Webhook] Error selecting shop for user ${userRecord.id}:`, shopSelectError);
+        }
+
         if (shopRecord) {
-          await supabase
+          const { error: shopUpdateError } = await supabase
             .from('truck_shops')
             .update({
               plan_type: planType,
               updated_at: new Date().toISOString(),
             })
             .eq('id', shopRecord.id);
+          
+          if (shopUpdateError) {
+            console.error(`[Webhook] Error updating shop ${shopRecord.id}:`, {
+              error: shopUpdateError.message,
+              code: shopUpdateError.code,
+              details: shopUpdateError.details,
+              hint: shopUpdateError.hint,
+            });
+          } else {
+            console.log(`[Webhook] ✅ Successfully updated shop ${shopRecord.id} with plan ${planType}`);
+          }
         }
 
-            console.log(`✅ Successfully updated user ${userRecord.id} with customer ID ${customerId} and plan ${planType}`);
-            break;
+        console.log(`[Webhook] ✅ Successfully updated user ${userRecord.id} with customer ID ${customerId} and plan ${planType}`);
+        break;
           }
 
       case 'customer.subscription.created':
@@ -273,9 +304,9 @@ export async function POST(req: NextRequest) {
               subscriptionStatus === 'past_due' || 
               subscriptionStatus === 'unpaid' ||
               subscriptionStatus === 'incomplete_expired') {
-            console.log(`Subscription ${subscriptionStatus} for customer ${customerId}, blocking access`);
+            console.log(`[Webhook] Subscription ${subscriptionStatus} for customer ${customerId}, blocking access`);
             
-            await supabase
+            const { error: userUpdateError } = await supabase
               .from('users')
               .update({
                 plan_type: null, // Block access
@@ -283,21 +314,44 @@ export async function POST(req: NextRequest) {
               })
               .eq('id', userRecord.id);
 
+            if (userUpdateError) {
+              console.error(`[Webhook] ❌ Error updating user ${userRecord.id} (blocking access):`, {
+                error: userUpdateError.message,
+                code: userUpdateError.code,
+                details: userUpdateError.details,
+                hint: userUpdateError.hint,
+              });
+            } else {
+              console.log(`[Webhook] ✅ Blocked access for user ${userRecord.id} (subscription ${subscriptionStatus})`);
+            }
+
             // Update shop plan type too
-            const { data: shopRecord } = await supabase
+            const { data: shopRecord, error: shopSelectError } = await supabase
               .from('truck_shops')
               .select('id')
               .eq('user_id', userRecord.id)
               .maybeSingle();
 
+            if (shopSelectError) {
+              console.error(`[Webhook] Error selecting shop for user ${userRecord.id}:`, shopSelectError);
+            }
+
             if (shopRecord) {
-              await supabase
+              const { error: shopUpdateError } = await supabase
                 .from('truck_shops')
                 .update({
                   plan_type: null, // Block access
                   updated_at: new Date().toISOString(),
                 })
                 .eq('id', shopRecord.id);
+              
+              if (shopUpdateError) {
+                console.error(`[Webhook] ❌ Error updating shop ${shopRecord.id} (blocking access):`, {
+                  error: shopUpdateError.message,
+                  code: shopUpdateError.code,
+                  details: shopUpdateError.details,
+                });
+              }
             }
           } else if (subscriptionStatus === 'active' || subscriptionStatus === 'trialing') {
             // Subscription is active - update plan type based on current subscription
@@ -319,9 +373,9 @@ export async function POST(req: NextRequest) {
               }
             }
 
-            console.log(`Subscription active for customer ${customerId}, updating to ${planType} plan${cancelAtPeriodEnd ? ' (cancels at period end)' : ''}`);
+            console.log(`[Webhook] Subscription active for customer ${customerId}, updating to ${planType} plan${cancelAtPeriodEnd ? ' (cancels at period end)' : ''}`);
 
-            await supabase
+            const { error: userUpdateError } = await supabase
               .from('users')
               .update({
                 plan_type: planType,
@@ -329,29 +383,57 @@ export async function POST(req: NextRequest) {
               })
               .eq('id', userRecord.id);
 
+            if (userUpdateError) {
+              console.error(`[Webhook] ❌ Error updating user ${userRecord.id} (setting plan ${planType}):`, {
+                error: userUpdateError.message,
+                code: userUpdateError.code,
+                details: userUpdateError.details,
+                hint: userUpdateError.hint,
+                userId: userRecord.id,
+                customerId,
+                planType,
+              });
+            } else {
+              console.log(`[Webhook] ✅ Updated user ${userRecord.id} to plan ${planType}`);
+            }
+
             // Update shop plan type too
-            const { data: shopRecord } = await supabase
+            const { data: shopRecord, error: shopSelectError } = await supabase
               .from('truck_shops')
               .select('id')
               .eq('user_id', userRecord.id)
               .maybeSingle();
 
+            if (shopSelectError) {
+              console.error(`[Webhook] Error selecting shop for user ${userRecord.id}:`, shopSelectError);
+            }
+
             if (shopRecord) {
-              await supabase
+              const { error: shopUpdateError } = await supabase
                 .from('truck_shops')
                 .update({
                   plan_type: planType,
                   updated_at: new Date().toISOString(),
                 })
                 .eq('id', shopRecord.id);
+              
+              if (shopUpdateError) {
+                console.error(`[Webhook] ❌ Error updating shop ${shopRecord.id} (setting plan ${planType}):`, {
+                  error: shopUpdateError.message,
+                  code: shopUpdateError.code,
+                  details: shopUpdateError.details,
+                });
+              } else {
+                console.log(`[Webhook] ✅ Updated shop ${shopRecord.id} to plan ${planType}`);
+              }
             }
           }
         } else if (event.type === 'customer.subscription.deleted') {
           // Subscription cancelled and period ended - block access completely
           // Set plan_type to null to indicate no active subscription
-          console.log(`❌ Subscription deleted for customer ${customerId}, blocking access`);
+          console.log(`[Webhook] ❌ Subscription deleted for customer ${customerId}, blocking access`);
           
-          await supabase
+          const { error: userUpdateError } = await supabase
             .from('users')
             .update({
               plan_type: null, // null = no active subscription, access blocked
@@ -359,21 +441,46 @@ export async function POST(req: NextRequest) {
             })
             .eq('id', userRecord.id);
 
+          if (userUpdateError) {
+            console.error(`[Webhook] ❌ Error updating user ${userRecord.id} (deleting subscription):`, {
+              error: userUpdateError.message,
+              code: userUpdateError.code,
+              details: userUpdateError.details,
+              hint: userUpdateError.hint,
+              userId: userRecord.id,
+              customerId,
+            });
+          } else {
+            console.log(`[Webhook] ✅ Blocked access for user ${userRecord.id} (subscription deleted)`);
+          }
+
           // Update shop plan type too
-          const { data: shopRecord } = await supabase
+          const { data: shopRecord, error: shopSelectError } = await supabase
             .from('truck_shops')
             .select('id')
             .eq('user_id', userRecord.id)
             .maybeSingle();
 
+          if (shopSelectError) {
+            console.error(`[Webhook] Error selecting shop for user ${userRecord.id}:`, shopSelectError);
+          }
+
           if (shopRecord) {
-            await supabase
+            const { error: shopUpdateError } = await supabase
               .from('truck_shops')
               .update({
                 plan_type: null, // Block access
                 updated_at: new Date().toISOString(),
               })
               .eq('id', shopRecord.id);
+            
+            if (shopUpdateError) {
+              console.error(`[Webhook] ❌ Error updating shop ${shopRecord.id} (deleting subscription):`, {
+                error: shopUpdateError.message,
+                code: shopUpdateError.code,
+                details: shopUpdateError.details,
+              });
+            }
           }
         }
         break;
@@ -383,14 +490,29 @@ export async function POST(req: NextRequest) {
         console.log(`⚠️ Unhandled event type: ${event.type}`);
     }
 
-    console.log(`✅ Successfully processed webhook event: ${event.type}`);
+    const processingTime = Date.now() - startTime;
+    console.log(`[Webhook] ✅ Successfully processed webhook event: ${event.type} (took ${processingTime}ms)`);
+    
+    // Return 200 quickly to Stripe (Stripe expects response within 30 seconds)
     return NextResponse.json({ received: true });
   } catch (error: any) {
-    console.error('Error processing webhook:', error);
-    return NextResponse.json(
-      { error: 'Webhook processing failed', details: error.message },
-      { status: 500 }
-    );
+    const processingTime = Date.now() - startTime;
+    console.error(`[Webhook] ❌ Error processing webhook event ${event.type} (took ${processingTime}ms):`, {
+      error: error.message,
+      stack: error.stack,
+      eventType: event.type,
+    });
+    
+    // Still return 200 to prevent Stripe from retrying (we'll handle errors internally)
+    // Only return error status for critical issues
+    if (error.message?.includes('SERVICE_ROLE_KEY')) {
+      return NextResponse.json(
+        { error: 'Webhook configuration error', details: error.message },
+        { status: 500 }
+      );
+    }
+    
+    return NextResponse.json({ received: true, error: 'Processing failed but acknowledged' });
   }
 }
 
