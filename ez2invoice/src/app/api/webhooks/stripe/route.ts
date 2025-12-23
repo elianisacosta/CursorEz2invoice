@@ -220,7 +220,8 @@ export async function POST(req: NextRequest) {
           const subscriptionStatus = subscription.status;
           const cancelAtPeriodEnd = subscription.cancel_at_period_end;
           
-          console.log(`Subscription ${event.type === 'created' ? 'created' : 'updated'} for customer ${customerId}: status=${subscriptionStatus}, cancel_at_period_end=${cancelAtPeriodEnd}`);
+          const eventTypeLabel = event.type === 'customer.subscription.created' ? 'created' : 'updated';
+          console.log(`Subscription ${eventTypeLabel} for customer ${customerId}: status=${subscriptionStatus}, cancel_at_period_end=${cancelAtPeriodEnd}`);
           
           // If subscription is actually canceled, past_due, or unpaid, block access
           if (subscriptionStatus === 'canceled' || 
