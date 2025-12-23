@@ -94,6 +94,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    console.log(`[VerifyCheckoutSession] Updating user ${user.id} with customer ${customerId} and plan ${planType}`);
+
     // Update user record with stripe_customer_id and plan_type
     const { error: updateError } = await supabase
       .from('users')
@@ -105,12 +107,32 @@ export async function POST(req: NextRequest) {
       .eq('id', user.id);
 
     if (updateError) {
-      console.error('Error updating user record:', updateError);
+      console.error('[VerifyCheckoutSession] Error updating user record:', updateError);
       return NextResponse.json(
         { error: 'Failed to update user record', details: updateError.message },
         { status: 500 }
       );
     }
+
+    // Also update truck_shops if it exists for this user
+    const { data: shopRecord } = await supabase
+      .from('truck_shops')
+      .select('id')
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (shopRecord) {
+      await supabase
+        .from('truck_shops')
+        .update({
+          plan_type: planType,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', shopRecord.id);
+      console.log(`[VerifyCheckoutSession] Updated shop ${shopRecord.id} with plan ${planType}`);
+    }
+
+    console.log(`[VerifyCheckoutSession] ✅ Successfully updated user ${user.id} with plan ${planType}`);
 
     return NextResponse.json({
       success: true,

@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
         },
       ],
       customer_email: customerEmail,
-      success_url: `${process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000'}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000'}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000'}/pricing`,
       // Enable promotion code entry in checkout UI
       // This allows customers to enter Stripe Promotion Codes (not just Coupons)

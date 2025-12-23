@@ -513,64 +513,143 @@ export default function Dashboard() {
     const checkSubscriptionAccess = async () => {
       // Don't check subscription if we're currently verifying a checkout session
       if (isVerifyingCheckout) {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:485',message:'Skipping subscription check - verifying checkout',data:{isVerifyingCheckout},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
+        console.log('[Dashboard] Skipping subscription check - verifying checkout');
         return;
       }
 
       try {
         const { data: userData } = await supabase.auth.getUser();
-        if (userData?.user?.id) {
-          const { data: userRecord } = await supabase
-            .from('users')
-            .select('plan_type, stripe_customer_id')
-            .eq('id', userData.user.id)
-            .maybeSingle();
+        if (!userData?.user?.id) {
+          return;
+        }
+
+        const userId = userData.user.id;
+        const userEmail = userData.user.email?.toLowerCase() || '';
+        
+        // Founders are exempt from this check
+        const founderEmails = ['acostaelianis@yahoo.com', 'founder@ez2invoice.com', 'admin@ez2invoice.com'];
+        const isFounder = founderEmails.includes(userEmail);
+        
+        if (isFounder) {
+          console.log('[Dashboard] Founder access - skipping subscription check');
+          return;
+        }
+
+        // Check if user just came from checkout (within grace window)
+        // Check localStorage for recent checkout completion timestamp
+        const recentCheckoutTimestamp = typeof window !== 'undefined' 
+          ? localStorage.getItem('recent_checkout_timestamp')
+          : null;
+        
+        const gracePeriodMs = 30 * 1000; // 30 seconds grace period
+        const isWithinGracePeriod = recentCheckoutTimestamp 
+          ? (Date.now() - parseInt(recentCheckoutTimestamp)) < gracePeriodMs
+          : false;
+
+        // Get user record from database
+        const { data: userRecord } = await supabase
+          .from('users')
+          .select('plan_type, stripe_customer_id, updated_at')
+          .eq('id', userId)
+          .maybeSingle();
+        
+        const hasStripeCustomerId = !!userRecord?.stripe_customer_id;
+        const planType = userRecord?.plan_type;
+        const hasActivePlan = planType !== null && planType !== undefined;
+
+        console.log('[Dashboard] Subscription check:', {
+          userId,
+          userEmail,
+          hasStripeCustomerId,
+          planType,
+          hasActivePlan,
+          isWithinGracePeriod,
+          recentCheckoutTimestamp,
+        });
+
+        // If user has stripe_customer_id but no plan_type, verify with Stripe
+        // This handles cases where webhook hasn't fired yet or DB is out of sync
+        if (hasStripeCustomerId && !hasActivePlan) {
+          console.log('[Dashboard] User has Stripe customer ID but no plan_type - verifying with Stripe');
           
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:495',message:'Subscription check result',data:{hasUserRecord:!!userRecord,planType:userRecord?.plan_type,stripeCustomerId:!!userRecord?.stripe_customer_id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-          // #endregion
-          
-          // Check if user has no active subscription (plan_type is null)
-          // Founders are exempt from this check
-          const founderEmails = ['acostaelianis@yahoo.com', 'founder@ez2invoice.com', 'admin@ez2invoice.com'];
-          const isFounder = founderEmails.includes(userData.user.email?.toLowerCase() || '');
-          
-          if (!isFounder && (!userRecord?.plan_type || userRecord.plan_type === null)) {
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:502',message:'Redirecting to pricing - no subscription',data:{planType:userRecord?.plan_type},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-            // #endregion
-            // User has no active subscription - redirect to pricing
-            showToast({
-              type: 'error',
-              message: 'Your subscription has ended. Please subscribe to continue using EZ2Invoice.'
-            });
-            setTimeout(() => {
-              window.location.href = '/pricing';
-            }, 2000);
-            return;
+          try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session?.access_token) {
+              const verifyResponse = await fetch('/api/stripe/verify-subscription', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  accessToken: session.access_token,
+                }),
+              });
+
+              if (verifyResponse.ok) {
+                const verifyData = await verifyResponse.json();
+                console.log('[Dashboard] Stripe verification result:', verifyData);
+                
+                if (verifyData.hasActiveSubscription && verifyData.planType) {
+                  // Update local state
+                  setUserPlanType(verifyData.planType);
+                  console.log('[Dashboard] ✅ Subscription verified from Stripe, plan:', verifyData.planType);
+                  return; // User has active subscription, allow access
+                }
+              }
+            }
+          } catch (verifyError) {
+            console.error('[Dashboard] Error verifying subscription:', verifyError);
           }
         }
+
+        // If user has active plan, allow access
+        if (hasActivePlan) {
+          console.log('[Dashboard] ✅ User has active subscription:', planType);
+          // Clear grace period timestamp if subscription is confirmed
+          if (typeof window !== 'undefined' && recentCheckoutTimestamp) {
+            localStorage.removeItem('recent_checkout_timestamp');
+          }
+          return;
+        }
+
+        // If within grace period, show loading message and retry
+        if (isWithinGracePeriod) {
+          console.log('[Dashboard] ⏳ Within grace period - showing loading and retrying');
+          showToast({
+            type: 'info',
+            message: 'Setting up your subscription... Please wait.',
+          });
+          
+          // Retry after a delay
+          setTimeout(() => {
+            checkSubscriptionAccess();
+          }, 2000);
+          return;
+        }
+
+        // No active subscription and grace period expired - redirect to pricing
+        console.log('[Dashboard] ❌ No active subscription - redirecting to pricing');
+        showToast({
+          type: 'error',
+          message: 'Your subscription has ended. Please subscribe to continue using EZ2Invoice.'
+        });
+        setTimeout(() => {
+          window.location.href = '/pricing';
+        }, 2000);
       } catch (error) {
-        console.error('Error checking subscription access:', error);
+        console.error('[Dashboard] Error checking subscription access:', error);
       }
     };
     
-    // Add a delay to ensure checkout verification completes first, or wait for verification to finish
-    // If verifying checkout, wait longer to ensure database is updated
+    // Add a delay to ensure checkout verification completes first
     const delay = isVerifyingCheckout ? 4000 : 1000;
-    
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:520',message:'Scheduling subscription check',data:{isVerifyingCheckout,delay},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
     
     const timer = setTimeout(() => {
       checkSubscriptionAccess();
     }, delay);
     
     return () => clearTimeout(timer);
-  }, [isVerifyingCheckout, userPlanType]); // Also depend on userPlanType so it re-runs when plan is updated
+  }, [isVerifyingCheckout, userPlanType, showToast]);
 
   // Ensure shop exists for the user (create if it doesn't exist)
   useEffect(() => {
