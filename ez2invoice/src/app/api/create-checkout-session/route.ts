@@ -41,14 +41,17 @@ export async function POST(req: NextRequest) {
       allow_promotion_codes: true,
     };
 
-    // Link Stripe session to Supabase user via client_reference_id
-    // This allows webhook to correctly associate the subscription with the user
+    // Link Stripe session to Supabase user via client_reference_id and metadata
+    // This allows webhook to correctly associate the subscription with the exact user
+    // Set both fields for redundancy (client_reference_id is primary, metadata is backup)
     if (supabaseUserId) {
       sessionConfig.client_reference_id = supabaseUserId;
       sessionConfig.metadata = {
         supabase_user_id: supabaseUserId,
       };
-      console.log(`[CreateCheckoutSession] Linking session to Supabase user: ${supabaseUserId}`);
+      console.log(`[CreateCheckoutSession] ✅ Linking session to Supabase user: ${supabaseUserId} (client_reference_id + metadata)`);
+    } else {
+      console.warn(`[CreateCheckoutSession] ⚠️ No Supabase user ID provided - webhook will need to use email lookup`);
     }
 
     // Add discounts if provided (for auto-apply discounts)

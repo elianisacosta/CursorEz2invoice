@@ -60,12 +60,12 @@ export async function POST(req: NextRequest) {
     console.log(`[Webhook] Received webhook event: ${event.type}`);
     switch (event.type) {
       case 'checkout.session.completed': {
-        console.log('Processing checkout.session.completed event');
+        console.log('[Webhook] Processing checkout.session.completed event');
         const session = event.data.object as Stripe.Checkout.Session;
         
         // Only process subscription checkouts
         if (session.mode !== 'subscription') {
-          console.log('Skipping non-subscription checkout session');
+          console.log('[Webhook] Skipping non-subscription checkout session');
           return NextResponse.json({ received: true });
         }
 
@@ -75,26 +75,18 @@ export async function POST(req: NextRequest) {
           : session.customer?.id;
 
         if (!customerId) {
-          console.error('No customer ID in checkout session');
+          console.error('[Webhook] No customer ID in checkout session');
           return NextResponse.json(
             { error: 'No customer ID found' },
             { status: 400 }
           );
         }
 
-        // Get customer email from session
+        // Get customer email from session (for fallback only)
         const customerEmail = session.customer_email || 
           (typeof session.customer_details === 'object' && session.customer_details?.email
             ? session.customer_details.email
             : null);
-
-        if (!customerEmail) {
-          console.error('No customer email in checkout session');
-          return NextResponse.json(
-            { error: 'No customer email found' },
-            { status: 400 }
-          );
-        }
 
         // Get subscription ID
         const subscriptionId = typeof session.subscription === 'string'
@@ -102,7 +94,7 @@ export async function POST(req: NextRequest) {
           : session.subscription?.id;
 
         if (!subscriptionId) {
-          console.error('No subscription ID in checkout session');
+          console.error('[Webhook] No subscription ID in checkout session');
           return NextResponse.json(
             { error: 'No subscription ID found' },
             { status: 400 }
@@ -136,36 +128,57 @@ export async function POST(req: NextRequest) {
 
         console.log(`[Webhook] Processing checkout completion for customer ${customerId}, plan: ${planType}`);
 
-        // Try to get Supabase user ID from client_reference_id (set during checkout session creation)
-        let userId: string | null = null;
-        if (session.client_reference_id) {
-          userId = session.client_reference_id;
-          console.log(`[Webhook] Found Supabase user ID from client_reference_id: ${userId}`);
-        } else if (session.metadata?.supabase_user_id) {
-          userId = session.metadata.supabase_user_id;
-          console.log(`[Webhook] Found Supabase user ID from metadata: ${userId}`);
+        // Read Supabase user ID from event.data.object.client_reference_id or metadata.supabase_user_id
+        // These are set during checkout session creation
+        let supabaseUserId: string | null = null;
+        if (event.data.object.client_reference_id) {
+          supabaseUserId = event.data.object.client_reference_id;
+          console.log(`[Webhook] Found Supabase user ID from event.data.object.client_reference_id: ${supabaseUserId}`);
+        } else if (event.data.object.metadata?.supabase_user_id) {
+          supabaseUserId = event.data.object.metadata.supabase_user_id;
+          console.log(`[Webhook] Found Supabase user ID from event.data.object.metadata.supabase_user_id: ${supabaseUserId}`);
         }
 
-        // Find user by ID if we have it, otherwise fall back to email lookup
+        if (!supabaseUserId) {
+          console.error(`[Webhook] ❌ No Supabase user ID found in checkout session (client_reference_id or metadata.supabase_user_id). Customer: ${customerId}, Email: ${customerEmail}`);
+          // Fall back to email lookup only if user_id is not available
+          if (!customerEmail) {
+            return NextResponse.json(
+              { error: 'No user identifier found (no client_reference_id, metadata, or email)' },
+              { status: 400 }
+            );
+          }
+          console.log(`[Webhook] ⚠️ Falling back to email lookup: ${customerEmail}`);
+        }
+
+        // Find user by exact Supabase user ID (preferred method)
         let userRecord: { id: string } | null = null;
-        if (userId) {
+        if (supabaseUserId) {
           const { data, error } = await supabase
             .from('users')
             .select('id')
-            .eq('id', userId)
+            .eq('id', supabaseUserId)
             .maybeSingle();
           
           if (error) {
-            console.error('[Webhook] Error finding user by ID:', error);
+            console.error(`[Webhook] ❌ Error finding user by ID ${supabaseUserId}:`, error);
+            return NextResponse.json(
+              { error: 'Failed to find user by ID', details: error.message },
+              { status: 500 }
+            );
           } else if (data) {
             userRecord = data;
-            console.log(`[Webhook] Found user by ID: ${userId}`);
+            console.log(`[Webhook] ✅ Found user by exact Supabase user ID: ${supabaseUserId}`);
+          } else {
+            console.error(`[Webhook] ❌ User not found for Supabase user ID: ${supabaseUserId}`);
+            return NextResponse.json(
+              { error: `User not found for ID: ${supabaseUserId}` },
+              { status: 404 }
+            );
           }
-        }
-
-        // Fall back to email lookup if user not found by ID
-        if (!userRecord) {
-          console.log(`[Webhook] User not found by ID, trying email lookup: ${customerEmail}`);
+        } else {
+          // Fall back to email lookup only if user_id was not provided
+          console.log(`[Webhook] ⚠️ No Supabase user ID available, using email lookup: ${customerEmail}`);
           const { data, error: userError } = await supabase
             .from('users')
             .select('id')
@@ -173,15 +186,15 @@ export async function POST(req: NextRequest) {
             .maybeSingle();
 
           if (userError) {
-            console.error('[Webhook] Error finding user by email:', userError);
+            console.error('[Webhook] ❌ Error finding user by email:', userError);
             return NextResponse.json(
-              { error: 'Failed to find user' },
+              { error: 'Failed to find user by email', details: userError.message },
               { status: 500 }
             );
           }
 
           if (!data) {
-            console.error(`[Webhook] User not found for email: ${customerEmail}`);
+            console.error(`[Webhook] ❌ User not found for email: ${customerEmail}`);
             return NextResponse.json(
               { error: 'User not found' },
               { status: 404 }
@@ -189,7 +202,7 @@ export async function POST(req: NextRequest) {
           }
           
           userRecord = data;
-          console.log(`[Webhook] Found user by email: ${userRecord.id}`);
+          console.log(`[Webhook] ⚠️ Found user by email fallback: ${userRecord.id}`);
         }
 
         // Update user record with stripe_customer_id and plan_type
