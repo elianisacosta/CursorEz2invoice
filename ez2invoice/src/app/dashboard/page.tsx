@@ -602,11 +602,12 @@ export default function Dashboard() {
 
               if (verifyResponse.ok) {
                 const verifyData = await verifyResponse.json();
-                console.log('[Dashboard] Stripe verification result:', {
+                console.log('[Dashboard] Stripe verification result - Status read:', {
+                  subscriptionStatus: verifyData.subscriptionStatus,
                   hasActiveSubscription: verifyData.hasActiveSubscription,
                   planType: verifyData.planType,
-                  subscriptionStatus: verifyData.subscriptionStatus,
                   currentPeriodEnd: verifyData.currentPeriodEnd,
+                  isActiveOrTrialing: verifyData.subscriptionStatus === 'active' || verifyData.subscriptionStatus === 'trialing',
                 });
                 
                 // Only show "ended" if status is canceled/unpaid/past_due AND period_end < now
@@ -615,7 +616,7 @@ export default function Dashboard() {
                   if (verifyData.planType !== planType) {
                     setUserPlanType(verifyData.planType);
                   }
-                  console.log('[Dashboard] ✅ User has active subscription:', verifyData.planType);
+                  console.log('[Dashboard] ✅ Redirect decision: ALLOW ACCESS - Status:', verifyData.subscriptionStatus, 'Plan:', verifyData.planType);
                   // Clear grace period timestamp if subscription is confirmed
                   if (typeof window !== 'undefined' && recentCheckoutTimestamp) {
                     localStorage.removeItem('recent_checkout_timestamp');
@@ -625,7 +626,7 @@ export default function Dashboard() {
                   const now = Math.floor(Date.now() / 1000);
                   if (verifyData.currentPeriodEnd && verifyData.currentPeriodEnd < now) {
                     // Subscription truly ended - redirect to pricing
-                    console.log('[Dashboard] ❌ Subscription ended - status:', verifyData.subscriptionStatus, 'period_end:', verifyData.currentPeriodEnd, 'now:', now);
+                    console.log('[Dashboard] ❌ Redirect decision: REDIRECT TO PRICING - Status:', verifyData.subscriptionStatus, 'period_end:', verifyData.currentPeriodEnd, 'now:', now, 'reason: subscription_ended');
                     showToast({
                       type: 'error',
                       message: 'Your subscription has ended. Please subscribe to continue using EZ2Invoice.'
@@ -636,7 +637,7 @@ export default function Dashboard() {
                     return;
                   } else {
                     // Still within period, grant access
-                    console.log('[Dashboard] ✅ Subscription within period, granting access');
+                    console.log('[Dashboard] ✅ Redirect decision: ALLOW ACCESS - Status:', verifyData.subscriptionStatus, 'reason: within_period');
                     return;
                   }
                 }
