@@ -10,7 +10,7 @@ function BillingSuccessContent() {
   const router = useRouter();
   const { showToast } = useToast();
   const [status, setStatus] = useState<'verifying' | 'success' | 'error'>('verifying');
-  const [message, setMessage] = useState('Setting up your subscription...');
+  const [message, setMessage] = useState('Activating subscription...');
 
   useEffect(() => {
     const handleBillingSuccess = async () => {
@@ -41,7 +41,7 @@ function BillingSuccessContent() {
         }
 
         console.log(`[BillingSuccess] Syncing checkout session: ${sessionId}`);
-        setMessage('Verifying your payment...');
+        setMessage('Activating subscription...');
 
         // Call sync API to retrieve checkout session from Stripe and upsert subscription into DB
         const syncUrl = `/api/stripe/sync?session_id=${encodeURIComponent(sessionId)}&access_token=${encodeURIComponent(session.access_token)}`;
@@ -62,76 +62,101 @@ function BillingSuccessContent() {
           throw new Error(result.error || 'Failed to sync checkout session');
         }
 
-        // Wait a moment for database to sync
-        setMessage('Activating your subscription...');
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Check if subscription status is active or trialing before redirecting
+        const isActiveOrTrialing = result.subscriptionStatus === 'active' || result.subscriptionStatus === 'trialing';
+        
+        if (!isActiveOrTrialing) {
+          throw new Error(`Subscription status is ${result.subscriptionStatus}, expected active or trialing`);
+        }
 
         // Verify the subscription was saved to DB by checking user record
+        // Poll for up to 30 seconds for the subscription to appear in DB with active/trialing status
         const { data: { user } } = await supabase.auth.getUser();
-        if (user?.id) {
-          // Retry logic: poll for up to 15 seconds for the subscription to appear in DB
-          let attempts = 0;
-          const maxAttempts = 15; // 15 attempts * 1 second = 15 seconds
-          
-          while (attempts < maxAttempts) {
-            const { data: userRecord } = await supabase
-              .from('users')
-              .select('plan_type, stripe_customer_id')
-              .eq('id', user.id)
-              .maybeSingle();
-            
-            console.log(`[BillingSuccess] Poll attempt ${attempts + 1}/${maxAttempts}:`, {
-              planType: userRecord?.plan_type,
-              hasStripeCustomerId: !!userRecord?.stripe_customer_id,
-            });
-
-            if (userRecord?.plan_type && userRecord?.stripe_customer_id) {
-              console.log(`[BillingSuccess] ✅ Subscription confirmed in DB: ${userRecord.plan_type}`);
-              
-              // Set timestamp in localStorage to indicate recent checkout completion
-              // This helps the dashboard subscription guard handle grace period
-              if (typeof window !== 'undefined') {
-                localStorage.setItem('recent_checkout_timestamp', Date.now().toString());
-              }
-              
-              setStatus('success');
-              setMessage('Subscription activated successfully!');
-              
-              showToast({
-                type: 'success',
-                message: 'Welcome! Your subscription is now active.',
-              });
-              
-              // Redirect to dashboard after a brief success message
-              setTimeout(() => {
-                router.push('/dashboard');
-              }, 1500);
-              return;
-            }
-            
-            attempts++;
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-
-          // If we get here, subscription wasn't found after retries
-          // But the API call succeeded, so it might just be a delay
-          // Set grace period timestamp and redirect to dashboard - the guard will handle it with grace period
-          console.warn(`[BillingSuccess] ⚠️ Subscription not found in DB after ${maxAttempts} attempts, but API succeeded. Redirecting with grace period.`);
-          
-          // Set timestamp in localStorage to indicate recent checkout completion
-          if (typeof window !== 'undefined') {
-            localStorage.setItem('recent_checkout_timestamp', Date.now().toString());
-          }
-          
-          setStatus('success');
-          setMessage('Subscription activated! Redirecting...');
-          
-          setTimeout(() => {
-            router.push('/dashboard');
-          }, 1500);
-        } else {
+        if (!user?.id) {
           throw new Error('User not found');
         }
+
+        let attempts = 0;
+        const maxAttempts = 30; // 30 attempts * 1 second = 30 seconds
+        const pollInterval = 1000; // 1 second
+        
+        while (attempts < maxAttempts) {
+          const { data: userRecord } = await supabase
+            .from('users')
+            .select('plan_type, stripe_customer_id')
+            .eq('id', user.id)
+            .maybeSingle();
+          
+          console.log(`[BillingSuccess] Poll attempt ${attempts + 1}/${maxAttempts}:`, {
+            planType: userRecord?.plan_type,
+            hasStripeCustomerId: !!userRecord?.stripe_customer_id,
+          });
+
+          // Check if subscription is active/trialing in DB
+          if (userRecord?.plan_type && userRecord?.stripe_customer_id) {
+            // Verify subscription status with Stripe to ensure it's active/trialing
+            try {
+              const verifyResponse = await fetch('/api/stripe/verify-subscription', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  accessToken: session.access_token,
+                }),
+              });
+
+              if (verifyResponse.ok) {
+                const verifyData = await verifyResponse.json();
+                const isActive = verifyData.subscriptionStatus === 'active' || verifyData.subscriptionStatus === 'trialing';
+                
+                if (isActive && verifyData.hasActiveSubscription) {
+                  console.log(`[BillingSuccess] ✅ Subscription confirmed active/trialing in DB: ${userRecord.plan_type}, status: ${verifyData.subscriptionStatus}`);
+                  
+                  // Set timestamp in localStorage to indicate recent checkout completion
+                  if (typeof window !== 'undefined') {
+                    localStorage.setItem('recent_checkout_timestamp', Date.now().toString());
+                  }
+                  
+                  setStatus('success');
+                  setMessage('Subscription activated successfully!');
+                  
+                  showToast({
+                    type: 'success',
+                    message: 'Welcome! Your subscription is now active.',
+                  });
+                  
+                  // Redirect to dashboard
+                  setTimeout(() => {
+                    router.push('/dashboard');
+                  }, 1500);
+                  return;
+                }
+              }
+            } catch (verifyError) {
+              console.error('[BillingSuccess] Error verifying subscription status:', verifyError);
+              // Continue polling if verification fails
+            }
+          }
+          
+          attempts++;
+          await new Promise(resolve => setTimeout(resolve, pollInterval));
+        }
+
+        // If we get here, subscription wasn't confirmed as active/trialing after 30 seconds
+        console.warn(`[BillingSuccess] ⚠️ Subscription not confirmed as active/trialing after ${maxAttempts} attempts. Redirecting anyway.`);
+        
+        // Set timestamp in localStorage to indicate recent checkout completion
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('recent_checkout_timestamp', Date.now().toString());
+        }
+        
+        setStatus('success');
+        setMessage('Subscription activated! Redirecting...');
+        
+        setTimeout(() => {
+          router.push('/dashboard');
+        }, 1500);
       } catch (error: any) {
         console.error('[BillingSuccess] Error:', error);
         setStatus('error');
@@ -158,7 +183,7 @@ function BillingSuccessContent() {
         {status === 'verifying' && (
           <>
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-500 mx-auto mb-4"></div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-2">Setting up your subscription</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Activating subscription</h2>
             <p className="text-gray-600">{message}</p>
           </>
         )}

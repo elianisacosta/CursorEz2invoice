@@ -672,29 +672,28 @@ export default function Dashboard() {
           }
         }
 
-        // If no subscription found, check if we should poll (within grace period or recent checkout)
-        const shouldPoll = isWithinGracePeriod || recentCheckoutTimestamp;
+        // If no subscription found, poll DB for up to 30 seconds
+        const shouldPoll = isWithinGracePeriod || recentCheckoutTimestamp || hasStripeCustomerId;
         const pollStartTime = recentCheckoutTimestamp ? parseInt(recentCheckoutTimestamp) : Date.now();
         const pollDurationMs = 30 * 1000; // 30 seconds
         const timeSinceCheckout = Date.now() - pollStartTime;
         const isWithinPollWindow = timeSinceCheckout < pollDurationMs;
 
         if (shouldPoll && isWithinPollWindow) {
-          console.log('[Dashboard] ⏳ No subscription found, polling DB (attempt will retry)');
+          console.log(`[Dashboard] ⏳ No subscription found, polling DB (${Math.ceil((pollDurationMs - timeSinceCheckout) / 1000)}s remaining)`);
           showToast({
             type: 'info',
             message: 'Setting up your subscription... Please wait.',
           });
           
-          // Retry after a delay
+          // Retry after a delay (poll every 2 seconds)
           setTimeout(() => {
             checkSubscriptionAccess();
           }, 2000);
           return;
         }
 
-        // No active subscription found after polling window - redirect to pricing
-        // But only if we're sure it's not just a delay (check if user has stripe_customer_id)
+        // No active subscription found after 30 second polling window - redirect to pricing
         if (!hasStripeCustomerId) {
           console.log('[Dashboard] ❌ No subscription and no Stripe customer ID - redirecting to pricing');
           showToast({
@@ -705,12 +704,15 @@ export default function Dashboard() {
             window.location.href = '/pricing';
           }, 2000);
         } else {
-          // User has Stripe customer but no plan - might be webhook delay, show message
-          console.log('[Dashboard] ⚠️ User has Stripe customer but no plan_type - might be webhook delay');
+          // User has Stripe customer but no plan after polling - subscription may have ended
+          console.log('[Dashboard] ❌ User has Stripe customer but no plan_type after polling - redirecting to pricing');
           showToast({
-            type: 'info',
-            message: 'Your subscription is being activated. Please refresh the page in a moment.',
+            type: 'error',
+            message: 'Your subscription has ended. Please subscribe to continue using EZ2Invoice.',
           });
+          setTimeout(() => {
+            window.location.href = '/pricing';
+          }, 2000);
         }
       } catch (error) {
         console.error('[Dashboard] Error checking subscription access:', error);
