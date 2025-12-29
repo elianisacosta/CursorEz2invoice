@@ -267,6 +267,7 @@ export async function POST(req: NextRequest) {
             customerId,
             planType,
           });
+          
           return NextResponse.json(
             { error: 'Failed to update user record', details: updateError.message },
             { status: 500 }
@@ -291,6 +292,7 @@ export async function POST(req: NextRequest) {
           // Double-check the update was successful
           if (verifyData?.stripe_customer_id !== customerId) {
             console.error(`[Webhook] ❌ VERIFICATION FAILED: stripe_customer_id mismatch! Expected: ${customerId}, Got: ${verifyData?.stripe_customer_id}`);
+            
             // Don't return error here - webhook should still return 200 to Stripe
             // But log the error for investigation
           }

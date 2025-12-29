@@ -114,10 +114,12 @@ export async function GET(req: NextRequest) {
     if (subscriptionStatus === 'active' || subscriptionStatus === 'trialing') {
       // Active subscription - use the determined plan type
       finalPlanType = planType;
+      
     } else if (subscriptionStatus === 'incomplete' || subscriptionStatus === 'incomplete_expired') {
       // Payment failed or incomplete - don't grant access
       finalPlanType = null;
       console.warn(`[SyncRoute] ⚠️ Subscription status is ${subscriptionStatus} - not granting access`);
+      
     } else if (subscriptionStatus === 'canceled' || subscriptionStatus === 'unpaid' || subscriptionStatus === 'past_due') {
       // Check if subscription period has ended
       if (currentPeriodEnd < now) {
@@ -128,6 +130,7 @@ export async function GET(req: NextRequest) {
         finalPlanType = planType;
         console.log(`[SyncRoute] Subscription ${subscriptionStatus} but period not ended - granting access`);
       }
+      
     } else {
       // Unknown status - log warning but still try to set plan type
       console.warn(`[SyncRoute] ⚠️ Unknown subscription status: ${subscriptionStatus} - setting plan type anyway`);
@@ -139,6 +142,7 @@ export async function GET(req: NextRequest) {
     // CRITICAL: Use service role key to bypass RLS - required for updates
     if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
       console.error('[SyncRoute] ❌ CRITICAL: SUPABASE_SERVICE_ROLE_KEY not set! Updates will fail with RLS enabled.');
+      
       return NextResponse.json(
         { error: 'Server configuration error: SUPABASE_SERVICE_ROLE_KEY is required' },
         { status: 500 }
@@ -186,6 +190,7 @@ export async function GET(req: NextRequest) {
         customerId,
         planType: finalPlanType,
       });
+      
       return NextResponse.json(
         { error: 'Failed to update user record', details: updateError.message },
         { status: 500 }
@@ -210,6 +215,7 @@ export async function GET(req: NextRequest) {
       // Double-check the update was successful
       if (verifyData?.stripe_customer_id !== customerId) {
         console.error(`[SyncRoute] ❌ VERIFICATION FAILED: stripe_customer_id mismatch! Expected: ${customerId}, Got: ${verifyData?.stripe_customer_id}`);
+        
         return NextResponse.json(
           { error: 'Update verification failed: stripe_customer_id not saved correctly' },
           { status: 500 }

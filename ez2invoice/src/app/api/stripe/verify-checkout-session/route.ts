@@ -99,6 +99,7 @@ export async function POST(req: NextRequest) {
     // CRITICAL: Use service role key to bypass RLS - required for updates
     if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
       console.error('[VerifyCheckoutSession] ❌ CRITICAL: SUPABASE_SERVICE_ROLE_KEY not set! Updates will fail with RLS enabled.');
+      
       return NextResponse.json(
         { error: 'Server configuration error: SUPABASE_SERVICE_ROLE_KEY is required' },
         { status: 500 }
@@ -131,6 +132,7 @@ export async function POST(req: NextRequest) {
         customerId,
         planType,
       });
+      
       return NextResponse.json(
         { error: 'Failed to update user record', details: updateError.message },
         { status: 500 }
@@ -155,6 +157,7 @@ export async function POST(req: NextRequest) {
       // Double-check the update was successful
       if (verifyData?.stripe_customer_id !== customerId) {
         console.error(`[VerifyCheckoutSession] ❌ VERIFICATION FAILED: stripe_customer_id mismatch! Expected: ${customerId}, Got: ${verifyData?.stripe_customer_id}`);
+        
         return NextResponse.json(
           { error: 'Update verification failed: stripe_customer_id not saved correctly' },
           { status: 500 }
