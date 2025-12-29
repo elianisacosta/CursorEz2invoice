@@ -241,21 +241,21 @@ export async function POST(req: NextRequest) {
         }
 
         // Update user record with stripe_customer_id and plan_type
-        // Use service role key to bypass RLS
-        const { error: updateError } = await supabase
+        // Use service role key to bypass RLS (already set in getSupabaseClient())
+        console.log(`[Webhook] Updating user ${userRecord.id}:`, {
+          stripe_customer_id: customerId,
+          plan_type: planType,
+        });
+
+        const { data: updateResult, error: updateError } = await supabase
           .from('users')
           .update({
             stripe_customer_id: customerId,
             plan_type: planType,
             updated_at: new Date().toISOString(),
           })
-          .eq('id', userRecord.id);
-        
-        console.log(`[Webhook] Updating user ${userRecord.id}:`, {
-          stripe_customer_id: customerId,
-          plan_type: planType,
-          updateError: updateError?.message,
-        });
+          .eq('id', userRecord.id)
+          .select('stripe_customer_id, plan_type');
 
         if (updateError) {
           console.error(`[Webhook] ❌ Error updating user ${userRecord.id}:`, {
@@ -271,6 +271,29 @@ export async function POST(req: NextRequest) {
             { error: 'Failed to update user record', details: updateError.message },
             { status: 500 }
           );
+        }
+
+        // Verify the update actually worked
+        const { data: verifyData, error: verifyError } = await supabase
+          .from('users')
+          .select('stripe_customer_id, plan_type')
+          .eq('id', userRecord.id)
+          .maybeSingle();
+
+        if (verifyError) {
+          console.error(`[Webhook] ⚠️ Error verifying update for user ${userRecord.id}:`, verifyError);
+        } else {
+          console.log(`[Webhook] ✅ Verified update - User ${userRecord.id}:`, {
+            stripe_customer_id: verifyData?.stripe_customer_id,
+            plan_type: verifyData?.plan_type,
+          });
+
+          // Double-check the update was successful
+          if (verifyData?.stripe_customer_id !== customerId) {
+            console.error(`[Webhook] ❌ VERIFICATION FAILED: stripe_customer_id mismatch! Expected: ${customerId}, Got: ${verifyData?.stripe_customer_id}`);
+            // Don't return error here - webhook should still return 200 to Stripe
+            // But log the error for investigation
+          }
         }
         
         console.log(`[Webhook] ✅ Successfully updated user ${userRecord.id} with customer ${customerId} and plan ${planType}`);

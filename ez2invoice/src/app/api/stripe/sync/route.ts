@@ -100,51 +100,121 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Check subscription status - only set plan_type if active or trialing
+    // Check subscription status
     const subscriptionStatus = subscription.status;
     const currentPeriodEnd = subscription.current_period_end;
     const now = Math.floor(Date.now() / 1000);
 
     console.log(`[SyncRoute] Subscription status: ${subscriptionStatus}, period_end: ${currentPeriodEnd}, now: ${now}`);
 
-    // Only update plan_type if subscription is active or trialing
-    // If canceled/unpaid/past_due AND period_end < now, set plan_type to null
-    let finalPlanType: string | null = null;
+    // Determine final plan type based on subscription status
+    // For successful payments, status should be 'active' or 'trialing'
+    let finalPlanType: string | null = planType; // Default to the determined plan type
+    
     if (subscriptionStatus === 'active' || subscriptionStatus === 'trialing') {
+      // Active subscription - use the determined plan type
       finalPlanType = planType;
+    } else if (subscriptionStatus === 'incomplete' || subscriptionStatus === 'incomplete_expired') {
+      // Payment failed or incomplete - don't grant access
+      finalPlanType = null;
+      console.warn(`[SyncRoute] ⚠️ Subscription status is ${subscriptionStatus} - not granting access`);
     } else if (subscriptionStatus === 'canceled' || subscriptionStatus === 'unpaid' || subscriptionStatus === 'past_due') {
+      // Check if subscription period has ended
       if (currentPeriodEnd < now) {
         finalPlanType = null; // Subscription has truly ended
+        console.log(`[SyncRoute] Subscription ${subscriptionStatus} and period ended - blocking access`);
       } else {
         // Still within period, grant access
         finalPlanType = planType;
+        console.log(`[SyncRoute] Subscription ${subscriptionStatus} but period not ended - granting access`);
       }
+    } else {
+      // Unknown status - log warning but still try to set plan type
+      console.warn(`[SyncRoute] ⚠️ Unknown subscription status: ${subscriptionStatus} - setting plan type anyway`);
+      finalPlanType = planType;
     }
 
     console.log(`[SyncRoute] Updating user ${user.id} with customer ${customerId} and plan ${finalPlanType}`);
 
-    // Use service role key to bypass RLS
+    // CRITICAL: Use service role key to bypass RLS - required for updates
+    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      console.error('[SyncRoute] ❌ CRITICAL: SUPABASE_SERVICE_ROLE_KEY not set! Updates will fail with RLS enabled.');
+      return NextResponse.json(
+        { error: 'Server configuration error: SUPABASE_SERVICE_ROLE_KEY is required' },
+        { status: 500 }
+      );
+    }
+
     const supabaseAdmin = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
     );
 
+    // IMPORTANT: Always update stripe_customer_id regardless of subscription status
+    // The plan_type depends on subscription status, but customer_id should always be saved
+    const updateData: {
+      stripe_customer_id: string;
+      plan_type: string | null;
+      updated_at: string;
+    } = {
+      stripe_customer_id: customerId,
+      plan_type: finalPlanType,
+      updated_at: new Date().toISOString(),
+    };
+
+    console.log(`[SyncRoute] Update data:`, {
+      userId: user.id,
+      stripe_customer_id: customerId,
+      plan_type: finalPlanType,
+      subscriptionStatus,
+    });
+
     // Update user record with stripe_customer_id and plan_type
-    const { error: updateError } = await supabaseAdmin
+    const { data: updateData_result, error: updateError } = await supabaseAdmin
       .from('users')
-      .update({
-        stripe_customer_id: customerId,
-        plan_type: finalPlanType,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', user.id);
+      .update(updateData)
+      .eq('id', user.id)
+      .select();
 
     if (updateError) {
-      console.error('[SyncRoute] Error updating user record:', updateError);
+      console.error('[SyncRoute] ❌ Error updating user record:', {
+        error: updateError.message,
+        code: updateError.code,
+        details: updateError.details,
+        hint: updateError.hint,
+        userId: user.id,
+        customerId,
+        planType: finalPlanType,
+      });
       return NextResponse.json(
         { error: 'Failed to update user record', details: updateError.message },
         { status: 500 }
       );
+    }
+
+    // Verify the update actually worked by reading back the data
+    const { data: verifyData, error: verifyError } = await supabaseAdmin
+      .from('users')
+      .select('stripe_customer_id, plan_type')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (verifyError) {
+      console.error('[SyncRoute] ⚠️ Error verifying update:', verifyError);
+    } else {
+      console.log(`[SyncRoute] ✅ Verified update - User ${user.id}:`, {
+        stripe_customer_id: verifyData?.stripe_customer_id,
+        plan_type: verifyData?.plan_type,
+      });
+
+      // Double-check the update was successful
+      if (verifyData?.stripe_customer_id !== customerId) {
+        console.error(`[SyncRoute] ❌ VERIFICATION FAILED: stripe_customer_id mismatch! Expected: ${customerId}, Got: ${verifyData?.stripe_customer_id}`);
+        return NextResponse.json(
+          { error: 'Update verification failed: stripe_customer_id not saved correctly' },
+          { status: 500 }
+        );
+      }
     }
 
     // Also update truck_shops if it exists for this user
