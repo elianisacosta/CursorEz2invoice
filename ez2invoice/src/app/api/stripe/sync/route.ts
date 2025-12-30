@@ -173,12 +173,44 @@ export async function GET(req: NextRequest) {
       subscriptionStatus,
     });
 
-    // Update user record with stripe_customer_id and plan_type
-    const { data: updateData_result, error: updateError } = await supabaseAdmin
+    // First, check if user record exists
+    const { data: existingUser, error: checkError } = await supabaseAdmin
       .from('users')
-      .update(updateData)
+      .select('id, email, first_name, last_name, company')
       .eq('id', user.id)
-      .select();
+      .maybeSingle();
+
+    let updateData_result;
+    let updateError;
+
+    if (existingUser) {
+      // User record exists, update it
+      const { data, error } = await supabaseAdmin
+        .from('users')
+        .update(updateData)
+        .eq('id', user.id)
+        .select();
+      updateData_result = data;
+      updateError = error;
+    } else {
+      // User record doesn't exist, create it with all necessary fields
+      console.log(`[SyncRoute] User record doesn't exist, creating it for user ${user.id}`);
+      const insertData = {
+        id: user.id,
+        email: user.email || '',
+        first_name: user.user_metadata?.first_name || null,
+        last_name: user.user_metadata?.last_name || null,
+        company: user.user_metadata?.company || null,
+        ...updateData,
+      };
+      
+      const { data, error } = await supabaseAdmin
+        .from('users')
+        .insert(insertData)
+        .select();
+      updateData_result = data;
+      updateError = error;
+    }
 
     if (updateError) {
       console.error('[SyncRoute] ❌ Error updating user record:', {

@@ -105,6 +105,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
     
+    // If signup was successful and we have a user, create an entry in public.users table
+    if (data?.user && !error) {
+      try {
+        // Check if user record already exists
+        const { data: existingUser, error: checkError } = await supabase
+          .from('users')
+          .select('id')
+          .eq('id', data.user.id)
+          .maybeSingle();
+        
+        // If user record doesn't exist, create it
+        if (!existingUser && !checkError) {
+          const { error: insertError } = await supabase
+            .from('users')
+            .insert({
+              id: data.user.id,
+              email: data.user.email || email,
+              first_name: userData?.first_name || null,
+              last_name: userData?.last_name || null,
+              company: userData?.company || null,
+              plan_type: userData?.plan_type || 'starter'
+            });
+          
+          if (insertError) {
+            console.error('Error creating user record in public.users:', insertError);
+            // Don't fail the signup if user record creation fails
+            // The database trigger (if set up) or login flow will handle it
+          }
+        }
+      } catch (err) {
+        console.error('Unexpected error creating user record:', err);
+        // Don't fail the signup if user record creation fails
+      }
+    }
+    
     return { data, error };
   };
 
