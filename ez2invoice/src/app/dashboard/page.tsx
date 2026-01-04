@@ -304,6 +304,16 @@ export default function Dashboard() {
     email: '' // Will use user email as fallback
   });
   const [shopInfoLoading, setShopInfoLoading] = useState(false);
+  
+  // User profile state for Profile settings tab
+  const [userProfile, setUserProfile] = useState({
+    first_name: '',
+    last_name: '',
+    email: '',
+    phone: '',
+    company: ''
+  });
+  const [userProfileLoading, setUserProfileLoading] = useState(false);
   const [analyticsSubTab, setAnalyticsSubTab] = useState('financials');
   const [analyticsExpanded, setAnalyticsExpanded] = useState(false);
 
@@ -4855,6 +4865,91 @@ export default function Dashboard() {
     };
     loadShopInfo();
   }, [activeTab, settingsSubTab]);
+
+  // Load user profile when Profile settings tab is opened
+  useEffect(() => {
+    const loadUserProfile = async () => {
+      if (activeTab === 'settings' && settingsSubTab === 'profile') {
+        setUserProfileLoading(true);
+        try {
+          const { data: { user: currentUser } } = await supabase.auth.getUser();
+          if (currentUser?.id) {
+            // Fetch user profile from public.users table
+            const { data: userData, error } = await supabase
+              .from('users')
+              .select('first_name, last_name, email, phone, company')
+              .eq('id', currentUser.id)
+              .maybeSingle();
+            
+            if (!error && userData) {
+              setUserProfile({
+                first_name: userData.first_name || '',
+                last_name: userData.last_name || '',
+                email: userData.email || currentUser.email || '',
+                phone: userData.phone || '',
+                company: userData.company || ''
+              });
+            } else if (!userData && !error) {
+              // User record doesn't exist yet, create it
+              const { error: insertError } = await supabase
+                .from('users')
+                .insert({
+                  id: currentUser.id,
+                  email: currentUser.email || '',
+                  first_name: currentUser.user_metadata?.first_name || null,
+                  last_name: currentUser.user_metadata?.last_name || null,
+                  company: currentUser.user_metadata?.company || null,
+                  plan_type: 'starter'
+                });
+              
+              if (!insertError) {
+                // Retry fetching after insert
+                const { data: newUserData } = await supabase
+                  .from('users')
+                  .select('first_name, last_name, email, phone, company')
+                  .eq('id', currentUser.id)
+                  .maybeSingle();
+                
+                if (newUserData) {
+                  setUserProfile({
+                    first_name: newUserData.first_name || '',
+                    last_name: newUserData.last_name || '',
+                    email: newUserData.email || currentUser.email || '',
+                    phone: newUserData.phone || '',
+                    company: newUserData.company || ''
+                  });
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error loading user profile:', error);
+        } finally {
+          setUserProfileLoading(false);
+        }
+      }
+    };
+    loadUserProfile();
+  }, [activeTab, settingsSubTab]);
+
+  // Clear user profile on auth state change (logout)
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT' || !session) {
+        setUserProfile({
+          first_name: '',
+          last_name: '',
+          email: '',
+          phone: '',
+          company: ''
+        });
+      }
+    });
+    
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
 
   // Load DOT inspections when the tab is active
   useEffect(() => {
@@ -15449,7 +15544,10 @@ export default function Dashboard() {
                       {/* Avatar Section */}
                       <div className="flex items-center space-x-4">
                         <div className="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center">
-                          <span className="text-lg font-semibold text-gray-600">EA</span>
+                          <span className="text-lg font-semibold text-gray-600">
+                            {userProfile.first_name?.[0] || userProfile.last_name?.[0] || userProfile.email?.[0] || 'U'}
+                            {userProfile.last_name?.[0] || userProfile.email?.[1] || ''}
+                          </span>
                         </div>
                         <div>
                           <button className="text-sm text-primary-600 hover:text-primary-700 font-medium">
@@ -15465,16 +15563,20 @@ export default function Dashboard() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">First Name</label>
                           <input
                             type="text"
-                            defaultValue="Elianis"
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                            value={userProfile.first_name}
+                            onChange={(e) => setUserProfile(prev => ({ ...prev, first_name: e.target.value }))}
+                            disabled={userProfileLoading}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                           />
                         </div>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">Last Name</label>
                           <input
                             type="text"
-                            defaultValue="Acosta"
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                            value={userProfile.last_name}
+                            onChange={(e) => setUserProfile(prev => ({ ...prev, last_name: e.target.value }))}
+                            disabled={userProfileLoading}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                           />
                         </div>
                       </div>
@@ -15483,8 +15585,10 @@ export default function Dashboard() {
                         <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
                         <input
                           type="email"
-                          defaultValue="acostaelianis@yahoo.com"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          value={userProfile.email}
+                          onChange={(e) => setUserProfile(prev => ({ ...prev, email: e.target.value }))}
+                          disabled={userProfileLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                         />
                       </div>
                       
@@ -15492,20 +15596,59 @@ export default function Dashboard() {
                         <label className="block text-sm font-medium text-gray-700 mb-2">Phone</label>
                         <input
                           type="tel"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          value={userProfile.phone}
+                          onChange={(e) => setUserProfile(prev => ({ ...prev, phone: e.target.value }))}
+                          disabled={userProfileLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                         />
                       </div>
                       
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Role</label>
-                        <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
-                          <option value="manager">Manager</option>
-                          <option value="admin">Admin</option>
-                          <option value="user">User</option>
-                        </select>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Company</label>
+                        <input
+                          type="text"
+                          value={userProfile.company}
+                          onChange={(e) => setUserProfile(prev => ({ ...prev, company: e.target.value }))}
+                          disabled={userProfileLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                        />
                       </div>
                       
-                      <button className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors">
+                      <button 
+                        onClick={async () => {
+                          try {
+                            const { data: { user: currentUser } } = await supabase.auth.getUser();
+                            if (!currentUser?.id) {
+                              showToast({ type: 'error', message: 'Not authenticated' });
+                              return;
+                            }
+                            
+                            const { error } = await supabase
+                              .from('users')
+                              .update({
+                                first_name: userProfile.first_name || null,
+                                last_name: userProfile.last_name || null,
+                                email: userProfile.email,
+                                phone: userProfile.phone || null,
+                                company: userProfile.company || null,
+                                updated_at: new Date().toISOString()
+                              })
+                              .eq('id', currentUser.id);
+                            
+                            if (error) {
+                              console.error('Error saving profile:', error);
+                              showToast({ type: 'error', message: 'Failed to save profile. Please try again.' });
+                            } else {
+                              showToast({ type: 'success', message: 'Profile saved successfully!' });
+                            }
+                          } catch (err) {
+                            console.error('Error saving profile:', err);
+                            showToast({ type: 'error', message: 'An error occurred while saving your profile.' });
+                          }
+                        }}
+                        disabled={userProfileLoading}
+                        className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                      >
                         Save Profile
                       </button>
                     </div>
@@ -15966,7 +16109,7 @@ export default function Dashboard() {
                       <div className="flex items-center justify-between">
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                          <p className="text-sm text-gray-900">acostaelianis@yahoo.com</p>
+                          <p className="text-sm text-gray-900">{userProfile.email || 'N/A'}</p>
                         </div>
                         <div className="flex items-center space-x-2 bg-green-100 text-green-800 px-3 py-1 rounded-full">
                           <CheckCircle className="h-4 w-4" />
