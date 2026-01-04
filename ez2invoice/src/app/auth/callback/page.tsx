@@ -108,6 +108,42 @@ function AuthCallbackContent() {
         // Authentication succeeded!
         console.log('Auth successful, priceId:', priceId, 'planName:', planName);
         
+        // Ensure user record exists in public.users table
+        // This handles cases where the initial signup user creation might have failed
+        if (session?.user) {
+          try {
+            const { data: existingUser, error: checkError } = await supabase
+              .from('users')
+              .select('id')
+              .eq('id', session.user.id)
+              .maybeSingle();
+            
+            if (!existingUser && !checkError) {
+              // Get user metadata from auth user
+              const userMetadata = session.user.user_metadata || {};
+              
+              const { error: insertError } = await supabase
+                .from('users')
+                .insert({
+                  id: session.user.id,
+                  email: session.user.email || '',
+                  first_name: userMetadata.first_name || null,
+                  last_name: userMetadata.last_name || null,
+                  company: userMetadata.company || null,
+                  plan_type: userMetadata.plan_type || 'starter'
+                });
+              
+              if (insertError) {
+                console.error('Error creating user record in auth callback:', insertError);
+                // Continue anyway - login flow will handle it
+              }
+            }
+          } catch (err) {
+            console.error('Unexpected error ensuring user record exists:', err);
+            // Continue anyway - login flow will handle it
+          }
+        }
+        
         // If we have a priceId, redirect to Stripe checkout
         if (priceId) {
           setStatus('redirecting');

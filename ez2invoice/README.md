@@ -30,19 +30,49 @@ A comprehensive truck shop management solution built with Next.js, TypeScript, T
 
 ### 2. Environment Variables
 
-Create a `.env.local` file in the root directory:
+**IMPORTANT:** Copy `.env.example` to `.env.local` and fill in your values:
+
+```bash
+cp .env.example .env.local
+```
+
+Then edit `.env.local` and add your actual keys:
 
 ```env
-# Supabase Configuration (replace with your own Supabase project credentials)
+# Supabase Configuration
+# Get these from: https://supabase.com/dashboard/project/YOUR_PROJECT/settings/api
 NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key_here
 
-# Stripe Configuration (replace with your own Stripe keys and price IDs)
-STRIPE_SECRET_KEY=sk_test_your_key_here
+# CRITICAL: Service Role Key (required for Stripe webhooks and database updates)
+# This key bypasses Row Level Security (RLS) - keep it SECRET!
+# Get it from: https://supabase.com/dashboard/project/YOUR_PROJECT/settings/api
+# Look for "service_role" key (NOT the anon key)
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key_here
+
+# Stripe Configuration
+# Get these from: https://dashboard.stripe.com/apikeys
+STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key_here
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_your_stripe_publishable_key_here
+
+# Stripe Price IDs (get from: https://dashboard.stripe.com/products)
 NEXT_PUBLIC_STRIPE_STARTER_PRICE_ID=price_starter_here
 NEXT_PUBLIC_STRIPE_PROFESSIONAL_PRICE_ID=price_professional_here
+
+# Stripe Webhook Secret (get from: https://dashboard.stripe.com/webhooks)
+STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret_here
+
+# Site URL
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 ```
+
+**How to get your Supabase Service Role Key:**
+1. Go to your Supabase Dashboard: https://supabase.com/dashboard
+2. Select your project
+3. Go to **Settings** → **API**
+4. Scroll down to find the **"service_role"** key (it's a long string starting with `eyJ...`)
+5. **⚠️ WARNING:** This key has admin privileges - never expose it in client-side code or commit it to git!
+6. Copy it and add it to your `.env.local` file as `SUPABASE_SERVICE_ROLE_KEY`
 
 ### 3. Install Dependencies
 
