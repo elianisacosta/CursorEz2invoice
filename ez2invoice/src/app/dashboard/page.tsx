@@ -875,20 +875,29 @@ export default function Dashboard() {
     if (showFleetModal) {
       (async () => {
         try {
+          const shopId = await getShopId();
           const customerId = showFleetModal.id;
-          const { data: trucks } = await supabase
-            .from('fleet_trucks')
-            .select('*')
-            .eq('customer_id', customerId)
-            .order('created_at', { ascending: false });
-          setFleetTrucks(trucks || []);
+          
+          if (shopId) {
+            const { data: trucks } = await supabase
+              .from('fleet_trucks')
+              .select('*')
+              .eq('customer_id', customerId)
+              .eq('shop_id', shopId)
+              .order('created_at', { ascending: false });
+            setFleetTrucks(trucks || []);
 
-          const { data: discounts } = await supabase
-            .from('fleet_discounts')
-            .select('*')
-            .eq('customer_id', customerId)
-            .order('created_at', { ascending: false });
-          setFleetDiscounts(discounts || []);
+            const { data: discounts } = await supabase
+              .from('fleet_discounts')
+              .select('*')
+              .eq('customer_id', customerId)
+              .eq('shop_id', shopId)
+              .order('created_at', { ascending: false });
+            setFleetDiscounts(discounts || []);
+          } else {
+            setFleetTrucks([]);
+            setFleetDiscounts([]);
+          }
         } catch (e) {
           console.error('Error loading fleet data:', e);
         }
@@ -4373,13 +4382,21 @@ export default function Dashboard() {
           }
 
           // Create labor item
+          const shopId = await getShopId();
+          if (!shopId) {
+            errorCount++;
+            errors.push(`Row ${i + 1}: No shop_id found - cannot create labor item`);
+            continue;
+          }
+          
           const { error: itemError } = await supabase
             .from('labor_items')
             .insert({
               service_name: serviceName,
               rate: price,
               rate_type: 'fixed',
-              description: description || null
+              description: description || null,
+              shop_id: shopId
             });
 
           if (itemError) {
@@ -11455,13 +11472,19 @@ export default function Dashboard() {
                                           const invoiceCustomer = customers.find(c => c.id === invoice.customer_id);
                                           if (invoiceCustomer?.is_fleet) {
                                             try {
-                                              const { data: discounts, error } = await supabase
-                                                .from('fleet_discounts')
-                                                .select('*')
-                                                .eq('customer_id', invoice.customer_id);
-                                              
-                                              if (!error && discounts) {
-                                                setInvoiceCustomerDiscounts(discounts);
+                                              const shopId = await getShopId();
+                                              if (shopId) {
+                                                const { data: discounts, error } = await supabase
+                                                  .from('fleet_discounts')
+                                                  .select('*')
+                                                  .eq('customer_id', invoice.customer_id)
+                                                  .eq('shop_id', shopId);
+                                                
+                                                if (!error && discounts) {
+                                                  setInvoiceCustomerDiscounts(discounts);
+                                                } else {
+                                                  setInvoiceCustomerDiscounts([]);
+                                                }
                                               } else {
                                                 setInvoiceCustomerDiscounts([]);
                                               }
@@ -18082,12 +18105,18 @@ export default function Dashboard() {
                                     // If fleet customer, fetch their trucks
                                     if (customer.is_fleet && customer.id) {
                                       try {
-                                        const { data: fleetTrucks } = await supabase
-                                          .from('fleet_trucks')
-                                          .select('*')
-                                          .eq('customer_id', customer.id)
-                                          .order('created_at', { ascending: false });
-                                        setSelectedCustomerFleetTrucks(fleetTrucks || []);
+                                        const shopId = await getShopId();
+                                        if (shopId) {
+                                          const { data: fleetTrucks } = await supabase
+                                            .from('fleet_trucks')
+                                            .select('*')
+                                            .eq('customer_id', customer.id)
+                                            .eq('shop_id', shopId)
+                                            .order('created_at', { ascending: false });
+                                          setSelectedCustomerFleetTrucks(fleetTrucks || []);
+                                        } else {
+                                          setSelectedCustomerFleetTrucks([]);
+                                        }
                                       } catch (error) {
                                         console.error('Error fetching fleet trucks:', error);
                                         setSelectedCustomerFleetTrucks([]);
@@ -19500,6 +19529,11 @@ export default function Dashboard() {
               <button onClick={()=>setShowAddLaborModal(false)} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
               <button onClick={async ()=>{
                 if(!laborForm.service_name.trim()){ console.warn('Service name is required'); return; }
+                const shopId = await getShopId();
+                if (!shopId) {
+                  console.warn('No shop_id found - cannot create labor item');
+                  return;
+                }
                 const { data: userData } = await supabase.auth.getUser();
                 const { data, error } = await supabase.from('labor_items').insert({
                   user_id: userData?.user?.id || null,
@@ -19508,7 +19542,8 @@ export default function Dashboard() {
                   description: laborForm.description || null,
                   rate_type: laborForm.rate_type,
                   rate: Number(laborForm.rate) || 0,
-                  est_hours: laborForm.est_hours ? Number(laborForm.est_hours) : null
+                  est_hours: laborForm.est_hours ? Number(laborForm.est_hours) : null,
+                  shop_id: shopId
                 }).select();
                 
                 if(error){
@@ -21510,17 +21545,21 @@ export default function Dashboard() {
                 
                 // Add fleet trucks if any
                 if(customerForm.is_fleet && addCustomerFleetTrucks.length > 0 && newCustomer) {
-                  await supabase.from('fleet_trucks').insert(
-                    addCustomerFleetTrucks.map(t => ({
-                      customer_id: newCustomer.id,
-                      unit_no: t.unit_no || null,
-                      vin: t.vin || null,
-                      year: t.year ? Number(t.year) : null,
-                      make: t.make || null,
-                      model: t.model || null,
-                      notes: t.notes || null
-                    }))
-                  );
+                  const customerShopId = newCustomer.shop_id || shopId;
+                  if (customerShopId) {
+                    await supabase.from('fleet_trucks').insert(
+                      addCustomerFleetTrucks.map(t => ({
+                        customer_id: newCustomer.id,
+                        shop_id: customerShopId,
+                        unit_no: t.unit_no || null,
+                        vin: t.vin || null,
+                        year: t.year ? Number(t.year) : null,
+                        make: t.make || null,
+                        model: t.model || null,
+                        notes: t.notes || null
+                      }))
+                    );
+                  }
                 }
                 
                 // Add customer notes if any
@@ -21574,15 +21613,19 @@ export default function Dashboard() {
                 
                 // Add fleet discounts if any
                 if(customerForm.is_fleet && customerForm.enable_fleet_discounts && addCustomerFleetDiscounts.length > 0 && newCustomer) {
-                  await supabase.from('fleet_discounts').insert(
-                    addCustomerFleetDiscounts.map(d => ({
-                      customer_id: newCustomer.id,
-                      scope: d.scope,
-                      labor_item_id: d.scope === 'labor' ? d.labor_item_id || null : null,
-                      labor_type: d.scope === 'labor_type' ? d.labor_type || null : null,
-                      percent_off: d.discount_type === 'percentage' ? d.percent_off : 0
-                    }))
-                  );
+                  const customerShopId = newCustomer.shop_id || shopId;
+                  if (customerShopId) {
+                    await supabase.from('fleet_discounts').insert(
+                      addCustomerFleetDiscounts.map(d => ({
+                        customer_id: newCustomer.id,
+                        shop_id: customerShopId,
+                        scope: d.scope,
+                        labor_item_id: d.scope === 'labor' ? d.labor_item_id || null : null,
+                        labor_type: d.scope === 'labor_type' ? d.labor_type || null : null,
+                        percent_off: d.discount_type === 'percentage' ? d.percent_off : 0
+                      }))
+                    );
+                  }
                 }
                 
                 setShowAddCustomerModal(false);
@@ -22078,7 +22121,7 @@ export default function Dashboard() {
                   <input placeholder="Make" value={truckForm.make} onChange={(e)=> setTruckForm(prev=>({...prev,make:e.target.value}))} className="px-2 py-2 border rounded" />
                   <input placeholder="Model" value={truckForm.model} onChange={(e)=> setTruckForm(prev=>({...prev,model:e.target.value}))} className="px-2 py-2 border rounded" />
                   <div className="col-span-6 flex justify-end">
-                    <button onClick={async ()=>{ if(!showFleetModal) return; await supabase.from('fleet_trucks').insert({ customer_id: showFleetModal.id, unit_no: truckForm.unit_no||null, vin: truckForm.vin||null, year: truckForm.year? Number(truckForm.year): null, make: truckForm.make||null, model: truckForm.model||null, notes: truckForm.notes||null }); const { data } = await supabase.from('fleet_trucks').select('*').eq('customer_id', showFleetModal.id); setFleetTrucks(data||[]); setTruckForm({ unit_no:'', vin:'', year:'', make:'', model:'', notes:'' }); }} className="px-3 py-2 bg-primary-500 text-white rounded">Add Truck</button>
+                    <button onClick={async ()=>{ if(!showFleetModal) return; const shopId = await getShopId(); if (!shopId) { console.warn('No shop_id found'); return; } await supabase.from('fleet_trucks').insert({ customer_id: showFleetModal.id, shop_id: shopId, unit_no: truckForm.unit_no||null, vin: truckForm.vin||null, year: truckForm.year? Number(truckForm.year): null, make: truckForm.make||null, model: truckForm.model||null, notes: truckForm.notes||null }); const { data } = await supabase.from('fleet_trucks').select('*').eq('customer_id', showFleetModal.id).eq('shop_id', shopId); setFleetTrucks(data||[]); setTruckForm({ unit_no:'', vin:'', year:'', make:'', model:'', notes:'' }); }} className="px-3 py-2 bg-primary-500 text-white rounded">Add Truck</button>
                   </div>
                 </div>
                 <div className="space-y-2">
@@ -22090,7 +22133,7 @@ export default function Dashboard() {
                       <div>{t.make||'—'}</div>
                       <div>{t.model||'—'}</div>
                       <div className="col-span-6 text-right">
-                        <button onClick={async ()=>{ await supabase.from('fleet_trucks').delete().eq('id', t.id); const { data } = await supabase.from('fleet_trucks').select('*').eq('customer_id', showFleetModal!.id); setFleetTrucks(data||[]); }} className="px-2 py-1 text-red-600 hover:bg-red-50 rounded">Delete</button>
+                        <button onClick={async ()=>{ const shopId = await getShopId(); if (!shopId) { console.warn('No shop_id found'); return; } await supabase.from('fleet_trucks').delete().eq('id', t.id); const { data } = await supabase.from('fleet_trucks').select('*').eq('customer_id', showFleetModal!.id).eq('shop_id', shopId); setFleetTrucks(data||[]); }} className="px-2 py-1 text-red-600 hover:bg-red-50 rounded">Delete</button>
                       </div>
                     </div>
                   ))}
@@ -22117,7 +22160,7 @@ export default function Dashboard() {
                     <input placeholder="Labor type (e.g., Brakes)" value={discountForm.labor_type} onChange={(e)=> setDiscountForm(prev=>({...prev,labor_type:e.target.value}))} className="px-2 py-2 border rounded col-span-2" />
                   )}
                   <input type="number" placeholder="% Off" value={discountForm.percent_off} onChange={(e)=> setDiscountForm(prev=>({...prev,percent_off:Number(e.target.value)||0}))} className="px-2 py-2 border rounded" />
-                  <button onClick={async ()=>{ if(!showFleetModal) return; await supabase.from('fleet_discounts').insert({ customer_id: showFleetModal.id, scope: discountForm.scope, labor_item_id: discountForm.scope==='labor'? discountForm.labor_item_id || null : null, labor_type: discountForm.scope==='labor_type'? discountForm.labor_type || null : null, percent_off: discountForm.percent_off }); const { data } = await supabase.from('fleet_discounts').select('*').eq('customer_id', showFleetModal.id); setFleetDiscounts(data||[]); setDiscountForm({ scope:'labor', labor_item_id:'', labor_type:'', percent_off:0 }); }} className="px-3 py-2 bg-primary-500 text-white rounded">Add Discount</button>
+                  <button onClick={async ()=>{ if(!showFleetModal) return; const shopId = await getShopId(); if (!shopId) { console.warn('No shop_id found'); return; } await supabase.from('fleet_discounts').insert({ customer_id: showFleetModal.id, shop_id: shopId, scope: discountForm.scope, labor_item_id: discountForm.scope==='labor'? discountForm.labor_item_id || null : null, labor_type: discountForm.scope==='labor_type'? discountForm.labor_type || null : null, percent_off: discountForm.percent_off }); const { data } = await supabase.from('fleet_discounts').select('*').eq('customer_id', showFleetModal.id).eq('shop_id', shopId); setFleetDiscounts(data||[]); setDiscountForm({ scope:'labor', labor_item_id:'', labor_type:'', percent_off:0 }); }} className="px-3 py-2 bg-primary-500 text-white rounded">Add Discount</button>
                 </div>
                 <div className="space-y-2">
                   {fleetDiscounts.map(d => (
@@ -22125,7 +22168,7 @@ export default function Dashboard() {
                       <div className="text-sm text-gray-800">{d.scope==='labor' ? `Labor: ${laborItems.find(li=>li.id===d.labor_item_id)?.service_name || d.labor_item_id}` : `Labor Type: ${d.labor_type}`}</div>
                       <div className="font-medium">{d.percent_off}% off</div>
                       <div>
-                        <button onClick={async ()=>{ await supabase.from('fleet_discounts').delete().eq('id', d.id); const { data } = await supabase.from('fleet_discounts').select('*').eq('customer_id', showFleetModal!.id); setFleetDiscounts(data||[]); }} className="px-2 py-1 text-red-600 hover:bg-red-50 rounded">Delete</button>
+                        <button onClick={async ()=>{ const shopId = await getShopId(); if (!shopId) { console.warn('No shop_id found'); return; } await supabase.from('fleet_discounts').delete().eq('id', d.id); const { data } = await supabase.from('fleet_discounts').select('*').eq('customer_id', showFleetModal!.id).eq('shop_id', shopId); setFleetDiscounts(data||[]); }} className="px-2 py-1 text-red-600 hover:bg-red-50 rounded">Delete</button>
                       </div>
                     </div>
                   ))}
