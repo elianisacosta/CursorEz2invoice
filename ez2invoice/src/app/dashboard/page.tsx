@@ -18106,7 +18106,11 @@ export default function Dashboard() {
 
                       if (invoiceError || !invoice) {
                         console.error('Error creating invoice:', invoiceError);
-                        alert('Failed to create invoice. Please try again.');
+                        const errorMessage = invoiceError?.message || 'Unknown error';
+                        const errorDetails = invoiceError?.details || '';
+                        const errorHint = invoiceError?.hint || '';
+                        console.error('Full error details:', { invoiceError, shopId, insertData });
+                        alert(`Failed to create invoice: ${errorMessage}${errorDetails ? '\n' + errorDetails : ''}${errorHint ? '\nHint: ' + errorHint : ''}`);
                         return;
                       }
 
