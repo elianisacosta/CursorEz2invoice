@@ -18005,18 +18005,13 @@ export default function Dashboard() {
                       setInvoicePayments([]);
                     } else {
                       // Create new invoice
-                      // Get shop_id from user's truck_shops
-                      let shopId = null;
-                      const { data: userData } = await supabase.auth.getUser();
-                      if (userData?.user?.id) {
-                        const { data: shopData } = await supabase
-                          .from('truck_shops')
-                          .select('id')
-                          .eq('user_id', userData.user.id)
-                          .limit(1)
-                          .single();
-                        
-                        shopId = shopData?.id || null;
+                      // Get shop_id using helper function (creates shop if needed)
+                      const shopId = await getShopId();
+                      
+                      if (!shopId) {
+                        console.error('Failed to get shop_id. Cannot create invoice.');
+                        alert('Failed to create invoice. Please ensure your account is properly set up.');
+                        return;
                       }
 
                       // Generate sequential invoice number
