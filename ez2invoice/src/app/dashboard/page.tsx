@@ -918,7 +918,7 @@ export default function Dashboard() {
     }
   }, [showFleetModal]);
   const [truckForm, setTruckForm] = useState({ unit_no:'', vin:'', year:'', make:'', model:'', notes:'' });
-  const [discountForm, setDiscountForm] = useState({ scope:'labor' as 'labor'|'labor_type', labor_item_id:'', labor_type:'', percent_off:0 });
+  const [discountForm, setDiscountForm] = useState({ scope:'labor' as 'labor'|'labor_type', labor_item_id:'', labor_type:'', discount_type: 'percentage' as 'percentage'|'fixed', percent_off:0, fixed_amount:0 });
   
   // Employees state
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -11789,13 +11789,19 @@ export default function Dashboard() {
                                         const invoiceCustomer = customers.find(c => c.id === invoice.customer_id);
                                         if (invoiceCustomer?.is_fleet) {
                                           try {
-                                            const { data: discounts, error } = await supabase
-                                              .from('fleet_discounts')
-                                              .select('*')
-                                              .eq('customer_id', invoice.customer_id);
-                                            
-                                            if (!error && discounts) {
-                                              setInvoiceCustomerDiscounts(discounts);
+                                            const shopId = await getShopId();
+                                            if (shopId) {
+                                              const { data: discounts, error } = await supabase
+                                                .from('fleet_discounts')
+                                                .select('*')
+                                                .eq('customer_id', invoice.customer_id)
+                                                .eq('shop_id', shopId);
+                                              
+                                              if (!error && discounts) {
+                                                setInvoiceCustomerDiscounts(discounts);
+                                              } else {
+                                                setInvoiceCustomerDiscounts([]);
+                                              }
                                             } else {
                                               setInvoiceCustomerDiscounts([]);
                                             }
@@ -17159,13 +17165,19 @@ export default function Dashboard() {
                         const selectedCustomer = customers.find(c => c.id === customerId);
                         if (selectedCustomer?.is_fleet) {
                           try {
-                            const { data: discounts, error } = await supabase
-                              .from('fleet_discounts')
-                              .select('*')
-                              .eq('customer_id', customerId);
-                            
-                            if (!error && discounts) {
-                              setInvoiceCustomerDiscounts(discounts);
+                            const shopId = await getShopId();
+                            if (shopId) {
+                              const { data: discounts, error } = await supabase
+                                .from('fleet_discounts')
+                                .select('*')
+                                .eq('customer_id', customerId)
+                                .eq('shop_id', shopId);
+                              
+                              if (!error && discounts) {
+                                setInvoiceCustomerDiscounts(discounts);
+                              } else {
+                                setInvoiceCustomerDiscounts([]);
+                              }
                             } else {
                               setInvoiceCustomerDiscounts([]);
                             }
@@ -17325,9 +17337,16 @@ export default function Dashboard() {
                                         );
                                         
                                         let finalPrice = li ? li.rate : 0;
-                                        if (discount && discount.percent_off > 0) {
-                                          // Apply percentage discount
-                                          finalPrice = finalPrice * (1 - (discount.percent_off / 100));
+                                        
+                                        if (discount) {
+                                          // Handle percentage discount
+                                          if (discount.percent_off && discount.percent_off > 0) {
+                                            finalPrice = finalPrice * (1 - (discount.percent_off / 100));
+                                          }
+                                          // Handle fixed amount discount
+                                          else if (discount.fixed_amount && discount.fixed_amount > 0) {
+                                            finalPrice = Math.max(0, finalPrice - discount.fixed_amount); // Can't go negative
+                                          }
                                         }
                                         
                                         setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? {
@@ -17361,11 +17380,17 @@ export default function Dashboard() {
                                           <span className="text-xs text-gray-500">{(option as InventoryItem).part_number}</span>
                                         )}
                                       </div>
-                                      {item.item_type === 'labor' && invoiceCustomerDiscounts.find(d => d.scope === 'labor' && d.labor_item_id === option.id) && (
-                                        <span className="text-xs text-red-600 font-medium ml-2">
-                                          {invoiceCustomerDiscounts.find(d => d.scope === 'labor' && d.labor_item_id === option.id)?.percent_off}% off
-                                        </span>
-                                      )}
+                                      {item.item_type === 'labor' && (() => {
+                                        const disc = invoiceCustomerDiscounts.find(d => d.scope === 'labor' && d.labor_item_id === option.id);
+                                        if (disc) {
+                                          if (disc.percent_off && disc.percent_off > 0) {
+                                            return <span className="text-xs text-red-600 font-medium ml-2">{disc.percent_off}% off</span>;
+                                          } else if (disc.fixed_amount && disc.fixed_amount > 0) {
+                                            return <span className="text-xs text-red-600 font-medium ml-2">${disc.fixed_amount} off</span>;
+                                          }
+                                        }
+                                        return null;
+                                      })()}
                                     </div>
                                   </div>
                                 ))}
@@ -21765,7 +21790,8 @@ export default function Dashboard() {
                         scope: d.scope,
                         labor_item_id: d.scope === 'labor' ? d.labor_item_id || null : null,
                         labor_type: d.scope === 'labor_type' ? d.labor_type || null : null,
-                        percent_off: d.discount_type === 'percentage' ? d.percent_off : 0
+                        percent_off: d.discount_type === 'percentage' ? d.percent_off : null,
+                        fixed_amount: d.discount_type === 'fixed' ? d.fixed_amount : null
                       }))
                     );
                   }
@@ -22289,7 +22315,7 @@ export default function Dashboard() {
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="font-semibold text-gray-900">Fleet Discounts</h3>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-2 mb-3">
+                <div className="grid grid-cols-1 md:grid-cols-6 gap-2 mb-3">
                   <select value={discountForm.scope} onChange={(e)=> setDiscountForm(prev=>({...prev, scope: e.target.value as any}))} className="px-2 py-2 border rounded">
                     <option value="labor">By Labor Item</option>
                     <option value="labor_type">By Labor Type</option>
@@ -22302,14 +22328,54 @@ export default function Dashboard() {
                   ) : (
                     <input placeholder="Labor type (e.g., Brakes)" value={discountForm.labor_type} onChange={(e)=> setDiscountForm(prev=>({...prev,labor_type:e.target.value}))} className="px-2 py-2 border rounded col-span-2" />
                   )}
-                  <input type="number" placeholder="% Off" value={discountForm.percent_off} onChange={(e)=> setDiscountForm(prev=>({...prev,percent_off:Number(e.target.value)||0}))} className="px-2 py-2 border rounded" />
-                  <button onClick={async ()=>{ if(!showFleetModal) return; const shopId = await getShopId(); if (!shopId) { console.warn('No shop_id found'); return; } await supabase.from('fleet_discounts').insert({ customer_id: showFleetModal.id, shop_id: shopId, scope: discountForm.scope, labor_item_id: discountForm.scope==='labor'? discountForm.labor_item_id || null : null, labor_type: discountForm.scope==='labor_type'? discountForm.labor_type || null : null, percent_off: discountForm.percent_off }); const { data } = await supabase.from('fleet_discounts').select('*').eq('customer_id', showFleetModal.id).eq('shop_id', shopId); setFleetDiscounts(data||[]); setDiscountForm({ scope:'labor', labor_item_id:'', labor_type:'', percent_off:0 }); }} className="px-3 py-2 bg-primary-500 text-white rounded">Add Discount</button>
+                  <select value={discountForm.discount_type} onChange={(e)=> setDiscountForm(prev=>({...prev, discount_type: e.target.value as 'percentage'|'fixed'}))} className="px-2 py-2 border rounded">
+                    <option value="percentage">Percent (%)</option>
+                    <option value="fixed">Fixed ($)</option>
+                  </select>
+                  <input 
+                    type="number" 
+                    placeholder={discountForm.discount_type === 'percentage' ? '% Off' : '$ Off'} 
+                    value={discountForm.discount_type === 'percentage' ? discountForm.percent_off : discountForm.fixed_amount} 
+                    onChange={(e)=> {
+                      const val = Number(e.target.value) || 0;
+                      if (discountForm.discount_type === 'percentage') {
+                        setDiscountForm(prev=>({...prev, percent_off: val, fixed_amount: 0}));
+                      } else {
+                        setDiscountForm(prev=>({...prev, fixed_amount: val, percent_off: 0}));
+                      }
+                    }} 
+                    className="px-2 py-2 border rounded" 
+                  />
+                  <button onClick={async ()=>{ 
+                    if(!showFleetModal) return; 
+                    const shopId = await getShopId(); 
+                    if (!shopId) { 
+                      console.warn('No shop_id found'); 
+                      return; 
+                    } 
+                    await supabase.from('fleet_discounts').insert({ 
+                      customer_id: showFleetModal.id, 
+                      shop_id: shopId, 
+                      scope: discountForm.scope, 
+                      labor_item_id: discountForm.scope==='labor'? discountForm.labor_item_id || null : null, 
+                      labor_type: discountForm.scope==='labor_type'? discountForm.labor_type || null : null, 
+                      percent_off: discountForm.discount_type === 'percentage' ? discountForm.percent_off : null,
+                      fixed_amount: discountForm.discount_type === 'fixed' ? discountForm.fixed_amount : null
+                    }); 
+                    const { data } = await supabase.from('fleet_discounts').select('*').eq('customer_id', showFleetModal.id).eq('shop_id', shopId); 
+                    setFleetDiscounts(data||[]); 
+                    setDiscountForm({ scope:'labor', labor_item_id:'', labor_type:'', discount_type: 'percentage', percent_off:0, fixed_amount:0 }); 
+                  }} className="px-3 py-2 bg-primary-500 text-white rounded">Add Discount</button>
                 </div>
                 <div className="space-y-2">
                   {fleetDiscounts.map(d => (
                     <div key={d.id} className="flex items-center justify-between p-3 bg-gray-50 rounded">
                       <div className="text-sm text-gray-800">{d.scope==='labor' ? `Labor: ${laborItems.find(li=>li.id===d.labor_item_id)?.service_name || d.labor_item_id}` : `Labor Type: ${d.labor_type}`}</div>
-                      <div className="font-medium">{d.percent_off}% off</div>
+                      <div className="font-medium">
+                        {d.percent_off && d.percent_off > 0 ? `${d.percent_off}% off` : 
+                         d.fixed_amount && d.fixed_amount > 0 ? `$${d.fixed_amount} off` : 
+                         'No discount'}
+                      </div>
                       <div>
                         <button onClick={async ()=>{ const shopId = await getShopId(); if (!shopId) { console.warn('No shop_id found'); return; } await supabase.from('fleet_discounts').delete().eq('id', d.id); const { data } = await supabase.from('fleet_discounts').select('*').eq('customer_id', showFleetModal!.id).eq('shop_id', shopId); setFleetDiscounts(data||[]); }} className="px-2 py-1 text-red-600 hover:bg-red-50 rounded">Delete</button>
                       </div>
