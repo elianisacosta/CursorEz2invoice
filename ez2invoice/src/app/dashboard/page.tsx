@@ -1065,6 +1065,8 @@ export default function Dashboard() {
     rate: 0,
     est_hours: '' as string | ''
   });
+  const [laborCategorySearch, setLaborCategorySearch] = useState<string | null>(null);
+  const [showLaborCategoryDropdown, setShowLaborCategoryDropdown] = useState(false);
 
   // Inventory state (uses public.parts table from database-schema.sql)
   interface InventoryItem {
@@ -19589,7 +19591,11 @@ export default function Dashboard() {
           <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <h2 className="text-xl font-bold text-gray-900">Add Labor Item</h2>
-              <button onClick={()=>setShowAddLaborModal(false)} className="text-gray-400 hover:text-gray-600"><X className="h-6 w-6"/></button>
+              <button onClick={() => {
+                setShowAddLaborModal(false);
+                setLaborCategorySearch('');
+                setShowLaborCategoryDropdown(false);
+              }} className="text-gray-400 hover:text-gray-600"><X className="h-6 w-6"/></button>
             </div>
             <div className="p-6 space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -19597,9 +19603,122 @@ export default function Dashboard() {
                   <label className="block text-sm font-medium text-gray-700 mb-2">Service Name *</label>
                   <input value={laborForm.service_name} onChange={(e)=>setLaborForm(prev=>({...prev,service_name:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" placeholder="Oil Change" />
                 </div>
-                <div>
+                <div className="relative">
                   <label className="block text-sm font-medium text-gray-700 mb-2">Category</label>
-                  <input value={laborForm.category} onChange={(e)=>setLaborForm(prev=>({...prev,category:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" placeholder="Select category" />
+                  <div className="relative">
+                    <input 
+                      value={laborCategorySearch !== null ? laborCategorySearch : laborForm.category} 
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setLaborCategorySearch(value);
+                        setShowLaborCategoryDropdown(true);
+                        // Clear form category when user starts typing a new search
+                        if (value !== laborForm.category) {
+                          setLaborForm(prev => ({...prev, category: ''}));
+                        }
+                      }}
+                      onFocus={() => {
+                        // When focusing, show search value or current category
+                        if (!laborCategorySearch && laborForm.category) {
+                          setLaborCategorySearch(laborForm.category);
+                        }
+                        setShowLaborCategoryDropdown(true);
+                      }}
+                      onBlur={() => {
+                        // Delay to allow click on dropdown items
+                        setTimeout(() => {
+                          setShowLaborCategoryDropdown(false);
+                          // If user typed something but didn't select, keep it in the form
+                          if (laborCategorySearch && laborCategorySearch !== laborForm.category) {
+                            setLaborForm(prev => ({...prev, category: laborCategorySearch}));
+                          }
+                        }, 200);
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
+                      placeholder="Search or create category..." 
+                    />
+                    {showLaborCategoryDropdown && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                        {(() => {
+                          // Get unique categories from existing labor items
+                          const existingCategories = Array.from(new Set(
+                            laborItems
+                              .map(item => item.category || 'General')
+                              .filter(Boolean)
+                          )).sort();
+                          
+                          // Filter categories based on search
+                          const searchTerm = laborCategorySearch || '';
+                          const filteredCategories = existingCategories.filter(cat =>
+                            cat.toLowerCase().includes(searchTerm.toLowerCase())
+                          );
+                          
+                          // Check if search term matches an existing category exactly
+                          const exactMatch = existingCategories.some(cat => 
+                            cat.toLowerCase() === searchTerm.toLowerCase()
+                          );
+                          
+                          // Show "Create new" option if search term doesn't match exactly and is not empty
+                          const showCreateOption = searchTerm.trim() && !exactMatch;
+                          
+                          return (
+                            <>
+                              {filteredCategories.length > 0 && (
+                                <>
+                                  {filteredCategories.map((cat) => (
+                                    <div
+                                      key={cat}
+                                      onMouseDown={(e) => {
+                                        // Prevent blur from firing before click
+                                        e.preventDefault();
+                                      }}
+                                      onClick={() => {
+                                        setLaborForm(prev => ({...prev, category: cat}));
+                                        setLaborCategorySearch(null);
+                                        setShowLaborCategoryDropdown(false);
+                                      }}
+                                      className="px-4 py-2 hover:bg-gray-100 cursor-pointer text-sm"
+                                    >
+                                      {cat}
+                                    </div>
+                                  ))}
+                                  {showCreateOption && <div className="border-t border-gray-200"></div>}
+                                </>
+                              )}
+                              {showCreateOption && (
+                                <div
+                                  onMouseDown={(e) => {
+                                    // Prevent blur from firing before click
+                                    e.preventDefault();
+                                  }}
+                                  onClick={() => {
+                                    const newCategory = searchTerm.trim();
+                                    setLaborForm(prev => ({...prev, category: newCategory}));
+                                    setLaborCategorySearch(null);
+                                    setShowLaborCategoryDropdown(false);
+                                  }}
+                                  className="px-4 py-2 hover:bg-blue-50 cursor-pointer text-sm text-blue-600 font-medium border-t border-gray-200"
+                                >
+                                  <Plus className="h-4 w-4 inline mr-2" />
+                                  Create "{searchTerm.trim()}"
+                                </div>
+                              )}
+                              {filteredCategories.length === 0 && !showCreateOption && searchTerm.trim() && (
+                                <div className="px-4 py-2 text-sm text-gray-500">
+                                  No categories found
+                                </div>
+                              )}
+                              {filteredCategories.length === 0 && !searchTerm.trim() && (
+                                <div className="px-4 py-2 text-sm text-gray-500">
+                                  Start typing to search or create a category
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
               <div>
@@ -19625,7 +19744,11 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
-              <button onClick={()=>setShowAddLaborModal(false)} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
+              <button onClick={() => {
+                setShowAddLaborModal(false);
+                setLaborCategorySearch('');
+                setShowLaborCategoryDropdown(false);
+              }} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
               <button onClick={async ()=>{
                 if(!laborForm.service_name.trim()){ console.warn('Service name is required'); return; }
                 const shopId = await getShopId();
@@ -19685,6 +19808,8 @@ export default function Dashboard() {
                 if(data){
                   setShowAddLaborModal(false);
                   setLaborForm({ service_name:'', category:'', description:'', rate_type:'hourly', rate:0, est_hours:'' });
+                  setLaborCategorySearch('');
+                  setShowLaborCategoryDropdown(false);
                   fetchLaborItems();
                 }
               }} className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600">Create Labor Item</button>
