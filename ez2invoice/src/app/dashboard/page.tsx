@@ -8802,7 +8802,7 @@ export default function Dashboard() {
   }, [showDateRangeDropdown]);
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 overflow-x-hidden">
       <AppHeader />
       
       {/* Founder Mode Banner */}
@@ -8825,7 +8825,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="flex relative">
+      <div className="flex relative overflow-x-hidden">
         {/* Sidebar Toggle Button (when closed) */}
         {!sidebarOpen && (
           <button
@@ -8838,7 +8838,7 @@ export default function Dashboard() {
         )}
         
         {/* Sidebar */}
-        <div className={`${sidebarOpen ? 'w-64' : 'w-0'} bg-white shadow-sm border-r border-gray-200 min-h-screen transition-all duration-300 ${sidebarOpen ? '' : 'overflow-hidden'}`}>
+        <div className={`${sidebarOpen ? 'w-64' : 'w-0'} flex-shrink-0 bg-white shadow-sm border-r border-gray-200 min-h-screen transition-all duration-300 ${sidebarOpen ? '' : 'overflow-hidden'}`}>
           <div className={`p-6 ${sidebarOpen ? '' : 'hidden'}`}>
             <nav className="space-y-1">
               <div className="flex items-center justify-between mb-3">
@@ -8959,7 +8959,7 @@ export default function Dashboard() {
         </div>
 
         {/* Main Content */}
-        <div className="flex-1 p-8">
+        <div className="flex-1 min-w-0 p-8 overflow-x-hidden">
           {/* Debug info – show only in development and only for founder */}
 {process.env.NODE_ENV === 'development' && isFounder && (
   <div className="bg-blue-50 border border-blue-200 p-3 rounded-lg mb-4">
@@ -9724,16 +9724,16 @@ export default function Dashboard() {
                   {estimatesLoading ? (
                     <div className="text-center text-gray-600 py-12">Loading estimates...</div>
                   ) : (
-                    <>
+                    <div className="min-w-0 overflow-x-auto">
                       {/* Table Header */}
-                      <div className="grid grid-cols-8 gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4">
-                        <div>Estimate ID</div>
-                        <div>Customer</div>
-                        <div>Amount</div>
-                        <div>Status</div>
-                        <div>Created</div>
-                        <div>Valid Until</div>
-                        <div className="col-span-2 text-right">Actions</div>
+                      <div className="grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4 min-w-0" style={{ gridTemplateColumns: 'minmax(120px, 1.2fr) minmax(140px, 1.5fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
+                        <div className="min-w-0">Estimate ID</div>
+                        <div className="min-w-0">Customer</div>
+                        <div className="min-w-0">Amount</div>
+                        <div className="min-w-0">Status</div>
+                        <div className="min-w-0">Created</div>
+                        <div className="min-w-0">Valid Until</div>
+                        <div className="text-right min-w-0">Actions</div>
                       </div>
                       
                       {/* Filtered Estimates */}
@@ -9787,42 +9787,42 @@ export default function Dashboard() {
                           };
 
                           return (
-                            <div key={e.id} className="grid grid-cols-8 gap-4 items-center py-3 border-b border-gray-100 last:border-b-0 hover:bg-gray-50">
-                              <div className="font-medium text-gray-900">
+                            <div key={e.id} className="grid gap-4 items-center py-3 border-b border-gray-100 last:border-b-0 hover:bg-gray-50 min-w-0" style={{ gridTemplateColumns: 'minmax(120px, 1.2fr) minmax(140px, 1.5fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
+                              <div className="font-medium text-gray-900 min-w-0 truncate">
                                 {displayId}
                               </div>
-                              <div className="text-gray-700">
-                                <div className="font-medium">{customerName}</div>
+                              <div className="text-gray-700 min-w-0">
+                                <div className="font-medium truncate">{customerName}</div>
                                 {e.customer?.email && (
-                                  <div className="text-xs text-gray-500">{e.customer.email}</div>
+                                  <div className="text-xs text-gray-500 truncate">{e.customer.email}</div>
                                 )}
                               </div>
-                              <div className="font-semibold text-gray-900">
+                              <div className="font-semibold text-gray-900 min-w-0 whitespace-nowrap">
                                 ${(e.total_amount || 0).toFixed(2)}
                               </div>
-                              <div>
-                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColors[e.status as keyof typeof statusColors] || 'bg-gray-100 text-gray-800'}`}>
+                              <div className="min-w-0 flex items-center">
+                                <span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${statusColors[e.status as keyof typeof statusColors] || 'bg-gray-100 text-gray-800'}`}>
                                   {e.status.charAt(0).toUpperCase() + e.status.slice(1)}
                                 </span>
                               </div>
-                              <div className="text-sm text-gray-600">
+                              <div className="text-sm text-gray-600 min-w-0 whitespace-nowrap">
                                 {formatDateInTimezone(e.created_at)}
                               </div>
-                              <div className="text-sm text-gray-600">
+                              <div className="text-sm text-gray-600 min-w-0 whitespace-nowrap">
                                 {e.valid_until ? new Date(e.valid_until).toLocaleDateString() : '—'}
                               </div>
-                              <div className="col-span-2 text-right">
-                                <div className="inline-flex items-center gap-2">
+                              <div className="text-right min-w-0 flex-shrink-0">
+                                <div className="inline-flex items-center gap-1 flex-wrap justify-end">
                                   <button 
                                     onClick={() => handleViewEstimate(e)}
-                                    className="p-2 text-gray-400 hover:text-gray-600"
+                                    className="p-1.5 text-gray-400 hover:text-gray-600 flex-shrink-0"
                                     title="View estimate"
                                   >
                                     <Eye className="h-4 w-4" />
                                   </button>
                                   <button 
                                     onClick={() => handlePrintEstimate(e)}
-                                    className="p-2 text-gray-400 hover:text-gray-600"
+                                    className="p-1.5 text-gray-400 hover:text-gray-600 flex-shrink-0"
                                     title="Print estimate"
                                   >
                                     <Printer className="h-4 w-4" />
@@ -9830,7 +9830,7 @@ export default function Dashboard() {
                                   {e.status === 'draft' && (
                                     <button 
                                       onClick={() => handleSendEstimate(e)}
-                                      className="p-2 text-gray-400 hover:text-blue-600"
+                                      className="p-1.5 text-gray-400 hover:text-blue-600 flex-shrink-0"
                                       title="Send to customer"
                                     >
                                       <Send className="h-4 w-4" />
@@ -9849,7 +9849,7 @@ export default function Dashboard() {
                           );
                         });
                       })()}
-                    </>
+                    </div>
                   )}
                 </div>
               </div>
@@ -9909,16 +9909,16 @@ export default function Dashboard() {
                 <div className="p-6 border-b border-gray-200">
                   <h3 className="text-lg font-semibold text-gray-900">Inventory Items</h3>
                 </div>
-                <div className="p-6">
+                <div className="p-6 min-w-0 overflow-x-auto">
                   {/* Table Header - Desktop Only */}
-                  <div className="hidden md:grid md:grid-cols-8 gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4">
-                    <div className="col-span-2">Item Name</div>
-                    <div>Category</div>
-                    <div>Quantity</div>
-                    <div>Price</div>
-                    <div>Supplier</div>
-                    <div>Status</div>
-                    <div className="text-right">Actions</div>
+                  <div className="hidden md:grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4 min-w-0" style={{ gridTemplateColumns: 'minmax(180px, 2.5fr) minmax(100px, 1fr) minmax(70px, 0.8fr) minmax(90px, 1fr) minmax(110px, 1.2fr) minmax(140px, 1.5fr) minmax(220px, 2.5fr)' }}>
+                    <div className="min-w-0">Item Name</div>
+                    <div className="min-w-0">Category</div>
+                    <div className="min-w-0">Quantity</div>
+                    <div className="min-w-0">Price</div>
+                    <div className="min-w-0">Supplier</div>
+                    <div className="min-w-0">Status</div>
+                    <div className="text-right min-w-0">Actions</div>
                   </div>
 
                   {inventoryLoading ? (
@@ -10003,34 +10003,34 @@ export default function Dashboard() {
                           </div>
 
                           {/* Desktop Table View */}
-                          <div className="hidden md:grid md:grid-cols-8 gap-4 items-center py-3 border-b border-gray-100 hover:bg-gray-50">
-                            <div className="col-span-2">
-                              <div className="font-medium text-gray-900">{i.part_name}</div>
+                          <div className="hidden md:grid gap-4 items-center py-3 border-b border-gray-100 hover:bg-gray-50 min-w-0" style={{ gridTemplateColumns: 'minmax(180px, 2.5fr) minmax(100px, 1fr) minmax(70px, 0.8fr) minmax(90px, 1fr) minmax(110px, 1.2fr) minmax(140px, 1.5fr) minmax(220px, 2.5fr)' }}>
+                            <div className="min-w-0">
+                              <div className="font-medium text-gray-900 truncate">{i.part_name}</div>
                               {i.part_number && (
-                                <div className="text-xs text-gray-500">#{i.part_number}</div>
+                                <div className="text-xs text-gray-500 truncate">#{i.part_number}</div>
                               )}
                             </div>
-                            <div className="text-sm text-gray-600">{i.category || 'General'}</div>
-                            <div className="text-sm text-gray-600">{i.quantity_in_stock}</div>
-                            <div className="font-semibold text-gray-900">${i.selling_price?.toFixed(2) || '0.00'}</div>
-                            <div className="text-sm text-gray-600">{i.supplier || '—'}</div>
-                            <div>
-                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${i.quantity_in_stock <= i.minimum_stock_level ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
+                            <div className="text-sm text-gray-600 min-w-0 truncate">{i.category || 'General'}</div>
+                            <div className="text-sm text-gray-600 min-w-0 whitespace-nowrap">{i.quantity_in_stock}</div>
+                            <div className="font-semibold text-gray-900 min-w-0 whitespace-nowrap">${i.selling_price?.toFixed(2) || '0.00'}</div>
+                            <div className="text-sm text-gray-600 min-w-0 truncate">{i.supplier || '—'}</div>
+                            <div className="min-w-0 flex items-center">
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${i.quantity_in_stock <= i.minimum_stock_level ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
                                 {i.quantity_in_stock <= i.minimum_stock_level ? 'Low Stock' : 'In Stock'}
                               </span>
                             </div>
-                            <div className="flex items-center justify-end space-x-2">
+                            <div className="flex items-center justify-end space-x-2 min-w-0 flex-shrink-0 flex-wrap gap-1">
                               <button 
                                 onClick={()=>{ setShowHistoryModal(i); fetchInventoryHistory(i.id); }} 
-                                className="px-3 py-1 border rounded hover:bg-gray-50 flex items-center gap-1 text-sm"
+                                className="px-2 py-1 border rounded hover:bg-gray-50 flex items-center gap-1 text-xs whitespace-nowrap flex-shrink-0"
                                 title="History"
                               >
-                                <Clock className="h-4 w-4" />
-                                History
+                                <Clock className="h-3 w-3" />
+                                <span className="hidden sm:inline">History</span>
                               </button>
                               <button 
                                 onClick={()=>setShowAdjustModal(i)} 
-                                className="px-3 py-1 border rounded hover:bg-gray-50 text-sm"
+                                className="px-2 py-1 border rounded hover:bg-gray-50 text-xs whitespace-nowrap flex-shrink-0"
                                 title="Adjust"
                               >
                                 Adjust
@@ -10052,14 +10052,14 @@ export default function Dashboard() {
                                   }); 
                                   setShowAddInventoryModal(true); 
                                 }} 
-                                className="p-2 text-gray-400 hover:text-gray-600"
+                                className="p-1.5 text-gray-400 hover:text-gray-600 flex-shrink-0"
                                 title="Edit"
                               >
                                 <Edit className="h-4 w-4"/>
                               </button>
                               <button 
                                 onClick={()=> setInventoryItemToDelete(i)} 
-                                className="p-2 text-gray-400 hover:text-red-600"
+                                className="p-1.5 text-gray-400 hover:text-red-600 flex-shrink-0"
                                 title="Delete"
                               >
                                 <Trash2 className="h-4 w-4"/>
@@ -10153,14 +10153,14 @@ export default function Dashboard() {
                   <h3 className="text-lg font-semibold text-gray-900">Customer List</h3>
                   <p className="text-sm text-gray-600">Manage your customer database and track service history</p>
                 </div>
-                <div className="p-6">
-                  <div className="grid grid-cols-9 gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4">
-                    <div className="col-span-2">Name</div>
-                    <div className="col-span-2">Contact</div>
-                    <div>Visits</div>
-                    <div>Total Spent</div>
-                    <div>Last Visit</div>
-                    <div className="text-right col-span-2">Actions</div>
+                <div className="p-6 min-w-0 overflow-x-auto">
+                  <div className="grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4 min-w-0" style={{ gridTemplateColumns: 'minmax(160px, 2fr) minmax(180px, 2.2fr) minmax(70px, 0.8fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(200px, 2.5fr)' }}>
+                    <div className="min-w-0">Name</div>
+                    <div className="min-w-0">Contact</div>
+                    <div className="min-w-0">Visits</div>
+                    <div className="min-w-0">Total Spent</div>
+                    <div className="min-w-0">Last Visit</div>
+                    <div className="text-right min-w-0">Actions</div>
                   </div>
 
                   {customersLoading ? (
@@ -10178,23 +10178,23 @@ export default function Dashboard() {
                         const name = [c.first_name, c.last_name].filter(Boolean).join(' ').toLowerCase();
                         return !q || name.includes(q) || (c.email||'').toLowerCase().includes(q) || (c.phone||'').includes(q);
                       }).map((c) => (
-                        <div key={c.id} className="grid grid-cols-9 gap-4 items-center py-3 border-b border-gray-100 last:border-b-0">
-                          <div className="col-span-2">
-                            <div className="font-medium text-gray-900">{[c.first_name, c.last_name].filter(Boolean).join(' ') || '—'}</div>
+                        <div key={c.id} className="grid gap-4 items-center py-3 border-b border-gray-100 last:border-b-0 min-w-0" style={{ gridTemplateColumns: 'minmax(160px, 2fr) minmax(180px, 2.2fr) minmax(70px, 0.8fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(200px, 2.5fr)' }}>
+                          <div className="min-w-0">
+                            <div className="font-medium text-gray-900 truncate">{[c.first_name, c.last_name].filter(Boolean).join(' ') || '—'}</div>
                           </div>
-                          <div className="col-span-2 text-gray-700">
-                            <div>{c.email || '—'}</div>
-                            <div className="text-gray-500">{formatPhoneNumber(c.phone)}</div>
+                          <div className="text-gray-700 min-w-0">
+                            <div className="truncate">{c.email || '—'}</div>
+                            <div className="text-gray-500 truncate">{formatPhoneNumber(c.phone)}</div>
                           </div>
-                          <div>0</div>
-                          <div>$0</div>
-                          <div>—</div>
-                          <div className="text-right col-span-2">
-                            <div className="inline-flex items-center gap-2">
+                          <div className="min-w-0 whitespace-nowrap">0</div>
+                          <div className="min-w-0 whitespace-nowrap">$0</div>
+                          <div className="min-w-0 whitespace-nowrap">—</div>
+                          <div className="text-right min-w-0 flex-shrink-0">
+                            <div className="inline-flex items-center gap-1 flex-wrap justify-end">
                               {c.is_fleet ? (
-                                <button onClick={()=> setShowFleetModal(c)} className="px-2 py-1 border rounded hover:bg-gray-50 text-sm">Manage Fleet</button>
+                                <button onClick={()=> setShowFleetModal(c)} className="px-2 py-1 border rounded hover:bg-gray-50 text-xs whitespace-nowrap flex-shrink-0">Manage Fleet</button>
                               ) : null}
-                              <button onClick={() => setShowEditCustomerModal(c)} className="p-2 text-gray-400 hover:text-gray-600">
+                              <button onClick={() => setShowEditCustomerModal(c)} className="p-1.5 text-gray-400 hover:text-gray-600 flex-shrink-0">
                                 <Edit className="h-4 w-4" />
                               </button>
                               <button onClick={async () => {
@@ -10397,7 +10397,7 @@ export default function Dashboard() {
                     />
                   </div>
                 </div>
-                <div className="p-6">
+                <div className="p-6 min-w-0 overflow-x-auto">
                   {(() => {
                     // Filter work orders based on selected filter
                     let filteredOrders = workOrders;
@@ -10482,8 +10482,8 @@ export default function Dashboard() {
                     }
 
                     return (
-                      <div className="overflow-x-auto">
-                        <table className="min-w-full divide-y divide-gray-200">
+                      <div className="overflow-x-auto min-w-0">
+                        <table className="min-w-full divide-y divide-gray-200" style={{ minWidth: '800px' }}>
                           <thead className="bg-gray-50">
                             <tr>
                               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Work Order</th>
@@ -10557,38 +10557,38 @@ export default function Dashboard() {
                                     </div>
                                   </td>
                                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                    <div className="flex items-center justify-end gap-2">
+                                    <div className="flex items-center justify-end gap-1 flex-wrap">
                                       <button 
                                         onClick={() => handleOpenCamera(order)}
-                                        className="p-2 text-gray-400 hover:text-primary-600 transition-colors"
+                                        className="p-1.5 text-gray-400 hover:text-primary-600 transition-colors flex-shrink-0"
                                         title="Take photo / Scan document"
                                       >
                                         <Camera className="h-4 w-4" />
                                       </button>
                                       <button 
                                         onClick={() => handleViewWorkOrder(order)}
-                                        className="p-2 text-gray-400 hover:text-primary-600 transition-colors"
+                                        className="p-1.5 text-gray-400 hover:text-primary-600 transition-colors flex-shrink-0"
                                         title="View work order"
                                       >
                                         <Eye className="h-4 w-4" />
                                       </button>
                                       <button 
                                         onClick={() => handlePrintWorkOrder(order)}
-                                        className="p-2 text-gray-400 hover:text-primary-600 transition-colors"
+                                        className="p-1.5 text-gray-400 hover:text-primary-600 transition-colors flex-shrink-0"
                                         title="Print work order"
                                       >
                                         <Printer className="h-4 w-4" />
                                       </button>
                                       <button 
                                         onClick={() => handleSendWorkOrder(order)}
-                                        className="p-2 text-gray-400 hover:text-primary-600 transition-colors"
+                                        className="p-1.5 text-gray-400 hover:text-primary-600 transition-colors flex-shrink-0"
                                         title="Send work order to customer"
                                       >
                                         <Send className="h-4 w-4" />
                                       </button>
                                       <button 
                                         onClick={() => setWorkOrderToDelete(order)}
-                                        className="p-2 text-gray-400 hover:text-red-600 transition-colors"
+                                        className="p-1.5 text-gray-400 hover:text-red-600 transition-colors flex-shrink-0"
                                         title="Delete work order"
                                       >
                                         <X className="h-4 w-4" />
@@ -10666,13 +10666,13 @@ export default function Dashboard() {
                 </div>
                 <div className="p-6">
                   {/* Table Header - Desktop Only */}
-                  <div className="hidden md:grid md:grid-cols-7 gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4">
-                    <div className="col-span-2">Service Name</div>
-                    <div>Category</div>
-                    <div>Rate Type</div>
-                    <div>Price</div>
-                    <div>Description</div>
-                    <div className="text-right">Actions</div>
+                  <div className="hidden md:grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4 min-w-0 overflow-x-auto" style={{ gridTemplateColumns: 'minmax(180px, 2.5fr) minmax(100px, 1fr) minmax(100px, 1.2fr) minmax(90px, 1fr) minmax(150px, 1.8fr) minmax(180px, 2fr)' }}>
+                    <div className="min-w-0">Service Name</div>
+                    <div className="min-w-0">Category</div>
+                    <div className="min-w-0">Rate Type</div>
+                    <div className="min-w-0">Price</div>
+                    <div className="min-w-0">Description</div>
+                    <div className="text-right min-w-0">Actions</div>
                   </div>
 
                   {laborLoading ? (
@@ -10727,19 +10727,19 @@ export default function Dashboard() {
                           </div>
 
                           {/* Desktop Table View */}
-                          <div className="hidden md:grid md:grid-cols-7 gap-4 items-center py-3 border-b border-gray-100 hover:bg-gray-50">
-                            <div className="col-span-2">
-                              <div className="font-medium text-gray-900">{item.service_name}</div>
+                          <div className="hidden md:grid gap-4 items-center py-3 border-b border-gray-100 hover:bg-gray-50 min-w-0" style={{ gridTemplateColumns: 'minmax(180px, 2.5fr) minmax(100px, 1fr) minmax(100px, 1.2fr) minmax(90px, 1fr) minmax(150px, 1.8fr) minmax(180px, 2fr)' }}>
+                            <div className="min-w-0">
+                              <div className="font-medium text-gray-900 truncate">{item.service_name}</div>
                             </div>
-                            <div className="text-sm text-gray-600">{item.category || 'General'}</div>
-                            <div>
-                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${item.rate_type === 'fixed' ? 'bg-blue-100 text-blue-800' : 'bg-purple-100 text-purple-800'}`}>
+                            <div className="text-sm text-gray-600 min-w-0 truncate">{item.category || 'General'}</div>
+                            <div className="min-w-0 flex items-center">
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${item.rate_type === 'fixed' ? 'bg-blue-100 text-blue-800' : 'bg-purple-100 text-purple-800'}`}>
                                 {item.rate_type === 'fixed' ? 'Fixed' : 'Hourly'}
                               </span>
                             </div>
-                            <div className="font-semibold text-gray-900">${item.rate?.toFixed(2) || '0.00'}</div>
-                            <div className="text-sm text-gray-600">{item.description || '—'}</div>
-                            <div className="flex items-center justify-end space-x-2">
+                            <div className="font-semibold text-gray-900 min-w-0 whitespace-nowrap">${item.rate?.toFixed(2) || '0.00'}</div>
+                            <div className="text-sm text-gray-600 min-w-0 truncate">{item.description || '—'}</div>
+                            <div className="flex items-center justify-end space-x-2 min-w-0 flex-shrink-0">
                               <button 
                                 onClick={()=>setEditLaborItem(item)} 
                                 className="p-2 text-gray-400 hover:text-gray-600"
@@ -11234,17 +11234,17 @@ export default function Dashboard() {
                       </button>
                     </div>
                   ) : (
-                    <>
+                    <div className="min-w-0 overflow-x-auto">
                       {/* Table Header - Desktop Only */}
-                      <div className="hidden md:grid md:grid-cols-8 gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4">
-                        <div>Invoice ID</div>
-                        <div>Customer</div>
-                        <div>Work Order</div>
-                        <div>Amount</div>
-                        <div>Status</div>
-                        <div>Date</div>
-                        <div>Due Date</div>
-                        <div>Actions</div>
+                      <div className="hidden md:grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4 min-w-0" style={{ gridTemplateColumns: 'minmax(130px, 1.3fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
+                        <div className="min-w-0">Invoice ID</div>
+                        <div className="min-w-0">Customer</div>
+                        <div className="min-w-0">Work Order</div>
+                        <div className="min-w-0">Amount</div>
+                        <div className="min-w-0">Status</div>
+                        <div className="min-w-0">Date</div>
+                        <div className="min-w-0">Due Date</div>
+                        <div className="min-w-0">Actions</div>
                       </div>
                       
                       {/* Invoice List */}
@@ -11649,34 +11649,34 @@ export default function Dashboard() {
                               </div>
 
                               {/* Desktop Table View */}
-                              <div className="hidden md:grid md:grid-cols-8 gap-4 items-center py-3 border-b border-gray-100 hover:bg-gray-50">
-                                <div className="font-medium text-gray-900">
+                              <div className="hidden md:grid gap-4 items-center py-3 border-b border-gray-100 hover:bg-gray-50 min-w-0" style={{ gridTemplateColumns: 'minmax(130px, 1.3fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
+                                <div className="font-medium text-gray-900 min-w-0 truncate">
                                   {formatInvoiceNumber(invoice.invoice_number)}
                                 </div>
-                                <div className="text-gray-700">
-                                  <div className="font-medium">{customerName}</div>
+                                <div className="text-gray-700 min-w-0">
+                                  <div className="font-medium truncate">{customerName}</div>
                                 </div>
-                                <div className="text-sm text-gray-600">
+                                <div className="text-sm text-gray-600 min-w-0 truncate">
                                   {getWorkOrderNumber(invoice.work_order_id)}
                                 </div>
-                                <div className="font-semibold text-gray-900">
+                                <div className="font-semibold text-gray-900 min-w-0 whitespace-nowrap">
                                   {formatCurrency(Math.max(0, (invoice.total_amount || 0) - (invoice.paid_amount || 0)))}
                                 </div>
-                                <div>
-                                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColors[displayStatus as keyof typeof statusColors] || 'bg-gray-100 text-gray-800'}`}>
+                                <div className="min-w-0 flex items-center">
+                                  <span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${statusColors[displayStatus as keyof typeof statusColors] || 'bg-gray-100 text-gray-800'}`}>
                                     {displayStatus ? displayStatus.charAt(0).toUpperCase() + displayStatus.slice(1) : 'Pending'}
                                   </span>
                                 </div>
-                                <div className="text-sm text-gray-600">
+                                <div className="text-sm text-gray-600 min-w-0 whitespace-nowrap">
                                   {formatDateInTimezone((invoice as any).invoice_date || invoice.created_at)}
                                 </div>
-                                <div className="text-sm text-gray-600">
+                                <div className="text-sm text-gray-600 min-w-0 whitespace-nowrap">
                                   {formatDateInTimezone(invoice.due_date)}
                                 </div>
-                                <div className="flex items-center justify-end space-x-2">
+                                <div className="flex items-center justify-end space-x-2 min-w-0 flex-shrink-0 flex-wrap gap-1">
                                 <button
                                   onClick={() => handlePrintInvoice(invoice)}
-                                  className="p-2 text-gray-400 hover:text-blue-600 transition-colors"
+                                  className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors flex-shrink-0"
                                   title="Print invoice"
                                 >
                                   <Printer className="h-4 w-4" />
@@ -11684,14 +11684,14 @@ export default function Dashboard() {
                                 <button
                                   onClick={() => handleMarkInvoicePaid(invoice)}
                                   disabled={markingInvoiceId === invoice.id || displayStatus === 'paid'}
-                                  className="p-2 text-gray-400 hover:text-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                  className="p-1.5 text-gray-400 hover:text-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
                                   title="Record payment"
                                 >
                                   <DollarSign className="h-4 w-4" />
                                 </button>
                                 <button
                                   onClick={() => handleSendInvoice(invoice)}
-                                  className="p-2 text-gray-400 hover:text-blue-600 transition-colors"
+                                  className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors flex-shrink-0"
                                   title="Send invoice"
                                 >
                                   <Send className="h-4 w-4" />
@@ -11855,14 +11855,14 @@ export default function Dashboard() {
                                       alert('Error loading invoice. Please try again.');
                                     }
                                   }}
-                                  className="p-2 text-gray-400 hover:text-blue-600 transition-colors"
+                                  className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors flex-shrink-0"
                                   title="Edit invoice"
                                 >
                                   <Edit className="h-4 w-4" />
                                 </button>
                                 <button
                                   onClick={() => setInvoiceToDelete(invoice)}
-                                  className="p-2 text-gray-400 hover:text-red-600 transition-colors"
+                                  className="p-1.5 text-gray-400 hover:text-red-600 transition-colors flex-shrink-0"
                                   title="Delete invoice"
                                 >
                                   <Trash2 className="h-4 w-4" />
@@ -11874,7 +11874,7 @@ export default function Dashboard() {
                         });
                         })()}
                       </div>
-                    </>
+                    </div>
                   )}
                 </div>
               </div>
