@@ -316,6 +316,7 @@ export default function Dashboard() {
   const [userProfileLoading, setUserProfileLoading] = useState(false);
   const [analyticsSubTab, setAnalyticsSubTab] = useState('financials');
   const [analyticsExpanded, setAnalyticsExpanded] = useState(false);
+  const [customersExpanded, setCustomersExpanded] = useState(false);
 
   // Timezone state - load from localStorage or default to EST
   const [timezone, setTimezone] = useState<string>(() => {
@@ -407,6 +408,9 @@ export default function Dashboard() {
   useEffect(() => {
     if (activeTab.startsWith('analytics')) {
       setAnalyticsExpanded(true);
+    }
+    if (activeTab === 'customers' || activeTab === 'accounts-receivable') {
+      setCustomersExpanded(true);
     }
   }, [activeTab]);
 
@@ -832,6 +836,12 @@ export default function Dashboard() {
   const [customerQuery, setCustomerQuery] = useState('');
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
   const [showEditCustomerModal, setShowEditCustomerModal] = useState<null | Customer>(null);
+  // Analytics customer lookup
+  const [analyticsCustomerSearch, setAnalyticsCustomerSearch] = useState('');
+  const [showAnalyticsCustomerDropdown, setShowAnalyticsCustomerDropdown] = useState(false);
+  const [selectedAnalyticsCustomer, setSelectedAnalyticsCustomer] = useState<Customer | null>(null);
+  const [analyticsCustomerDetails, setAnalyticsCustomerDetails] = useState<any>(null);
+  const [analyticsCustomerLoading, setAnalyticsCustomerLoading] = useState(false);
   const [customerForm, setCustomerForm] = useState({
     name: '',
     email: '',
@@ -5997,8 +6007,7 @@ export default function Dashboard() {
     { id: 'dot-inspections', name: 'DOT Inspections', icon: ClipboardCheck },
     { id: 'inventory', name: 'Inventory', icon: Package },
     { id: 'labor', name: 'Labor', icon: Clock },
-    { id: 'mechanics', name: 'Employees', icon: Users },
-    { id: 'customers', name: 'Customers', icon: UserCheck }
+    { id: 'mechanics', name: 'Employees', icon: Users }
   ];
 
   const analyticsSubItems = [
@@ -6010,8 +6019,12 @@ export default function Dashboard() {
     { id: 'analytics-inventory', name: 'Inventory', icon: Box }
   ];
 
+  const customersSubItems = [
+    { id: 'customers', name: 'Customers', icon: UserCheck },
+    { id: 'accounts-receivable', name: 'Accounts Receivable', icon: DollarSign, feature: 'accounts_receivable' }
+  ];
+
   const enterpriseItems = [
-    { id: 'accounts-receivable', name: 'Accounts Receivable', icon: DollarSign, badge: 'ENT', feature: 'accounts_receivable' },
     { id: 'user-permissions', name: 'User Permissions', icon: Shield, badge: 'ENT', feature: 'user_permissions' }
   ];
 
@@ -8878,6 +8891,61 @@ export default function Dashboard() {
                 </button>
               ))}
               
+              {/* Customers with dropdown */}
+              <div>
+                <button
+                  onClick={() => {
+                    setCustomersExpanded(!customersExpanded);
+                    if (!customersExpanded) {
+                      setActiveTab('customers');
+                    }
+                  }}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    activeTab === 'customers' || activeTab === 'accounts-receivable'
+                      ? 'bg-primary-50 text-primary-700 border-r-2 border-primary-500'
+                      : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                  }`}
+                >
+                  <div className="flex items-center space-x-3">
+                    <UserCheck className="h-5 w-5" />
+                    <span>Customers</span>
+                  </div>
+                  <ChevronDown className={`h-4 w-4 transition-transform ${customersExpanded ? 'rotate-180' : ''}`} />
+                </button>
+                {customersExpanded && (
+                  <div className="ml-8 mt-1 space-y-1 border-l-2 border-gray-200 pl-2">
+                    {customersSubItems.map((subItem) => {
+                      const isAccessible = subItem.feature ? canAccessFeature(subItem.feature) : true;
+                      const isActive = activeTab === subItem.id;
+                      return (
+                        <button
+                          key={subItem.id}
+                          onClick={() => isAccessible && setActiveTab(subItem.id)}
+                          disabled={!isAccessible}
+                          className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                            isActive
+                              ? 'bg-primary-50 text-primary-700 border-r-2 border-primary-500'
+                              : isAccessible
+                                ? 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                                : 'text-gray-400 cursor-not-allowed'
+                          }`}
+                        >
+                          <div className="flex items-center space-x-3">
+                            {subItem.icon && <subItem.icon className="h-4 w-4" />}
+                            <span>{subItem.name}</span>
+                          </div>
+                          {subItem.badge && (
+                            <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded">
+                              {subItem.badge}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              
               {/* Analytics with dropdown */}
               <div>
                 <button
@@ -8921,6 +8989,7 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
+              
               {enterpriseItems.map((item) => {
                 const isAccessible = canAccessFeature(item.feature);
                 const isActive = activeTab === item.id;
@@ -8985,6 +9054,7 @@ export default function Dashboard() {
               {activeTab === 'labor' && 'Labor'}
               {activeTab === 'mechanics' && 'Employees'}
               {activeTab === 'customers' && 'Customers'}
+              {activeTab === 'user-permissions' && 'User Permissions'}
               {activeTab === 'settings' && 'Settings'}
               {activeTab.startsWith('analytics') && 'Analytics'}
             </h1>
@@ -9000,6 +9070,7 @@ export default function Dashboard() {
               {activeTab === 'labor' && 'Track labor hours and costs.'}
               {activeTab === 'mechanics' && 'Manage employee assignments and schedules.'}
               {activeTab === 'customers' && 'Customer information and history.'}
+              {activeTab === 'user-permissions' && 'Manage user roles and permissions.'}
               {activeTab === 'settings' && 'Application settings and preferences.'}
               {activeTab === 'analytics-overview' && 'Business analytics and reports overview.'}
               {activeTab === 'analytics-customer-reports' && 'Customer reports and insights.'}
@@ -10656,7 +10727,7 @@ export default function Dashboard() {
                 ))}
                 <div className="ml-auto flex items-center gap-2">
                   {(['all','fixed','hourly'] as const).map(rt => (
-                    <button key={rt} onClick={()=>setLaborRateFilter(rt)} className={`px-3 py-1 rounded-lg border ${laborRateFilter===rt?'bg-blue-600 text-white border-blue-600':'border-gray-300 text-gray-700 hover:bg-gray-50'}`}>{rt[0].toUpperCase()+rt.slice(1)}</button>
+                    <button key={rt} onClick={()=>setLaborRateFilter(rt)} className={`px-3 py-1 rounded-lg border ${laborRateFilter===rt?'bg-black text-white border-black':'border-gray-300 text-gray-700 hover:bg-gray-50'}`}>{rt[0].toUpperCase()+rt.slice(1)}</button>
                   ))}
                 </div>
               </div>
@@ -12063,6 +12134,18 @@ export default function Dashboard() {
                     ))}
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* User Permissions Tab Content */}
+          {activeTab === 'user-permissions' && (
+            <div className="space-y-8">
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+                <Shield className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-2xl font-semibold text-gray-900 mb-2">Coming Soon</h3>
+                <p className="text-gray-600 mb-1">User Permissions is coming soon in the Enterprise plan.</p>
+                <p className="text-sm text-gray-500">This feature will allow you to manage user roles and permissions for your team.</p>
               </div>
             </div>
           )}
@@ -14360,13 +14443,184 @@ export default function Dashboard() {
                           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
                           <input
                             type="text"
+                            value={analyticsCustomerSearch}
+                            onChange={(e) => {
+                              setAnalyticsCustomerSearch(e.target.value);
+                              setShowAnalyticsCustomerDropdown(true);
+                              setSelectedAnalyticsCustomer(null);
+                              setAnalyticsCustomerDetails(null);
+                            }}
+                            onFocus={() => setShowAnalyticsCustomerDropdown(true)}
+                            onBlur={() => {
+                              setTimeout(() => setShowAnalyticsCustomerDropdown(false), 200);
+                            }}
                             placeholder="Search customer by name..."
                             className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                           />
+                          {showAnalyticsCustomerDropdown && analyticsCustomerSearch && (
+                            <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                              {(() => {
+                                const searchTerm = analyticsCustomerSearch.toLowerCase();
+                                const filtered = customers.filter(c => {
+                                  const fullName = [c.first_name, c.last_name].filter(Boolean).join(' ').toLowerCase();
+                                  const company = (c.company || '').toLowerCase();
+                                  const email = (c.email || '').toLowerCase();
+                                  const phone = (c.phone || '').toLowerCase();
+                                  return fullName.includes(searchTerm) || 
+                                         company.includes(searchTerm) || 
+                                         email.includes(searchTerm) ||
+                                         phone.includes(searchTerm);
+                                });
+                                
+                                if (filtered.length === 0) {
+                                  return (
+                                    <div className="px-4 py-2 text-sm text-gray-500">
+                                      No customers found
+                                    </div>
+                                  );
+                                }
+                                
+                                return filtered.map((customer) => {
+                                  const displayName = [customer.first_name, customer.last_name].filter(Boolean).join(' ') || customer.company || 'Unknown';
+                                  return (
+                                    <div
+                                      key={customer.id}
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={async () => {
+                                        setSelectedAnalyticsCustomer(customer);
+                                        setAnalyticsCustomerSearch(displayName);
+                                        setShowAnalyticsCustomerDropdown(false);
+                                        setAnalyticsCustomerLoading(true);
+                                        
+                                        // Fetch customer details (invoices, work orders, etc.)
+                                        try {
+                                          const shopId = await getShopId();
+                                          if (!shopId) return;
+                                          
+                                          // Fetch invoices for this customer
+                                          const { data: customerInvoices } = await supabase
+                                            .from('invoices')
+                                            .select('*')
+                                            .eq('customer_id', customer.id)
+                                            .eq('shop_id', shopId)
+                                            .order('created_at', { ascending: false });
+                                          
+                                          // Fetch work orders for this customer
+                                          const { data: customerWorkOrders } = await supabase
+                                            .from('work_orders')
+                                            .select('*')
+                                            .eq('customer_id', customer.id)
+                                            .eq('shop_id', shopId)
+                                            .order('created_at', { ascending: false });
+                                          
+                                          // Calculate totals
+                                          const totalSpent = customerInvoices?.reduce((sum, inv) => sum + (inv.total_amount || 0), 0) || 0;
+                                          const totalPaid = customerInvoices?.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0) || 0;
+                                          const balanceDue = totalSpent - totalPaid;
+                                          
+                                          setAnalyticsCustomerDetails({
+                                            customer,
+                                            invoices: customerInvoices || [],
+                                            workOrders: customerWorkOrders || [],
+                                            totalSpent,
+                                            totalPaid,
+                                            balanceDue,
+                                            invoiceCount: customerInvoices?.length || 0,
+                                            workOrderCount: customerWorkOrders?.length || 0,
+                                            lastVisit: customerWorkOrders?.[0]?.created_at || customerInvoices?.[0]?.created_at || null
+                                          });
+                                        } catch (error) {
+                                          console.error('Error fetching customer details:', error);
+                                        } finally {
+                                          setAnalyticsCustomerLoading(false);
+                                        }
+                                      }}
+                                      className="px-4 py-2 hover:bg-gray-100 cursor-pointer text-sm border-b border-gray-100 last:border-b-0"
+                                    >
+                                      <div className="font-medium text-gray-900">{displayName}</div>
+                                      {customer.email && (
+                                        <div className="text-xs text-gray-500">{customer.email}</div>
+                                      )}
+                                      {customer.phone && (
+                                        <div className="text-xs text-gray-500">{formatPhoneNumber(customer.phone)}</div>
+                                      )}
+                                    </div>
+                                  );
+                                });
+                              })()}
+                            </div>
+                          )}
                         </div>
-                        <p className="text-sm text-gray-500 mt-3">
-                          <a href="#" className="text-primary-600 hover:underline">Search for a customer to view their details</a>
-                        </p>
+                        {selectedAnalyticsCustomer && (
+                          <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                            {analyticsCustomerLoading ? (
+                              <div className="text-center text-gray-500 py-4">Loading customer details...</div>
+                            ) : analyticsCustomerDetails ? (
+                              <div className="space-y-4">
+                                <div>
+                                  <h4 className="font-semibold text-gray-900 text-lg mb-2">
+                                    {[selectedAnalyticsCustomer.first_name, selectedAnalyticsCustomer.last_name].filter(Boolean).join(' ') || selectedAnalyticsCustomer.company || 'Unknown Customer'}
+                                  </h4>
+                                  <div className="grid grid-cols-2 gap-4 text-sm">
+                                    {selectedAnalyticsCustomer.email && (
+                                      <div>
+                                        <span className="text-gray-500">Email:</span> {selectedAnalyticsCustomer.email}
+                                      </div>
+                                    )}
+                                    {selectedAnalyticsCustomer.phone && (
+                                      <div>
+                                        <span className="text-gray-500">Phone:</span> {formatPhoneNumber(selectedAnalyticsCustomer.phone)}
+                                      </div>
+                                    )}
+                                    {selectedAnalyticsCustomer.company && (
+                                      <div>
+                                        <span className="text-gray-500">Company:</span> {selectedAnalyticsCustomer.company}
+                                      </div>
+                                    )}
+                                    {selectedAnalyticsCustomer.is_fleet && (
+                                      <div>
+                                        <span className="text-gray-500">Type:</span> Fleet Customer
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t border-gray-200">
+                                  <div>
+                                    <div className="text-2xl font-bold text-gray-900">{formatCurrency(analyticsCustomerDetails.totalSpent)}</div>
+                                    <div className="text-xs text-gray-500">Total Spent</div>
+                                  </div>
+                                  <div>
+                                    <div className="text-2xl font-bold text-gray-900">{formatCurrency(analyticsCustomerDetails.balanceDue)}</div>
+                                    <div className="text-xs text-gray-500">Balance Due</div>
+                                  </div>
+                                  <div>
+                                    <div className="text-2xl font-bold text-gray-900">{analyticsCustomerDetails.invoiceCount}</div>
+                                    <div className="text-xs text-gray-500">Invoices</div>
+                                  </div>
+                                  <div>
+                                    <div className="text-2xl font-bold text-gray-900">{analyticsCustomerDetails.workOrderCount}</div>
+                                    <div className="text-xs text-gray-500">Work Orders</div>
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => {
+                                    setAnalyticsCustomerSearch('');
+                                    setSelectedAnalyticsCustomer(null);
+                                    setAnalyticsCustomerDetails(null);
+                                  }}
+                                  className="mt-2 text-sm text-primary-600 hover:text-primary-700"
+                                >
+                                  Clear selection
+                                </button>
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                        {!selectedAnalyticsCustomer && (
+                          <p className="text-sm text-gray-500 mt-3">
+                            Search for a customer to view their details
+                          </p>
+                        )}
                       </div>
                     </div>
 
