@@ -6019,7 +6019,13 @@ export default function Dashboard() {
     { id: 'analytics-inventory', name: 'Inventory', icon: Box }
   ];
 
-  const customersSubItems = [
+  const customersSubItems: Array<{
+    id: string;
+    name: string;
+    icon: any;
+    feature?: string;
+    badge?: string;
+  }> = [
     { id: 'customers', name: 'Customers', icon: UserCheck },
     { id: 'accounts-receivable', name: 'Accounts Receivable', icon: DollarSign, feature: 'accounts_receivable' }
   ];
