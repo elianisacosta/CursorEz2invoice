@@ -317,6 +317,7 @@ export default function Dashboard() {
   const [analyticsSubTab, setAnalyticsSubTab] = useState('financials');
   const [analyticsExpanded, setAnalyticsExpanded] = useState(false);
   const [customersExpanded, setCustomersExpanded] = useState(false);
+  const [vendorsExpanded, setVendorsExpanded] = useState(false);
 
   // Timezone state - load from localStorage or default to EST
   const [timezone, setTimezone] = useState<string>(() => {
@@ -411,6 +412,9 @@ export default function Dashboard() {
     }
     if (activeTab === 'customers' || activeTab === 'accounts-receivable') {
       setCustomersExpanded(true);
+    }
+    if (activeTab === 'vendors' || activeTab === 'bills' || activeTab === 'accounts-payable') {
+      setVendorsExpanded(true);
     }
   }, [activeTab]);
 
@@ -6030,6 +6034,18 @@ export default function Dashboard() {
     { id: 'accounts-receivable', name: 'Accounts Receivable', icon: DollarSign, feature: 'accounts_receivable' }
   ];
 
+  const vendorsSubItems: Array<{
+    id: string;
+    name: string;
+    icon: any;
+    feature?: string;
+    badge?: string;
+  }> = [
+    { id: 'vendors', name: 'Vendors', icon: Building },
+    { id: 'bills', name: 'Bills', icon: FileText },
+    { id: 'accounts-payable', name: 'Accounts Payable', icon: DollarSign }
+  ];
+
   const enterpriseItems = [
     { id: 'user-permissions', name: 'User Permissions', icon: Shield, badge: 'ENT', feature: 'user_permissions' }
   ];
@@ -8952,6 +8968,61 @@ export default function Dashboard() {
                 )}
               </div>
               
+              {/* Vendors with dropdown */}
+              <div>
+                <button
+                  onClick={() => {
+                    setVendorsExpanded(!vendorsExpanded);
+                    if (!vendorsExpanded) {
+                      setActiveTab('vendors');
+                    }
+                  }}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    activeTab === 'vendors' || activeTab === 'bills' || activeTab === 'accounts-payable'
+                      ? 'bg-primary-50 text-primary-700 border-r-2 border-primary-500'
+                      : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                  }`}
+                >
+                  <div className="flex items-center space-x-3">
+                    <Building className="h-5 w-5" />
+                    <span>Vendors</span>
+                  </div>
+                  <ChevronDown className={`h-4 w-4 transition-transform ${vendorsExpanded ? 'rotate-180' : ''}`} />
+                </button>
+                {vendorsExpanded && (
+                  <div className="ml-8 mt-1 space-y-1 border-l-2 border-gray-200 pl-2">
+                    {vendorsSubItems.map((subItem) => {
+                      const isAccessible = subItem.feature ? canAccessFeature(subItem.feature) : true;
+                      const isActive = activeTab === subItem.id;
+                      return (
+                        <button
+                          key={subItem.id}
+                          onClick={() => isAccessible && setActiveTab(subItem.id)}
+                          disabled={!isAccessible}
+                          className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                            isActive
+                              ? 'bg-primary-50 text-primary-700 border-r-2 border-primary-500'
+                              : isAccessible
+                                ? 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                                : 'text-gray-400 cursor-not-allowed'
+                          }`}
+                        >
+                          <div className="flex items-center space-x-3">
+                            {subItem.icon && <subItem.icon className="h-4 w-4" />}
+                            <span>{subItem.name}</span>
+                          </div>
+                          {subItem.badge && (
+                            <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded">
+                              {subItem.badge}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              
               {/* Analytics with dropdown */}
               <div>
                 <button
@@ -9060,6 +9131,9 @@ export default function Dashboard() {
               {activeTab === 'labor' && 'Labor'}
               {activeTab === 'mechanics' && 'Employees'}
               {activeTab === 'customers' && 'Customers'}
+              {activeTab === 'vendors' && 'Vendors'}
+              {activeTab === 'bills' && 'Bills'}
+              {activeTab === 'accounts-payable' && 'Accounts Payable'}
               {activeTab === 'user-permissions' && 'User Permissions'}
               {activeTab === 'settings' && 'Settings'}
               {activeTab.startsWith('analytics') && 'Analytics'}
@@ -9076,6 +9150,9 @@ export default function Dashboard() {
               {activeTab === 'labor' && 'Track labor hours and costs.'}
               {activeTab === 'mechanics' && 'Manage employee assignments and schedules.'}
               {activeTab === 'customers' && 'Customer information and history.'}
+              {activeTab === 'vendors' && 'Manage vendor relationships and suppliers.'}
+              {activeTab === 'bills' && 'Track and manage vendor bills.'}
+              {activeTab === 'accounts-payable' && 'Manage accounts payable and outstanding vendor payments.'}
               {activeTab === 'user-permissions' && 'Manage user roles and permissions.'}
               {activeTab === 'settings' && 'Application settings and preferences.'}
               {activeTab === 'analytics-overview' && 'Business analytics and reports overview.'}
@@ -12140,6 +12217,39 @@ export default function Dashboard() {
                     ))}
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Vendors Tab Content */}
+          {activeTab === 'vendors' && (
+            <div className="space-y-8">
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+                <Building className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-2xl font-semibold text-gray-900 mb-2">Vendors</h3>
+                <p className="text-gray-600">Manage vendor relationships and suppliers.</p>
+              </div>
+            </div>
+          )}
+
+          {/* Bills Tab Content */}
+          {activeTab === 'bills' && (
+            <div className="space-y-8">
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+                <FileText className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-2xl font-semibold text-gray-900 mb-2">Bills</h3>
+                <p className="text-gray-600">Track and manage vendor bills.</p>
+              </div>
+            </div>
+          )}
+
+          {/* Accounts Payable Tab Content */}
+          {activeTab === 'accounts-payable' && (
+            <div className="space-y-8">
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+                <DollarSign className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-2xl font-semibold text-gray-900 mb-2">Accounts Payable</h3>
+                <p className="text-gray-600">Manage accounts payable and outstanding vendor payments.</p>
               </div>
             </div>
           )}
