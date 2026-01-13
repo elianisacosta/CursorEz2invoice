@@ -437,10 +437,6 @@ export default function Dashboard() {
             return;
           }
 
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:410',message:'Verifying checkout session',data:{sessionId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-          // #endregion
-
           // Call API to verify checkout session and save customer ID
           const response = await fetch('/api/stripe/verify-checkout-session', {
             method: 'POST',
@@ -455,19 +451,11 @@ export default function Dashboard() {
 
           const result = await response.json();
 
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:435',message:'Checkout session verification result',data:{success:response.ok&&result.success,planType:result.planType,error:result.error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-          // #endregion
-
           if (response.ok && result.success) {
             // Update local plan type state
             if (result.planType) {
               setUserPlanType(result.planType);
             }
-            
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:448',message:'Checkout verification successful, updating planType',data:{planType:result.planType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-            // #endregion
             
             // Remove session_id from URL to clean it up
             urlParams.delete('session_id');
@@ -488,10 +476,6 @@ export default function Dashboard() {
                   .select('plan_type, stripe_customer_id')
                   .eq('id', currentUser.id)
                   .maybeSingle();
-                
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:465',message:'Refreshed user record after checkout',data:{planType:refreshedUserRecord?.plan_type,matchesResult:refreshedUserRecord?.plan_type===result.planType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-                // #endregion
                 
                 if (refreshedUserRecord?.plan_type) {
                   setUserPlanType(refreshedUserRecord.plan_type);
@@ -846,6 +830,30 @@ export default function Dashboard() {
   const [selectedAnalyticsCustomer, setSelectedAnalyticsCustomer] = useState<Customer | null>(null);
   const [analyticsCustomerDetails, setAnalyticsCustomerDetails] = useState<any>(null);
   const [analyticsCustomerLoading, setAnalyticsCustomerLoading] = useState(false);
+
+  // Update invoice customer search display when customer is selected
+  useEffect(() => {
+    if (invoiceFormData.customer_id && customers.length > 0) {
+      const selectedCustomer = customers.find(c => c.id === invoiceFormData.customer_id);
+      if (selectedCustomer) {
+        const individualName = [selectedCustomer.first_name, selectedCustomer.last_name].filter(Boolean).join(' ');
+        const displayName = selectedCustomer.is_fleet 
+          ? selectedCustomer.company || individualName || 'Unknown'
+          : individualName || selectedCustomer.company || 'Unknown';
+        setInvoiceCustomerSearch(displayName);
+      }
+    } else if (!invoiceFormData.customer_id) {
+      setInvoiceCustomerSearch('');
+    }
+  }, [invoiceFormData.customer_id, customers]);
+
+  // Reset invoice customer search when modal opens/closes
+  useEffect(() => {
+    if (!showCreateInvoiceModal && !editingInvoice) {
+      setInvoiceCustomerSearch('');
+      setShowInvoiceCustomerDropdown(false);
+    }
+  }, [showCreateInvoiceModal, editingInvoice]);
   const [customerForm, setCustomerForm] = useState({
     name: '',
     email: '',
@@ -1019,6 +1027,10 @@ export default function Dashboard() {
   // Customer search for work order creation
   const [customerSearchQuery, setCustomerSearchQuery] = useState('');
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
+  const [invoiceCustomerSearch, setInvoiceCustomerSearch] = useState('');
+  const [showInvoiceCustomerDropdown, setShowInvoiceCustomerDropdown] = useState(false);
+  const [estimateCustomerSearch, setEstimateCustomerSearch] = useState('');
+  const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState(false);
 
   // Function to reset form data when opening new work order modal
   const resetWorkOrderForm = () => {
@@ -1207,6 +1219,30 @@ export default function Dashboard() {
   useEffect(() => {
     setEstimateTaxRate(defaultTaxRate);
   }, [defaultTaxRate]);
+
+  // Update estimate customer search display when customer is selected
+  useEffect(() => {
+    if (estimateCustomerId && customers.length > 0) {
+      const selectedCustomer = customers.find(c => c.id === estimateCustomerId);
+      if (selectedCustomer) {
+        const individualName = [selectedCustomer.first_name, selectedCustomer.last_name].filter(Boolean).join(' ');
+        const displayName = selectedCustomer.is_fleet 
+          ? selectedCustomer.company || individualName || 'Unknown'
+          : individualName || selectedCustomer.company || 'Unknown';
+        setEstimateCustomerSearch(displayName);
+      }
+    } else if (!estimateCustomerId) {
+      setEstimateCustomerSearch('');
+    }
+  }, [estimateCustomerId, customers]);
+
+  // Reset estimate customer search when modal opens/closes
+  useEffect(() => {
+    if (!showCreateEstimateModal) {
+      setEstimateCustomerSearch('');
+      setShowEstimateCustomerDropdown(false);
+    }
+  }, [showCreateEstimateModal]);
   const [estimateNotes, setEstimateNotes] = useState('');
   const [estimateItems, setEstimateItems] = useState<EstimateItem[]>([ { item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 } ]);
   const [estimateApplyCardFee, setEstimateApplyCardFee] = useState(false);
@@ -17492,57 +17528,206 @@ export default function Dashboard() {
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Customer {!editingInvoice && '*'}
                   </label>
-                  <select 
-                    value={invoiceFormData.customer_id}
-                    onChange={async (e) => {
-                      const customerId = e.target.value;
-                      setInvoiceFormData(prev => ({ ...prev, customer_id: customerId }));
-                      
-                      // Fetch fleet discounts for this customer
-                      if (customerId) {
-                        const selectedCustomer = customers.find(c => c.id === customerId);
-                        if (selectedCustomer?.is_fleet) {
-                          try {
-                            const shopId = await getShopId();
-                            if (shopId) {
-                              const { data: discounts, error } = await supabase
-                                .from('fleet_discounts')
-                                .select('*')
-                                .eq('customer_id', customerId)
-                                .eq('shop_id', shopId);
-                              
-                              if (!error && discounts) {
-                                setInvoiceCustomerDiscounts(discounts);
-                              } else {
-                                setInvoiceCustomerDiscounts([]);
-                              }
-                            } else {
-                              setInvoiceCustomerDiscounts([]);
-                            }
-                          } catch (err) {
-                            console.error('Error fetching fleet discounts:', err);
-                            setInvoiceCustomerDiscounts([]);
-                          }
-                        } else {
-                          setInvoiceCustomerDiscounts([]);
+                  <div className="relative">
+                    <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={invoiceCustomerSearch}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setInvoiceCustomerSearch(value);
+                        setShowInvoiceCustomerDropdown(true);
+                      }}
+                      onFocus={() => {
+                        if (!editingInvoice) {
+                          setShowInvoiceCustomerDropdown(true);
                         }
-                      } else {
-                        setInvoiceCustomerDiscounts([]);
-                      }
-                    }}
-                    disabled={!!editingInvoice}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
-                  >
-                    <option value="">Select a customer</option>
-                    {customers.map((customer) => {
-                      const customerName = [customer.first_name, customer.last_name].filter(Boolean).join(' ') || customer.company || 'Unknown';
-                      return (
-                        <option key={customer.id} value={customer.id}>
-                          {customerName}
-                        </option>
-                      );
-                    })}
-                  </select>
+                      }}
+                      onBlur={() => {
+                        // Delay hiding dropdown to allow clicks
+                        setTimeout(() => setShowInvoiceCustomerDropdown(false), 200);
+                      }}
+                      placeholder="Search by name or phone number..."
+                      disabled={!!editingInvoice}
+                      className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                    />
+                    {showInvoiceCustomerDropdown && !editingInvoice && customers.length > 0 && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                        {(() => {
+                          // Filter customers by name (individual or company) or phone number
+                          const searchLower = invoiceCustomerSearch.toLowerCase().trim();
+                          
+                          // If no search query, show all customers
+                          if (!searchLower) {
+                            return customers.map((customer) => {
+                              const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
+                              const customerName = customer.company || individualName || 'Unknown';
+                              const displayName = customer.is_fleet 
+                                ? customer.company || individualName || 'Unknown'
+                                : individualName || customer.company || 'Unknown';
+                              
+                              return (
+                                <div
+                                  key={customer.id}
+                                  onClick={async () => {
+                                    setInvoiceFormData(prev => ({ ...prev, customer_id: customer.id }));
+                                    setInvoiceCustomerSearch(displayName);
+                                    setShowInvoiceCustomerDropdown(false);
+                                    
+                                    // Fetch fleet discounts for this customer
+                                    if (customer.id) {
+                                      const selectedCustomer = customers.find(c => c.id === customer.id);
+                                      if (selectedCustomer?.is_fleet) {
+                                        try {
+                                          const shopId = await getShopId();
+                                          if (shopId) {
+                                            const { data: discounts, error } = await supabase
+                                              .from('fleet_discounts')
+                                              .select('*')
+                                              .eq('customer_id', customer.id)
+                                              .eq('shop_id', shopId);
+                                            
+                                            if (!error && discounts) {
+                                              setInvoiceCustomerDiscounts(discounts);
+                                            } else {
+                                              setInvoiceCustomerDiscounts([]);
+                                            }
+                                          } else {
+                                            setInvoiceCustomerDiscounts([]);
+                                          }
+                                        } catch (err) {
+                                          console.error('Error fetching fleet discounts:', err);
+                                          setInvoiceCustomerDiscounts([]);
+                                        }
+                                      } else {
+                                        setInvoiceCustomerDiscounts([]);
+                                      }
+                                    } else {
+                                      setInvoiceCustomerDiscounts([]);
+                                    }
+                                  }}
+                                  className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                                >
+                                  <div className="font-medium text-gray-900">{displayName}</div>
+                                  <div className="flex items-center gap-2 mt-1">
+                                    {customer.phone && (
+                                      <div className="text-sm text-gray-500">{customer.phone}</div>
+                                    )}
+                                    {customer.is_fleet && (
+                                      <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Fleet</span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            });
+                          }
+                          
+                          // Filter customers based on search query
+                          const filteredCustomers = customers.filter(customer => {
+                            // Search individual name (first name + last name)
+                            const firstName = String(customer.first_name || '').toLowerCase().trim();
+                            const lastName = String(customer.last_name || '').toLowerCase().trim();
+                            const fullName = [customer.first_name, customer.last_name].filter(Boolean).join(' ').toLowerCase().trim();
+                            
+                            // Search company name (for fleets)
+                            const companyName = String(customer.company || '').toLowerCase().trim();
+                            
+                            // Check if search matches individual name components or full name
+                            const individualNameMatch = firstName.includes(searchLower) || 
+                                                       lastName.includes(searchLower) || 
+                                                       fullName.includes(searchLower);
+                            
+                            // Check if search matches company name
+                            const companyMatch = companyName.includes(searchLower);
+                            
+                            // Phone number search (normalize phone numbers)
+                            const normalizePhone = (p: string) => String(p || '').replace(/\D/g, '');
+                            const customerPhone = customer.phone || '';
+                            const normalizedPhone = normalizePhone(customerPhone).toLowerCase();
+                            const normalizedSearch = normalizePhone(searchLower);
+                            const phoneMatch = normalizedSearch.length > 0 && (
+                              normalizedPhone.includes(normalizedSearch) || 
+                              normalizedSearch.includes(normalizedPhone)
+                            );
+                            
+                            // Match if any of: individual name, company name, or phone number
+                            return individualNameMatch || companyMatch || phoneMatch;
+                          });
+                          
+                          if (filteredCustomers.length === 0) {
+                            return (
+                              <div className="px-4 py-3 text-sm text-gray-500">
+                                No customers found
+                              </div>
+                            );
+                          }
+                          
+                          return filteredCustomers.map((customer) => {
+                            // Display name: for individuals use first+last, for fleets use company
+                            const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
+                            const customerName = customer.company || individualName || 'Unknown';
+                            const displayName = customer.is_fleet 
+                              ? customer.company || individualName || 'Unknown'
+                              : individualName || customer.company || 'Unknown';
+                            
+                            return (
+                              <div
+                                key={customer.id}
+                                onClick={async () => {
+                                  setInvoiceFormData(prev => ({ ...prev, customer_id: customer.id }));
+                                  setInvoiceCustomerSearch(displayName);
+                                  setShowInvoiceCustomerDropdown(false);
+                                  
+                                  // Fetch fleet discounts for this customer
+                                  if (customer.id) {
+                                    const selectedCustomer = customers.find(c => c.id === customer.id);
+                                    if (selectedCustomer?.is_fleet) {
+                                      try {
+                                        const shopId = await getShopId();
+                                        if (shopId) {
+                                          const { data: discounts, error } = await supabase
+                                            .from('fleet_discounts')
+                                            .select('*')
+                                            .eq('customer_id', customer.id)
+                                            .eq('shop_id', shopId);
+                                          
+                                          if (!error && discounts) {
+                                            setInvoiceCustomerDiscounts(discounts);
+                                          } else {
+                                            setInvoiceCustomerDiscounts([]);
+                                          }
+                                        } else {
+                                          setInvoiceCustomerDiscounts([]);
+                                        }
+                                      } catch (err) {
+                                        console.error('Error fetching fleet discounts:', err);
+                                        setInvoiceCustomerDiscounts([]);
+                                      }
+                                    } else {
+                                      setInvoiceCustomerDiscounts([]);
+                                    }
+                                  } else {
+                                    setInvoiceCustomerDiscounts([]);
+                                  }
+                                }}
+                                className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                              >
+                                <div className="font-medium text-gray-900">{displayName}</div>
+                                <div className="flex items-center gap-2 mt-1">
+                                  {customer.phone && (
+                                    <div className="text-sm text-gray-500">{customer.phone}</div>
+                                  )}
+                                  {customer.is_fleet && (
+                                    <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Fleet</span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Date */}
@@ -20801,12 +20986,139 @@ export default function Dashboard() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Customer *</label>
-                  <select value={estimateCustomerId} onChange={(e)=>setEstimateCustomerId(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
-                    <option value="">Select a customer</option>
-                    {customers.map(c => (
-                      <option key={c.id} value={c.id}> {[c.first_name,c.last_name].filter(Boolean).join(' ') || c.email}</option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={estimateCustomerSearch}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setEstimateCustomerSearch(value);
+                        setShowEstimateCustomerDropdown(true);
+                      }}
+                      onFocus={() => {
+                        setShowEstimateCustomerDropdown(true);
+                      }}
+                      onBlur={() => {
+                        // Delay hiding dropdown to allow clicks
+                        setTimeout(() => setShowEstimateCustomerDropdown(false), 200);
+                      }}
+                      placeholder="Search by name or phone number..."
+                      className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                    />
+                    {showEstimateCustomerDropdown && customers.length > 0 && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                        {(() => {
+                          // Filter customers by name (individual or company) or phone number
+                          const searchLower = estimateCustomerSearch.toLowerCase().trim();
+                          
+                          // If no search query, show all customers
+                          if (!searchLower) {
+                            return customers.map((customer) => {
+                              const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
+                              const customerName = customer.company || individualName || 'Unknown';
+                              const displayName = customer.is_fleet 
+                                ? customer.company || individualName || 'Unknown'
+                                : individualName || customer.company || 'Unknown';
+                              
+                              return (
+                                <div
+                                  key={customer.id}
+                                  onClick={() => {
+                                    setEstimateCustomerId(customer.id);
+                                    setEstimateCustomerSearch(displayName);
+                                    setShowEstimateCustomerDropdown(false);
+                                  }}
+                                  className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                                >
+                                  <div className="font-medium text-gray-900">{displayName}</div>
+                                  <div className="flex items-center gap-2 mt-1">
+                                    {customer.phone && (
+                                      <div className="text-sm text-gray-500">{customer.phone}</div>
+                                    )}
+                                    {customer.is_fleet && (
+                                      <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Fleet</span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            });
+                          }
+                          
+                          // Filter customers based on search query
+                          const filteredCustomers = customers.filter(customer => {
+                            // Search individual name (first name + last name)
+                            const firstName = String(customer.first_name || '').toLowerCase().trim();
+                            const lastName = String(customer.last_name || '').toLowerCase().trim();
+                            const fullName = [customer.first_name, customer.last_name].filter(Boolean).join(' ').toLowerCase().trim();
+                            
+                            // Search company name (for fleets)
+                            const companyName = String(customer.company || '').toLowerCase().trim();
+                            
+                            // Check if search matches individual name components or full name
+                            const individualNameMatch = firstName.includes(searchLower) || 
+                                                       lastName.includes(searchLower) || 
+                                                       fullName.includes(searchLower);
+                            
+                            // Check if search matches company name
+                            const companyMatch = companyName.includes(searchLower);
+                            
+                            // Phone number search (normalize phone numbers)
+                            const normalizePhone = (p: string) => String(p || '').replace(/\D/g, '');
+                            const customerPhone = customer.phone || '';
+                            const normalizedPhone = normalizePhone(customerPhone).toLowerCase();
+                            const normalizedSearch = normalizePhone(searchLower);
+                            const phoneMatch = normalizedSearch.length > 0 && (
+                              normalizedPhone.includes(normalizedSearch) || 
+                              normalizedSearch.includes(normalizedPhone)
+                            );
+                            
+                            // Match if any of: individual name, company name, or phone number
+                            return individualNameMatch || companyMatch || phoneMatch;
+                          });
+                          
+                          if (filteredCustomers.length === 0) {
+                            return (
+                              <div className="px-4 py-3 text-sm text-gray-500">
+                                No customers found
+                              </div>
+                            );
+                          }
+                          
+                          return filteredCustomers.map((customer) => {
+                            // Display name: for individuals use first+last, for fleets use company
+                            const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
+                            const customerName = customer.company || individualName || 'Unknown';
+                            const displayName = customer.is_fleet 
+                              ? customer.company || individualName || 'Unknown'
+                              : individualName || customer.company || 'Unknown';
+                            
+                            return (
+                              <div
+                                key={customer.id}
+                                onClick={() => {
+                                  setEstimateCustomerId(customer.id);
+                                  setEstimateCustomerSearch(displayName);
+                                  setShowEstimateCustomerDropdown(false);
+                                }}
+                                className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                              >
+                                <div className="font-medium text-gray-900">{displayName}</div>
+                                <div className="flex items-center gap-2 mt-1">
+                                  {customer.phone && (
+                                    <div className="text-sm text-gray-500">{customer.phone}</div>
+                                  )}
+                                  {customer.is_fleet && (
+                                    <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Fleet</span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Valid Until</label>
