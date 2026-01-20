@@ -1161,6 +1161,14 @@ export default function Dashboard() {
     unit_price: 0,
     cost: 0
   });
+  
+  // Part name and part number autocomplete
+  const [partNameSearch, setPartNameSearch] = useState('');
+  const [partNameSuggestions, setPartNameSuggestions] = useState<InventoryItem[]>([]);
+  const [showPartNameDropdown, setShowPartNameDropdown] = useState(false);
+  const [partNumberSearch, setPartNumberSearch] = useState('');
+  const [partNumberSuggestions, setPartNumberSuggestions] = useState<InventoryItem[]>([]);
+  const [showPartNumberDropdown, setShowPartNumberDropdown] = useState(false);
   const [adjustForm, setAdjustForm] = useState({
     type: '',
     change: '' as string | '',
@@ -3815,6 +3823,71 @@ export default function Dashboard() {
       console.error('Error in fetchInventory:', err);
     } finally {
       setInventoryLoading(false);
+    }
+  };
+
+  // Search functions for part name and part number autocomplete
+  const searchPartName = async (query: string) => {
+    if (!query || query.trim().length < 2) {
+      setPartNameSuggestions([]);
+      return;
+    }
+
+    try {
+      const shopId = await getShopId();
+      if (!shopId) {
+        setPartNameSuggestions([]);
+        return;
+      }
+
+      const searchTerm = query.toLowerCase().trim();
+      const { data: parts } = await supabase
+        .from('parts')
+        .select('id, part_name, part_number, category, quantity_in_stock, selling_price, cost')
+        .eq('shop_id', shopId)
+        .ilike('part_name', `%${searchTerm}%`)
+        .limit(10);
+
+      if (parts) {
+        setPartNameSuggestions(parts as InventoryItem[]);
+      } else {
+        setPartNameSuggestions([]);
+      }
+    } catch (error) {
+      console.error('Error searching part names:', error);
+      setPartNameSuggestions([]);
+    }
+  };
+
+  const searchPartNumber = async (query: string) => {
+    if (!query || query.trim().length < 2) {
+      setPartNumberSuggestions([]);
+      return;
+    }
+
+    try {
+      const shopId = await getShopId();
+      if (!shopId) {
+        setPartNumberSuggestions([]);
+        return;
+      }
+
+      const searchTerm = query.toLowerCase().trim();
+      const { data: parts } = await supabase
+        .from('parts')
+        .select('id, part_name, part_number, category, quantity_in_stock, selling_price, cost')
+        .eq('shop_id', shopId)
+        .ilike('part_number', `%${searchTerm}%`)
+        .limit(10);
+
+      if (parts) {
+        setPartNumberSuggestions(parts as InventoryItem[]);
+      } else {
+        setPartNumberSuggestions([]);
+      }
+    } catch (error) {
+      console.error('Error searching part numbers:', error);
+      setPartNumberSuggestions([]);
     }
   };
 
@@ -21406,6 +21479,12 @@ export default function Dashboard() {
             setShowAddInventoryModal(false);
             setEditingInventoryItem(null);
             setInventoryForm({ name: '', category: '', description: '', sku: '', supplier: '', location: '', quantity: 0, min_stock: 0, unit_price: 0, cost: 0 });
+            setPartNameSearch('');
+            setPartNameSuggestions([]);
+            setShowPartNameDropdown(false);
+            setPartNumberSearch('');
+            setPartNumberSuggestions([]);
+            setShowPartNumberDropdown(false);
           }
         }}>
           <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4" onClick={(e) => e.stopPropagation()}>
@@ -21415,30 +21494,116 @@ export default function Dashboard() {
                 setShowAddInventoryModal(false);
                 setEditingInventoryItem(null);
                 setInventoryForm({ name: '', category: '', description: '', sku: '', supplier: '', location: '', quantity: 0, min_stock: 0, unit_price: 0, cost: 0 });
+                setPartNameSearch('');
+                setPartNameSuggestions([]);
+                setShowPartNameDropdown(false);
+                setPartNumberSearch('');
+                setPartNumberSuggestions([]);
+                setShowPartNumberDropdown(false);
               }} className="text-gray-400 hover:text-gray-600"><X className="h-6 w-6"/></button>
             </div>
             <div className="p-6 space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
+                <div className="relative">
                   <label className="block text-sm font-medium text-gray-700 mb-2">Part Name *</label>
                   <input 
                     type="text"
                     value={inventoryForm.name} 
-                    onChange={(e)=>setInventoryForm(prev=>({...prev,name:e.target.value}))} 
+                    onChange={async (e) => {
+                      const value = e.target.value;
+                      setInventoryForm(prev => ({ ...prev, name: value }));
+                      setPartNameSearch(value);
+                      await searchPartName(value);
+                      setShowPartNameDropdown(true);
+                    }}
+                    onFocus={() => {
+                      if (partNameSearch) {
+                        setShowPartNameDropdown(true);
+                      }
+                    }}
+                    onBlur={() => {
+                      // Delay closing to allow clicking on suggestions
+                      setTimeout(() => setShowPartNameDropdown(false), 200);
+                    }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
                     placeholder="Brake Pad Set"
                     autoFocus
                   />
+                  {showPartNameDropdown && partNameSuggestions.length > 0 && (
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                      {partNameSuggestions.map((part) => (
+                        <div
+                          key={part.id}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setInventoryForm(prev => ({ ...prev, name: part.part_name }));
+                            setPartNameSearch(part.part_name);
+                            setShowPartNameDropdown(false);
+                          }}
+                          className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                        >
+                          <div className="font-medium text-gray-900">{part.part_name}</div>
+                          {part.part_number && (
+                            <div className="text-sm text-gray-500">SKU: {part.part_number}</div>
+                          )}
+                          {part.category && (
+                            <div className="text-xs text-gray-400">Category: {part.category}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div>
+                <div className="relative">
                   <label className="block text-sm font-medium text-gray-700 mb-2">Part Number / SKU *</label>
                   <input 
                     type="text"
                     value={inventoryForm.sku} 
-                    onChange={(e)=>setInventoryForm(prev=>({...prev,sku:e.target.value}))} 
+                    onChange={async (e) => {
+                      const value = e.target.value;
+                      setInventoryForm(prev => ({ ...prev, sku: value }));
+                      setPartNumberSearch(value);
+                      await searchPartNumber(value);
+                      setShowPartNumberDropdown(true);
+                    }}
+                    onFocus={() => {
+                      if (partNumberSearch) {
+                        setShowPartNumberDropdown(true);
+                      }
+                    }}
+                    onBlur={() => {
+                      // Delay closing to allow clicking on suggestions
+                      setTimeout(() => setShowPartNumberDropdown(false), 200);
+                    }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
                     placeholder="BP-12345" 
                   />
+                  {showPartNumberDropdown && partNumberSuggestions.length > 0 && (
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                      {partNumberSuggestions.map((part) => (
+                        <div
+                          key={part.id}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setInventoryForm(prev => ({ 
+                              ...prev, 
+                              sku: part.part_number || '',
+                              name: part.part_name // Also fill in the part name
+                            }));
+                            setPartNumberSearch(part.part_number || '');
+                            setShowPartNumberDropdown(false);
+                          }}
+                          className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                        >
+                          <div className="font-medium text-gray-900">{part.part_number}</div>
+                          <div className="text-sm text-gray-500">{part.part_name}</div>
+                          {part.category && (
+                            <div className="text-xs text-gray-400">Category: {part.category}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -21530,6 +21695,12 @@ export default function Dashboard() {
                   setShowAddInventoryModal(false);
                   setEditingInventoryItem(null);
                   setInventoryForm({ name: '', category: '', description: '', sku: '', supplier: '', location: '', quantity: 0, min_stock: 0, unit_price: 0, cost: 0 });
+                  setPartNameSearch('');
+                  setPartNameSuggestions([]);
+                  setShowPartNameDropdown(false);
+                  setPartNumberSearch('');
+                  setPartNumberSuggestions([]);
+                  setShowPartNumberDropdown(false);
                 }} 
                 className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
               >
@@ -21636,6 +21807,12 @@ export default function Dashboard() {
                     setShowAddInventoryModal(false);
                     setEditingInventoryItem(null);
                     setInventoryForm({ name: '', category: '', description: '', sku: '', supplier: '', location: '', quantity: 0, min_stock: 0, unit_price: 0, cost: 0 });
+                    setPartNameSearch('');
+                    setPartNameSuggestions([]);
+                    setShowPartNameDropdown(false);
+                    setPartNumberSearch('');
+                    setPartNumberSuggestions([]);
+                    setShowPartNumberDropdown(false);
                     fetchInventory();
                   }
                 }} 
