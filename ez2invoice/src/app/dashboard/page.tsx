@@ -170,6 +170,7 @@ export default function Dashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [userPlanType, setUserPlanType] = useState<string | null>('starter'); // Track user's actual plan from database (null = no subscription)
   const [isVerifyingCheckout, setIsVerifyingCheckout] = useState(false); // Track if we're verifying a checkout session
+  const [cachedShopId, setCachedShopId] = useState<string | null>(null); // Cache shopId to avoid repeated getShopId() calls
   
   // Use simulated tier if active, otherwise use actual plan from database
   // When 'real' is selected and bypass is active, use 'enterprise' (bypass mode)
@@ -183,7 +184,11 @@ export default function Dashboard() {
   // Note: This is used for initial state, so it uses a simple implementation
   // The timezone-aware version is used elsewhere in the component
   const getTodayDate = () => {
-    return new Date().toISOString().split('T')[0];
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   };
 
   // Helper function to format invoice number for display
@@ -415,6 +420,16 @@ export default function Dashboard() {
     }
     if (activeTab === 'vendors' || activeTab === 'bills' || activeTab === 'accounts-payable') {
       setVendorsExpanded(true);
+    }
+    
+    // Fetch data when tabs are active
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:420',message:'useEffect activeTab changed',data:{activeTab},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
+    if (activeTab === 'vendors') {
+      fetchVendors();
+    } else if (activeTab === 'bills') {
+      fetchBills();
     }
   }, [activeTab]);
 
@@ -868,12 +883,24 @@ export default function Dashboard() {
     enable_fleet_discounts: false
   });
   
+  // Duplicate phone detection
+  const [duplicatePhoneCustomer, setDuplicatePhoneCustomer] = useState<Customer | null>(null);
+  const [checkingPhone, setCheckingPhone] = useState(false);
+  
   // Reset Fleet selection if not Professional/Enterprise plan when modal opens
   useEffect(() => {
     if (showAddCustomerModal && effectivePlanType !== 'professional' && effectivePlanType !== 'enterprise' && customerForm.is_fleet) {
       setCustomerForm(prev => ({ ...prev, is_fleet: false }));
     }
   }, [showAddCustomerModal, effectivePlanType, customerForm.is_fleet]);
+
+  // Reset duplicate phone check when modal opens/closes
+  useEffect(() => {
+    if (showAddCustomerModal) {
+      setDuplicatePhoneCustomer(null);
+      setCheckingPhone(false);
+    }
+  }, [showAddCustomerModal]);
   
   // Customer notes state
   interface CustomerNote {
@@ -911,21 +938,21 @@ export default function Dashboard() {
           const customerId = showFleetModal.id;
           
           if (shopId) {
-            const { data: trucks } = await supabase
-              .from('fleet_trucks')
-              .select('*')
-              .eq('customer_id', customerId)
+          const { data: trucks } = await supabase
+            .from('fleet_trucks')
+            .select('*')
+            .eq('customer_id', customerId)
               .eq('shop_id', shopId)
-              .order('created_at', { ascending: false });
-            setFleetTrucks(trucks || []);
+            .order('created_at', { ascending: false });
+          setFleetTrucks(trucks || []);
 
-            const { data: discounts } = await supabase
-              .from('fleet_discounts')
-              .select('*')
-              .eq('customer_id', customerId)
+          const { data: discounts } = await supabase
+            .from('fleet_discounts')
+            .select('*')
+            .eq('customer_id', customerId)
               .eq('shop_id', shopId)
-              .order('created_at', { ascending: false });
-            setFleetDiscounts(discounts || []);
+            .order('created_at', { ascending: false });
+          setFleetDiscounts(discounts || []);
           } else {
             setFleetTrucks([]);
             setFleetDiscounts([]);
@@ -1292,6 +1319,38 @@ export default function Dashboard() {
   const [dotInspectionFilter, setDotInspectionFilter] = useState('All Results');
   const [showAddDotInspectionModal, setShowAddDotInspectionModal] = useState(false);
   const [selectedDotInspection, setSelectedDotInspection] = useState<DOTInspection | null>(null);
+  // Vendors state
+  const [vendors, setVendors] = useState<any[]>([]);
+  const [showAddVendorModal, setShowAddVendorModal] = useState(false);
+  const [editingVendor, setEditingVendor] = useState<any | null>(null);
+  const [vendorForm, setVendorForm] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    address: ''
+  });
+
+  // Bills state
+  const [bills, setBills] = useState<any[]>([]);
+  const [showCreateBillModal, setShowCreateBillModal] = useState(false);
+  const [selectedBill, setSelectedBill] = useState<any | null>(null);
+  const [billForm, setBillForm] = useState({
+    vendor_id: '',
+    invoice_number: '',
+    invoice_date: getTodayDate(),
+    subtotal: 0,
+    tax: 0,
+    shipping: 0,
+    total: 0,
+    pdf_url: ''
+  });
+  const [billLines, setBillLines] = useState<any[]>([
+    { vendor_sku: '', description: '', qty: 1, unit_cost: 0, line_total: 0, inventory_item_id: null }
+  ]);
+  const [postingBill, setPostingBill] = useState(false);
+  const [billLineItemSearch, setBillLineItemSearch] = useState<{ [key: number]: string }>({});
+  const [billLineItemSearchOpen, setBillLineItemSearchOpen] = useState<{ [key: number]: boolean }>({});
+
   const [dotInspectionForm, setDotInspectionForm] = useState({
     date: '',
     vehicle: '',
@@ -1303,6 +1362,141 @@ export default function Dashboard() {
     result: 'Pass' as 'Pass' | 'Fail',
     violations: 0,
   });
+
+  // Fetch vendors
+  const fetchVendors = async () => {
+    // #region agent log
+    const fetchStart = performance.now();
+    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1349',message:'fetchVendors entry',data:{cachedShopId:!!cachedShopId},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    try {
+      let shopId = cachedShopId;
+      // #region agent log
+      const getShopIdStart = performance.now();
+      // #endregion
+      if (!shopId) {
+        shopId = await getShopId();
+        if (shopId) setCachedShopId(shopId);
+      }
+      // #region agent log
+      const getShopIdEnd = performance.now();
+      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1358',message:'getShopId completed',data:{shopId:shopId||null,duration:getShopIdEnd-getShopIdStart,wasCached:!!cachedShopId},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      if (!shopId) return;
+      
+      // #region agent log
+      const queryStart = performance.now();
+      // #endregion
+      const { data, error } = await supabase
+        .from('vendors')
+        .select('*')
+        .eq('shop_id', shopId)
+        .order('name');
+      // #region agent log
+      const queryEnd = performance.now();
+      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1370',message:'Supabase query completed',data:{hasData:!!data,dataLength:data?.length||0,hasError:!!error,duration:queryEnd-queryStart},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
+      if (error) throw error;
+      setVendors(data || []);
+      // #region agent log
+      const fetchEnd = performance.now();
+      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1374',message:'fetchVendors completed',data:{totalDuration:fetchEnd-fetchStart},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+    } catch (error) {
+      console.error('Error fetching vendors:', error);
+    }
+  };
+
+  // Fetch bills
+  const fetchBills = async () => {
+    // #region agent log
+    const fetchStart = performance.now();
+    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1399',message:'fetchBills entry',data:{cachedShopId:!!cachedShopId},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    try {
+      let shopId = cachedShopId;
+      // #region agent log
+      const getShopIdStart = performance.now();
+      // #endregion
+      if (!shopId) {
+        shopId = await getShopId();
+        if (shopId) setCachedShopId(shopId);
+      }
+      // #region agent log
+      const getShopIdEnd = performance.now();
+      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1410',message:'getShopId completed',data:{shopId:shopId||null,duration:getShopIdEnd-getShopIdStart,wasCached:!!cachedShopId},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      if (!shopId) return;
+      
+      // #region agent log
+      const queryStart = performance.now();
+      // #endregion
+      const { data, error } = await supabase
+        .from('vendor_bills')
+        .select(`
+          *,
+          vendor:vendors(name),
+          vendor_bill_lines(*)
+        `)
+        .eq('shop_id', shopId)
+        .order('created_at', { ascending: false });
+      // #region agent log
+      const queryEnd = performance.now();
+      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1426',message:'Supabase query completed',data:{hasData:!!data,dataLength:data?.length||0,hasError:!!error,duration:queryEnd-queryStart},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
+      if (error) throw error;
+      setBills(data || []);
+      // #region agent log
+      const fetchEnd = performance.now();
+      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1395',message:'fetchBills completed',data:{totalDuration:fetchEnd-fetchStart},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+    } catch (error) {
+      console.error('Error fetching bills:', error);
+    }
+  };
+
+  // Post bill function
+  const handlePostBill = async (billId: string) => {
+    setPostingBill(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        showToast({ type: 'error', message: 'Not authenticated' });
+        return;
+      }
+
+      const response = await fetch(`/api/vendor-bills/${billId}/post`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to post bill');
+      }
+
+      showToast({ 
+        type: 'success', 
+        message: result.message || 'Bill posted successfully' 
+      });
+      
+      await fetchBills();
+      if (selectedBill?.id === billId) {
+        setSelectedBill({ ...selectedBill, status: 'posted' });
+      }
+    } catch (error: any) {
+      showToast({ 
+        type: 'error', 
+        message: error.message || 'Failed to post bill' 
+      });
+    } finally {
+      setPostingBill(false);
+    }
+  };
 
   const fetchEstimates = async () => {
     setEstimatesLoading(true);
@@ -5151,6 +5345,57 @@ export default function Dashboard() {
   useEffect(() => {
     fetchCustomers();
   }, []);
+
+  // Check for duplicate phone number
+  const checkDuplicatePhone = async (phone: string) => {
+    // Normalize phone number (remove non-digits)
+    const normalizedPhone = phone.replace(/\D/g, '');
+    
+    // Only check if phone has at least 7 digits (enough to be meaningful)
+    if (!normalizedPhone || normalizedPhone.length < 7) {
+      setDuplicatePhoneCustomer(null);
+      setCheckingPhone(false);
+      return;
+    }
+
+    setCheckingPhone(true);
+    try {
+      const shopId = await getShopId();
+      if (!shopId) {
+        setDuplicatePhoneCustomer(null);
+        setCheckingPhone(false);
+        return;
+      }
+      
+      // Fetch all customers and check if any phone matches
+      const { data: existingCustomers } = await supabase
+        .from('customers')
+        .select('id, first_name, last_name, company, phone, email, is_fleet')
+        .eq('shop_id', shopId)
+        .not('phone', 'is', null);
+
+      if (existingCustomers) {
+        const duplicate = existingCustomers.find(customer => {
+          if (!customer.phone) return false;
+          const customerPhoneNormalized = customer.phone.replace(/\D/g, '');
+          // Check if the normalized phone numbers match (at least 7 digits)
+          return customerPhoneNormalized.length >= 7 && 
+                 normalizedPhone.length >= 7 &&
+                 customerPhoneNormalized === normalizedPhone;
+        });
+
+        // Cast to Customer type (email is nullable so this is safe)
+        setDuplicatePhoneCustomer((duplicate as Customer) || null);
+      } else {
+        setDuplicatePhoneCustomer(null);
+      }
+    } catch (error) {
+      console.error('Error checking duplicate phone:', error);
+      setDuplicatePhoneCustomer(null);
+    } finally {
+      setCheckingPhone(false);
+    }
+  };
 
   // Fetch customer notes when Edit Customer modal opens
   useEffect(() => {
@@ -11727,14 +11972,14 @@ export default function Dashboard() {
                                             try {
                                               const shopId = await getShopId();
                                               if (shopId) {
-                                                const { data: discounts, error } = await supabase
-                                                  .from('fleet_discounts')
-                                                  .select('*')
+                                              const { data: discounts, error } = await supabase
+                                                .from('fleet_discounts')
+                                                .select('*')
                                                   .eq('customer_id', invoice.customer_id)
                                                   .eq('shop_id', shopId);
-                                                
-                                                if (!error && discounts) {
-                                                  setInvoiceCustomerDiscounts(discounts);
+                                              
+                                              if (!error && discounts) {
+                                                setInvoiceCustomerDiscounts(discounts);
                                                 } else {
                                                   setInvoiceCustomerDiscounts([]);
                                                 }
@@ -11949,14 +12194,14 @@ export default function Dashboard() {
                                           try {
                                             const shopId = await getShopId();
                                             if (shopId) {
-                                              const { data: discounts, error } = await supabase
-                                                .from('fleet_discounts')
-                                                .select('*')
+                                            const { data: discounts, error } = await supabase
+                                              .from('fleet_discounts')
+                                              .select('*')
                                                 .eq('customer_id', invoice.customer_id)
                                                 .eq('shop_id', shopId);
-                                              
-                                              if (!error && discounts) {
-                                                setInvoiceCustomerDiscounts(discounts);
+                                            
+                                            if (!error && discounts) {
+                                              setInvoiceCustomerDiscounts(discounts);
                                               } else {
                                                 setInvoiceCustomerDiscounts([]);
                                               }
@@ -12259,23 +12504,804 @@ export default function Dashboard() {
 
           {/* Vendors Tab Content */}
           {activeTab === 'vendors' && (
-            <div className="space-y-8">
-              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
-                <Building className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-                <h3 className="text-2xl font-semibold text-gray-900 mb-2">Vendors</h3>
-                <p className="text-gray-600">Manage vendor relationships and suppliers.</p>
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold text-gray-900">Vendors</h2>
+                <button
+                  onClick={() => {
+                    setEditingVendor(null);
+                    setVendorForm({ name: '', email: '', phone: '', address: '' });
+                    setShowAddVendorModal(true);
+                  }}
+                  className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>Add Vendor</span>
+                </button>
               </div>
+
+              {vendors.length === 0 ? (
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+                  <Building className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+                  <h3 className="text-xl font-semibold text-gray-900 mb-2">No vendors yet</h3>
+                  <p className="text-gray-600 mb-4">Get started by adding your first vendor.</p>
+                  <button
+                    onClick={() => {
+                      setEditingVendor(null);
+                      setVendorForm({ name: '', email: '', phone: '', address: '' });
+                      setShowAddVendorModal(true);
+                    }}
+                    className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600"
+                  >
+                    Add Vendor
+                  </button>
+                </div>
+              ) : (
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Address</th>
+                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {vendors.map((vendor) => (
+                          <tr key={vendor.id} className="hover:bg-gray-50">
+                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{vendor.name}</td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{vendor.email || '—'}</td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{vendor.phone || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-gray-500">{vendor.address || '—'}</td>
+                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                              <button
+                                onClick={() => {
+                                  setEditingVendor(vendor);
+                                  setVendorForm({
+                                    name: vendor.name,
+                                    email: vendor.email || '',
+                                    phone: vendor.phone || '',
+                                    address: vendor.address || ''
+                                  });
+                                  setShowAddVendorModal(true);
+                                }}
+                                className="text-primary-600 hover:text-primary-900 mr-4"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  if (confirm('Are you sure you want to delete this vendor?')) {
+                                    const { error } = await supabase
+                                      .from('vendors')
+                                      .delete()
+                                      .eq('id', vendor.id);
+                                    if (error) {
+                                      showToast({ type: 'error', message: 'Failed to delete vendor' });
+                                    } else {
+                                      showToast({ type: 'success', message: 'Vendor deleted' });
+                                      fetchVendors();
+                                    }
+                                  }
+                                }}
+                                className="text-red-600 hover:text-red-900"
+                              >
+                                Delete
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Add/Edit Vendor Modal */}
+              {showAddVendorModal && (
+                <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50" onClick={(e) => {
+                  if (e.target === e.currentTarget) {
+                    setShowAddVendorModal(false);
+                  }
+                }}>
+                  <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+                    <div className="p-6 border-b border-gray-200 flex items-center justify-between">
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        {editingVendor ? 'Edit Vendor' : 'Add Vendor'}
+                      </h3>
+                      <button
+                        onClick={() => setShowAddVendorModal(false)}
+                        className="text-gray-400 hover:text-gray-600"
+                      >
+                        <X className="h-6 w-6" />
+                      </button>
+                    </div>
+                    <div className="p-6 space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Name *</label>
+                        <input
+                          type="text"
+                          value={vendorForm.name}
+                          onChange={(e) => setVendorForm({ ...vendorForm, name: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          placeholder="Vendor name"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
+                        <input
+                          type="email"
+                          value={vendorForm.email}
+                          onChange={(e) => setVendorForm({ ...vendorForm, email: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          placeholder="vendor@example.com"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Phone</label>
+                        <input
+                          type="text"
+                          value={vendorForm.phone}
+                          onChange={(e) => setVendorForm({ ...vendorForm, phone: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          placeholder="(555) 123-4567"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Address</label>
+                        <textarea
+                          value={vendorForm.address}
+                          onChange={(e) => setVendorForm({ ...vendorForm, address: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          rows={3}
+                          placeholder="Street address, city, state, zip"
+                        />
+                      </div>
+                    </div>
+                    <div className="p-6 border-t border-gray-200 flex justify-end space-x-3">
+                      <button
+                        onClick={() => setShowAddVendorModal(false)}
+                        className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (!vendorForm.name.trim()) {
+                            showToast({ type: 'error', message: 'Name is required' });
+                            return;
+                          }
+                          const shopId = await getShopId();
+                          if (!shopId) {
+                            showToast({ type: 'error', message: 'No shop found' });
+                            return;
+                          }
+
+                          if (editingVendor) {
+                            const { error } = await supabase
+                              .from('vendors')
+                              .update(vendorForm)
+                              .eq('id', editingVendor.id);
+                            if (error) {
+                              showToast({ type: 'error', message: 'Failed to update vendor' });
+                            } else {
+                              showToast({ type: 'success', message: 'Vendor updated' });
+                              setShowAddVendorModal(false);
+                              fetchVendors();
+                            }
+                          } else {
+                            const { error } = await supabase
+                              .from('vendors')
+                              .insert({ ...vendorForm, shop_id: shopId });
+                            if (error) {
+                              showToast({ type: 'error', message: 'Failed to create vendor' });
+                            } else {
+                              showToast({ type: 'success', message: 'Vendor created' });
+                              setShowAddVendorModal(false);
+                              fetchVendors();
+                            }
+                          }
+                        }}
+                        className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600"
+                      >
+                        {editingVendor ? 'Update' : 'Create'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           {/* Bills Tab Content */}
           {activeTab === 'bills' && (
-            <div className="space-y-8">
-              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
-                <FileText className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-                <h3 className="text-2xl font-semibold text-gray-900 mb-2">Bills</h3>
-                <p className="text-gray-600">Track and manage vendor bills.</p>
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold text-gray-900">Bills</h2>
+                <button
+                  onClick={() => {
+                    setBillForm({
+                      vendor_id: '',
+                      invoice_number: '',
+                      invoice_date: getTodayDate(),
+                      subtotal: 0,
+                      tax: 0,
+                      shipping: 0,
+                      total: 0,
+                      pdf_url: ''
+                    });
+                    setBillLines([{ vendor_sku: '', description: '', qty: 1, unit_cost: 0, line_total: 0, inventory_item_id: null }]);
+                    setSelectedBill(null);
+                    setShowCreateBillModal(true);
+                  }}
+                  className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>Create Bill</span>
+                </button>
               </div>
+
+              {bills.length === 0 ? (
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+                  <FileText className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+                  <h3 className="text-xl font-semibold text-gray-900 mb-2">No bills yet</h3>
+                  <p className="text-gray-600 mb-4">Get started by creating your first vendor bill.</p>
+                  <button
+                    onClick={() => {
+                      setBillForm({
+                        vendor_id: '',
+                        invoice_number: '',
+                        invoice_date: getTodayDate(),
+                        subtotal: 0,
+                        tax: 0,
+                        shipping: 0,
+                        total: 0,
+                        pdf_url: ''
+                      });
+                      setBillLines([{ vendor_sku: '', description: '', qty: 1, unit_cost: 0, line_total: 0, inventory_item_id: null }]);
+                      setShowCreateBillModal(true);
+                    }}
+                    className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600"
+                  >
+                    Create Bill
+                  </button>
+                </div>
+              ) : (
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Vendor</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Invoice #</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {bills.map((bill) => (
+                          <tr key={bill.id} className="hover:bg-gray-50">
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {(bill.vendor as any)?.name || 'Unknown'}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{bill.invoice_number || '—'}</td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                              {bill.invoice_date ? new Date(bill.invoice_date).toLocaleDateString() : '—'}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">
+                              ${Number(bill.total || 0).toFixed(2)}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                                bill.status === 'posted' 
+                                  ? 'bg-green-100 text-green-800' 
+                                  : 'bg-yellow-100 text-yellow-800'
+                              }`}>
+                                {bill.status === 'posted' ? 'Posted' : 'Draft'}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                              <button
+                                onClick={() => setSelectedBill(bill)}
+                                className="text-primary-600 hover:text-primary-900 mr-4"
+                              >
+                                View
+                              </button>
+                              {bill.status === 'draft' && (
+                                <button
+                                  onClick={async () => {
+                                    if (confirm('Post this bill? This will update inventory.')) {
+                                      await handlePostBill(bill.id);
+                                    }
+                                  }}
+                                  className="text-green-600 hover:text-green-900"
+                                  disabled={postingBill}
+                                >
+                                  {postingBill ? 'Posting...' : 'Post'}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Bill Detail Modal */}
+              {selectedBill && (
+                <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50" onClick={(e) => {
+                  if (e.target === e.currentTarget) {
+                    setSelectedBill(null);
+                  }
+                }}>
+                  <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                    <div className="p-6 border-b border-gray-200 flex items-center justify-between sticky top-0 bg-white z-10">
+                      <div>
+                        <h3 className="text-lg font-semibold text-gray-900">Bill Details</h3>
+                        <p className="text-sm text-gray-500 mt-1">
+                          {(selectedBill.vendor as any)?.name || 'Unknown Vendor'} • {selectedBill.invoice_number || 'No invoice #'}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setSelectedBill(null)}
+                        className="text-gray-400 hover:text-gray-600"
+                      >
+                        <X className="h-6 w-6" />
+                      </button>
+                    </div>
+                    <div className="p-6 space-y-6">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                          <span className={`inline-block px-3 py-1 text-sm font-medium rounded-full ${
+                            selectedBill.status === 'posted' 
+                              ? 'bg-green-100 text-green-800' 
+                              : 'bg-yellow-100 text-yellow-800'
+                          }`}>
+                            {selectedBill.status === 'posted' ? 'Posted' : 'Draft'}
+                          </span>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Invoice Date</label>
+                          <p className="text-sm text-gray-900">
+                            {selectedBill.invoice_date ? new Date(selectedBill.invoice_date).toLocaleDateString() : '—'}
+                          </p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Subtotal</label>
+                          <p className="text-sm text-gray-900">${Number(selectedBill.subtotal || 0).toFixed(2)}</p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Total</label>
+                          <p className="text-sm text-gray-900 font-semibold">${Number(selectedBill.total || 0).toFixed(2)}</p>
+                        </div>
+                      </div>
+
+                      <div>
+                        <h4 className="text-sm font-semibold text-gray-900 mb-3">Line Items</h4>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead className="bg-gray-50">
+                              <tr>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">SKU</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
+                                <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Qty</th>
+                                <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Unit Cost</th>
+                                <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Inventory</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-200">
+                              {(selectedBill.vendor_bill_lines || []).map((line: any) => (
+                                <tr key={line.id}>
+                                  <td className="px-4 py-2 text-gray-900">{line.vendor_sku || '—'}</td>
+                                  <td className="px-4 py-2 text-gray-900">{line.description || '—'}</td>
+                                  <td className="px-4 py-2 text-gray-900 text-right">{Number(line.qty || 0).toFixed(2)}</td>
+                                  <td className="px-4 py-2 text-gray-900 text-right">${Number(line.unit_cost || 0).toFixed(2)}</td>
+                                  <td className="px-4 py-2 text-gray-900 text-right">${Number(line.line_total || 0).toFixed(2)}</td>
+                                  <td className="px-4 py-2">
+                                    {line.inventory_item_id ? (
+                                      <span className="text-xs text-green-600">Matched</span>
+                                    ) : (
+                                      <span className="text-xs text-yellow-600">Not matched</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {selectedBill.status === 'draft' && (
+                        <div className="flex justify-end">
+                          <button
+                            onClick={async () => {
+                              if (confirm('Post this bill? This will update inventory for matched items.')) {
+                                await handlePostBill(selectedBill.id);
+                              }
+                            }}
+                            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                            disabled={postingBill}
+                          >
+                            {postingBill ? 'Posting...' : 'Post Bill'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Create Bill Modal */}
+              {showCreateBillModal && (
+                <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50" onClick={(e) => {
+                  if (e.target === e.currentTarget) {
+                    setShowCreateBillModal(false);
+                  }
+                }}>
+                  <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full mx-4 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                    <div className="p-6 border-b border-gray-200 flex items-center justify-between sticky top-0 bg-white z-10">
+                      <h3 className="text-lg font-semibold text-gray-900">Create New Bill</h3>
+                      <button
+                        onClick={() => setShowCreateBillModal(false)}
+                        className="text-gray-400 hover:text-gray-600"
+                      >
+                        <X className="h-6 w-6" />
+                      </button>
+                    </div>
+                    <div className="p-6 space-y-6">
+                      {/* Vendor and Invoice Details */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Vendor *</label>
+                          <select
+                            value={billForm.vendor_id}
+                            onChange={(e) => setBillForm({ ...billForm, vendor_id: e.target.value })}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          >
+                            <option value="">Select a vendor</option>
+                            {vendors.map((vendor) => (
+                              <option key={vendor.id} value={vendor.id}>{vendor.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Invoice Number</label>
+                          <input
+                            type="text"
+                            value={billForm.invoice_number}
+                            onChange={(e) => setBillForm({ ...billForm, invoice_number: e.target.value })}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                            placeholder="Vendor invoice #"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Invoice Date</label>
+                          <input
+                            type="date"
+                            value={billForm.invoice_date}
+                            onChange={(e) => setBillForm({ ...billForm, invoice_date: e.target.value })}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">PDF URL (optional)</label>
+                          <input
+                            type="text"
+                            value={billForm.pdf_url}
+                            onChange={(e) => setBillForm({ ...billForm, pdf_url: e.target.value })}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                            placeholder="https://..."
+                          />
+                        </div>
+                      </div>
+
+                      {/* Line Items */}
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-sm font-semibold text-gray-900">Line Items</h4>
+                          <button
+                            onClick={() => setBillLines([...billLines, { vendor_sku: '', description: '', qty: 1, unit_cost: 0, line_total: 0, inventory_item_id: null }])}
+                            className="px-3 py-1 bg-primary-500 text-white rounded hover:bg-primary-600 text-sm"
+                          >
+                            + Add Line
+                          </button>
+                        </div>
+                        <div className="border border-gray-200 rounded-lg overflow-visible">
+                          <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead className="bg-gray-50">
+                              <tr>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Vendor SKU</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
+                                <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Qty</th>
+                                <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Unit Cost</th>
+                                <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Inventory Item</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase"></th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-200">
+                              {billLines.map((line, idx) => (
+                                <tr key={idx}>
+                                  <td className="px-4 py-2">
+                                    <input
+                                      type="text"
+                                      value={line.vendor_sku}
+                                      onChange={(e) => {
+                                        const newLines = [...billLines];
+                                        newLines[idx].vendor_sku = e.target.value;
+                                        setBillLines(newLines);
+                                      }}
+                                      className="w-full px-2 py-1 border border-gray-300 rounded text-xs"
+                                      placeholder="SKU"
+                                    />
+                                  </td>
+                                  <td className="px-4 py-2">
+                                    <input
+                                      type="text"
+                                      value={line.description}
+                                      onChange={(e) => {
+                                        const newLines = [...billLines];
+                                        newLines[idx].description = e.target.value;
+                                        setBillLines(newLines);
+                                      }}
+                                      className="w-full px-2 py-1 border border-gray-300 rounded text-xs"
+                                      placeholder="Description"
+                                    />
+                                  </td>
+                                  <td className="px-4 py-2">
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      value={line.qty}
+                                      onChange={(e) => {
+                                        const newLines = [...billLines];
+                                        newLines[idx].qty = Number(e.target.value) || 0;
+                                        newLines[idx].line_total = newLines[idx].qty * newLines[idx].unit_cost;
+                                        setBillLines(newLines);
+                                        // Recalculate totals
+                                        const subtotal = newLines.reduce((sum, l) => sum + l.line_total, 0);
+                                        setBillForm({ ...billForm, subtotal, total: subtotal + billForm.tax + billForm.shipping });
+                                      }}
+                                      className="w-full px-2 py-1 border border-gray-300 rounded text-xs text-right"
+                                    />
+                                  </td>
+                                  <td className="px-4 py-2">
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      value={line.unit_cost}
+                                      onChange={(e) => {
+                                        const newLines = [...billLines];
+                                        newLines[idx].unit_cost = Number(e.target.value) || 0;
+                                        newLines[idx].line_total = newLines[idx].qty * newLines[idx].unit_cost;
+                                        setBillLines(newLines);
+                                        // Recalculate totals
+                                        const subtotal = newLines.reduce((sum, l) => sum + l.line_total, 0);
+                                        setBillForm({ ...billForm, subtotal, total: subtotal + billForm.tax + billForm.shipping });
+                                      }}
+                                      className="w-full px-2 py-1 border border-gray-300 rounded text-xs text-right"
+                                    />
+                                  </td>
+                                  <td className="px-4 py-2 text-right text-xs">${Number(line.line_total || 0).toFixed(2)}</td>
+                                  <td className="px-4 py-2">
+                                    <div className="relative" style={{ zIndex: billLineItemSearchOpen[idx] ? 1000 : 'auto' }}>
+                                      <input
+                                        type="text"
+                                        value={billLineItemSearch[idx] || (line.inventory_item_id ? inventory.find(i => i.id === line.inventory_item_id)?.part_name || '' : '')}
+                                        onChange={(e) => {
+                                          setBillLineItemSearch({ ...billLineItemSearch, [idx]: e.target.value });
+                                          setBillLineItemSearchOpen({ ...billLineItemSearchOpen, [idx]: true });
+                                        }}
+                                        onFocus={() => setBillLineItemSearchOpen({ ...billLineItemSearchOpen, [idx]: true })}
+                                        onBlur={() => setTimeout(() => setBillLineItemSearchOpen({ ...billLineItemSearchOpen, [idx]: false }), 200)}
+                                        className="w-full px-2 py-1 border border-gray-300 rounded text-xs"
+                                        placeholder="Search inventory..."
+                                      />
+                                      {billLineItemSearchOpen[idx] && (
+                                        <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-xl max-h-40 overflow-y-auto" style={{ top: '100%', left: 0 }}>
+                                          {inventory
+                                            .filter(item => 
+                                              !billLineItemSearch[idx] || 
+                                              item.part_name.toLowerCase().includes(billLineItemSearch[idx].toLowerCase()) ||
+                                              item.part_number?.toLowerCase().includes(billLineItemSearch[idx].toLowerCase())
+                                            )
+                                            .map((item) => (
+                                              <div
+                                                key={item.id}
+                                                onMouseDown={(e) => e.preventDefault()}
+                                                onClick={async () => {
+                                                  const newLines = [...billLines];
+                                                  newLines[idx].inventory_item_id = item.id;
+                                                  setBillLines(newLines);
+                                                  setBillLineItemSearch({ ...billLineItemSearch, [idx]: item.part_name });
+                                                  setBillLineItemSearchOpen({ ...billLineItemSearchOpen, [idx]: false });
+                                                  
+                                                  // Save vendor item mapping if vendor_sku exists
+                                                  if (newLines[idx].vendor_sku && billForm.vendor_id) {
+                                                    const shopId = await getShopId();
+                                                    if (shopId) {
+                                                      await supabase
+                                                        .from('vendor_item_map')
+                                                        .upsert({
+                                                          shop_id: shopId,
+                                                          vendor_id: billForm.vendor_id,
+                                                          vendor_sku: newLines[idx].vendor_sku,
+                                                          inventory_item_id: item.id
+                                                        }, {
+                                                          onConflict: 'shop_id,vendor_id,vendor_sku'
+                                                        });
+                                                    }
+                                                  }
+                                                }}
+                                                className="px-3 py-2 hover:bg-gray-50 cursor-pointer text-xs"
+                                              >
+                                                <div className="font-medium">{item.part_name}</div>
+                                                <div className="text-gray-500">{item.part_number || 'No SKU'}</div>
+                                              </div>
+                                            ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="px-4 py-2">
+                                    <button
+                                      onClick={() => {
+                                        const newLines = billLines.filter((_, i) => i !== idx);
+                                        setBillLines(newLines);
+                                        const subtotal = newLines.reduce((sum, l) => sum + l.line_total, 0);
+                                        setBillForm({ ...billForm, subtotal, total: subtotal + billForm.tax + billForm.shipping });
+                                      }}
+                                      className="text-red-600 hover:text-red-900"
+                                    >
+                                      <X className="h-4 w-4" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Totals */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Tax</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={billForm.tax}
+                            onChange={(e) => {
+                              const tax = Number(e.target.value) || 0;
+                              setBillForm({ ...billForm, tax, total: billForm.subtotal + tax + billForm.shipping });
+                            }}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Shipping</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={billForm.shipping}
+                            onChange={(e) => {
+                              const shipping = Number(e.target.value) || 0;
+                              setBillForm({ ...billForm, shipping, total: billForm.subtotal + billForm.tax + shipping });
+                            }}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          />
+                        </div>
+                        <div className="md:col-span-2">
+                          <div className="flex justify-between items-center p-4 bg-gray-50 rounded-lg">
+                            <span className="text-sm font-semibold text-gray-900">Total:</span>
+                            <span className="text-lg font-bold text-gray-900">${Number(billForm.total || 0).toFixed(2)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="p-6 border-t border-gray-200 flex justify-end space-x-3">
+                      <button
+                        onClick={() => setShowCreateBillModal(false)}
+                        className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (!billForm.vendor_id) {
+                            showToast({ type: 'error', message: 'Please select a vendor' });
+                            return;
+                          }
+                          if (billLines.length === 0 || billLines.every(l => !l.description && !l.vendor_sku)) {
+                            showToast({ type: 'error', message: 'Please add at least one line item' });
+                            return;
+                          }
+
+                          const shopId = await getShopId();
+                          if (!shopId) {
+                            showToast({ type: 'error', message: 'No shop found' });
+                            return;
+                          }
+
+                          const { data: { user } } = await supabase.auth.getUser();
+                          if (!user) {
+                            showToast({ type: 'error', message: 'Not authenticated' });
+                            return;
+                          }
+
+                          // Create bill
+                          const { data: bill, error: billError } = await supabase
+                            .from('vendor_bills')
+                            .insert({
+                              shop_id: shopId,
+                              vendor_id: billForm.vendor_id,
+                              invoice_number: billForm.invoice_number || null,
+                              invoice_date: billForm.invoice_date || null,
+                              subtotal: billForm.subtotal,
+                              tax: billForm.tax,
+                              shipping: billForm.shipping,
+                              total: billForm.total,
+                              pdf_url: billForm.pdf_url || null,
+                              created_by: user.id,
+                              status: 'draft'
+                            })
+                            .select()
+                            .single();
+
+                          if (billError || !bill) {
+                            showToast({ type: 'error', message: 'Failed to create bill' });
+                            return;
+                          }
+
+                          // Create bill lines
+                          const linesToInsert = billLines
+                            .filter(l => l.description || l.vendor_sku)
+                            .map(l => ({
+                              shop_id: shopId,
+                              bill_id: bill.id,
+                              vendor_sku: l.vendor_sku || null,
+                              description: l.description || null,
+                              qty: l.qty,
+                              unit_cost: l.unit_cost,
+                              line_total: l.line_total,
+                              inventory_item_id: l.inventory_item_id || null,
+                              match_status: l.inventory_item_id ? 'matched' : 'needs_review'
+                            }));
+
+                          if (linesToInsert.length > 0) {
+                            const { error: linesError } = await supabase
+                              .from('vendor_bill_lines')
+                              .insert(linesToInsert);
+
+                            if (linesError) {
+                              showToast({ type: 'error', message: 'Failed to create bill lines' });
+                              return;
+                            }
+                          }
+
+                          showToast({ type: 'success', message: 'Bill created successfully' });
+                          setShowCreateBillModal(false);
+                          await fetchBills();
+                        }}
+                        className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600"
+                      >
+                        Create Bill
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -14628,7 +15654,7 @@ export default function Dashboard() {
                                   return (
                                     <div className="px-4 py-2 text-sm text-gray-500">
                                       No customers found
-                                    </div>
+                        </div>
                                   );
                                 }
                                 
@@ -14769,9 +15795,9 @@ export default function Dashboard() {
                           </div>
                         )}
                         {!selectedAnalyticsCustomer && (
-                          <p className="text-sm text-gray-500 mt-3">
+                        <p className="text-sm text-gray-500 mt-3">
                             Search for a customer to view their details
-                          </p>
+                        </p>
                         )}
                       </div>
                     </div>
@@ -17573,39 +18599,39 @@ export default function Dashboard() {
                                     setInvoiceFormData(prev => ({ ...prev, customer_id: customer.id }));
                                     setInvoiceCustomerSearch(displayName);
                                     setShowInvoiceCustomerDropdown(false);
-                                    
-                                    // Fetch fleet discounts for this customer
+                      
+                      // Fetch fleet discounts for this customer
                                     if (customer.id) {
                                       const selectedCustomer = customers.find(c => c.id === customer.id);
-                                      if (selectedCustomer?.is_fleet) {
-                                        try {
+                        if (selectedCustomer?.is_fleet) {
+                          try {
                                           const shopId = await getShopId();
                                           if (shopId) {
-                                            const { data: discounts, error } = await supabase
-                                              .from('fleet_discounts')
-                                              .select('*')
+                            const { data: discounts, error } = await supabase
+                              .from('fleet_discounts')
+                              .select('*')
                                               .eq('customer_id', customer.id)
                                               .eq('shop_id', shopId);
-                                            
-                                            if (!error && discounts) {
-                                              setInvoiceCustomerDiscounts(discounts);
+                            
+                            if (!error && discounts) {
+                              setInvoiceCustomerDiscounts(discounts);
                                             } else {
                                               setInvoiceCustomerDiscounts([]);
                                             }
-                                          } else {
-                                            setInvoiceCustomerDiscounts([]);
-                                          }
-                                        } catch (err) {
-                                          console.error('Error fetching fleet discounts:', err);
-                                          setInvoiceCustomerDiscounts([]);
-                                        }
-                                      } else {
-                                        setInvoiceCustomerDiscounts([]);
-                                      }
-                                    } else {
-                                      setInvoiceCustomerDiscounts([]);
-                                    }
-                                  }}
+                            } else {
+                              setInvoiceCustomerDiscounts([]);
+                            }
+                          } catch (err) {
+                            console.error('Error fetching fleet discounts:', err);
+                            setInvoiceCustomerDiscounts([]);
+                          }
+                        } else {
+                          setInvoiceCustomerDiscounts([]);
+                        }
+                      } else {
+                        setInvoiceCustomerDiscounts([]);
+                      }
+                    }}
                                   className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
                                 >
                                   <div className="font-medium text-gray-900">{displayName}</div>
@@ -17655,7 +18681,7 @@ export default function Dashboard() {
                           });
                           
                           if (filteredCustomers.length === 0) {
-                            return (
+                      return (
                               <div className="px-4 py-3 text-sm text-gray-500">
                                 No customers found
                               </div>
@@ -17864,7 +18890,7 @@ export default function Dashboard() {
                                         if (discount) {
                                           // Handle percentage discount
                                           if (discount.percent_off && discount.percent_off > 0) {
-                                            finalPrice = finalPrice * (1 - (discount.percent_off / 100));
+                                          finalPrice = finalPrice * (1 - (discount.percent_off / 100));
                                           }
                                           // Handle fixed amount discount
                                           else if (discount.fixed_amount && discount.fixed_amount > 0) {
@@ -18763,13 +19789,13 @@ export default function Dashboard() {
                                       try {
                                         const shopId = await getShopId();
                                         if (shopId) {
-                                          const { data: fleetTrucks } = await supabase
-                                            .from('fleet_trucks')
-                                            .select('*')
-                                            .eq('customer_id', customer.id)
+                                        const { data: fleetTrucks } = await supabase
+                                          .from('fleet_trucks')
+                                          .select('*')
+                                          .eq('customer_id', customer.id)
                                             .eq('shop_id', shopId)
-                                            .order('created_at', { ascending: false });
-                                          setSelectedCustomerFleetTrucks(fleetTrucks || []);
+                                          .order('created_at', { ascending: false });
+                                        setSelectedCustomerFleetTrucks(fleetTrucks || []);
                                         } else {
                                           setSelectedCustomerFleetTrucks([]);
                                         }
@@ -22160,7 +23186,69 @@ export default function Dashboard() {
               {/* Contact Info */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Phone <span className="text-black">*</span></label>
-                <input value={customerForm.phone} onChange={(e)=>setCustomerForm(prev=>({...prev,phone:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" placeholder="(555) 123-4567" />
+                <div className="relative">
+                  <input 
+                    value={customerForm.phone} 
+                    onChange={async (e) => {
+                      const phoneValue = e.target.value;
+                      setCustomerForm(prev => ({ ...prev, phone: phoneValue }));
+                      // Check immediately as user types (no delay)
+                      await checkDuplicatePhone(phoneValue);
+                    }}
+                    onBlur={() => {
+                      // Double-check when user leaves the field
+                      if (customerForm.phone) {
+                        checkDuplicatePhone(customerForm.phone);
+                      }
+                    }}
+                    className={`w-full px-3 py-2 pr-10 border rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 ${
+                      duplicatePhoneCustomer 
+                        ? 'border-red-500 focus:border-red-500 focus:ring-red-500 bg-red-50' 
+                        : checkingPhone
+                        ? 'border-blue-300'
+                        : 'border-gray-300'
+                    }`} 
+                    placeholder="(555) 123-4567" 
+                  />
+                  {checkingPhone && (
+                    <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                      <RefreshCw className="h-4 w-4 animate-spin text-blue-500" />
+                    </div>
+                  )}
+                  {duplicatePhoneCustomer && !checkingPhone && (
+                    <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                      <AlertTriangle className="h-5 w-5 text-red-500" />
+                    </div>
+                  )}
+                </div>
+                {duplicatePhoneCustomer && (
+                  <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg flex items-start gap-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                    <AlertTriangle className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-yellow-800">
+                        ⚠️ Customer with this phone number already exists!
+                      </p>
+                      <p className="text-xs text-yellow-700 mt-1">
+                        <strong>Existing customer:</strong> {
+                          duplicatePhoneCustomer.is_fleet 
+                            ? duplicatePhoneCustomer.company || 'Unknown Fleet'
+                            : `${duplicatePhoneCustomer.first_name || ''} ${duplicatePhoneCustomer.last_name || ''}`.trim() || 'Unknown'
+                        }
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAddCustomerModal(false);
+                          setShowEditCustomerModal(duplicatePhoneCustomer);
+                          setActiveTab('customers');
+                        }}
+                        className="text-xs text-yellow-800 underline mt-1 hover:text-yellow-900 font-medium"
+                      >
+                        View existing customer →
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Address</label>
@@ -22374,8 +23462,19 @@ export default function Dashboard() {
                 setCustomerNotes([]);
                 setAddCustomerFleetTrucks([]);
                 setAddCustomerFleetDiscounts([]);
+                setDuplicatePhoneCustomer(null);
+                setCheckingPhone(false);
               }} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
               <button onClick={async ()=>{
+                // Check for duplicate phone before submitting
+                if (duplicatePhoneCustomer) {
+                  showToast({ 
+                    type: 'error', 
+                    message: 'A customer with this phone number already exists. Please use the existing customer or enter a different phone number.' 
+                  });
+                  return;
+                }
+                
                 const nameToCheck = customerForm.is_fleet ? customerForm.company.trim() : customerForm.name.trim();
                 if(!nameToCheck){ 
                   console.warn(customerForm.is_fleet ? 'Company name is required' : 'Name is required'); 
@@ -22453,18 +23552,18 @@ export default function Dashboard() {
                 if(customerForm.is_fleet && addCustomerFleetTrucks.length > 0 && newCustomer) {
                   const customerShopId = newCustomer.shop_id || shopId;
                   if (customerShopId) {
-                    await supabase.from('fleet_trucks').insert(
-                      addCustomerFleetTrucks.map(t => ({
-                        customer_id: newCustomer.id,
+                  await supabase.from('fleet_trucks').insert(
+                    addCustomerFleetTrucks.map(t => ({
+                      customer_id: newCustomer.id,
                         shop_id: customerShopId,
-                        unit_no: t.unit_no || null,
-                        vin: t.vin || null,
-                        year: t.year ? Number(t.year) : null,
-                        make: t.make || null,
-                        model: t.model || null,
-                        notes: t.notes || null
-                      }))
-                    );
+                      unit_no: t.unit_no || null,
+                      vin: t.vin || null,
+                      year: t.year ? Number(t.year) : null,
+                      make: t.make || null,
+                      model: t.model || null,
+                      notes: t.notes || null
+                    }))
+                  );
                   }
                 }
                 
@@ -22521,17 +23620,17 @@ export default function Dashboard() {
                 if(customerForm.is_fleet && customerForm.enable_fleet_discounts && addCustomerFleetDiscounts.length > 0 && newCustomer) {
                   const customerShopId = newCustomer.shop_id || shopId;
                   if (customerShopId) {
-                    await supabase.from('fleet_discounts').insert(
-                      addCustomerFleetDiscounts.map(d => ({
-                        customer_id: newCustomer.id,
+                  await supabase.from('fleet_discounts').insert(
+                    addCustomerFleetDiscounts.map(d => ({
+                      customer_id: newCustomer.id,
                         shop_id: customerShopId,
-                        scope: d.scope,
-                        labor_item_id: d.scope === 'labor' ? d.labor_item_id || null : null,
-                        labor_type: d.scope === 'labor_type' ? d.labor_type || null : null,
+                      scope: d.scope,
+                      labor_item_id: d.scope === 'labor' ? d.labor_item_id || null : null,
+                      labor_type: d.scope === 'labor_type' ? d.labor_type || null : null,
                         percent_off: d.discount_type === 'percentage' ? d.percent_off : null,
                         fixed_amount: d.discount_type === 'fixed' ? d.fixed_amount : null
-                      }))
-                    );
+                    }))
+                  );
                   }
                 }
                 
