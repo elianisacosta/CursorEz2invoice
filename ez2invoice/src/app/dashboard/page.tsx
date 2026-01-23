@@ -1056,6 +1056,9 @@ export default function Dashboard() {
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
   const [invoiceCustomerSearch, setInvoiceCustomerSearch] = useState('');
   const [showInvoiceCustomerDropdown, setShowInvoiceCustomerDropdown] = useState(false);
+  const [creatingCustomerFromInvoice, setCreatingCustomerFromInvoice] = useState(false);
+  const [creatingPartFromInvoice, setCreatingPartFromInvoice] = useState(false);
+  const [creatingPartForLineItem, setCreatingPartForLineItem] = useState<number | null>(null);
   const [estimateCustomerSearch, setEstimateCustomerSearch] = useState('');
   const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState(false);
 
@@ -18754,9 +18757,37 @@ export default function Dashboard() {
                           });
                           
                           if (filteredCustomers.length === 0) {
-                      return (
-                              <div className="px-4 py-3 text-sm text-gray-500">
-                                No customers found
+                            // Check if search query looks like a phone number (contains digits)
+                            const normalizePhone = (p: string) => String(p || '').replace(/\D/g, '');
+                            const searchQuery = invoiceCustomerSearch.trim();
+                            const isPhoneNumber = normalizePhone(searchQuery).length >= 7;
+                            
+                            return (
+                              <div className="px-4 py-3">
+                                <div className="text-sm text-gray-500 mb-3">No customers found</div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setShowInvoiceCustomerDropdown(false);
+                                    setCreatingCustomerFromInvoice(true);
+                                    
+                                    // Pre-populate customer form with search query
+                                    if (isPhoneNumber) {
+                                      setCustomerForm(prev => ({ ...prev, phone: searchQuery }));
+                                    } else {
+                                      // Assume it's a name
+                                      setCustomerForm(prev => ({ ...prev, name: searchQuery }));
+                                    }
+                                    
+                                    setShowAddCustomerModal(true);
+                                  }}
+                                  className="w-full px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
+                                >
+                                  <UserPlus className="h-4 w-4" />
+                                  Create New Customer
+                                </button>
                               </div>
                             );
                           }
@@ -19017,7 +19048,41 @@ export default function Dashboard() {
                                   </div>
                                 ))}
                                 {(item.item_type === 'labor' ? filteredLaborItems : filteredParts).length === 0 && (
-                                  <div className="px-3 py-2 text-gray-500 text-sm">No items found</div>
+                                  item.item_type === 'part' ? (
+                                    <div className="px-3 py-2">
+                                      <div className="text-sm text-gray-500 mb-2">No parts found</div>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          setCreatingPartFromInvoice(true);
+                                          setCreatingPartForLineItem(idx);
+                                          
+                                          // Pre-populate inventory form with search query
+                                          // Try to determine if it's a part number (alphanumeric) or part name
+                                          const searchQuery = searchTerm.trim();
+                                          if (searchQuery) {
+                                            // If it looks like a part number (contains numbers and possibly letters), use as SKU
+                                            const looksLikePartNumber = /[0-9]/.test(searchQuery);
+                                            if (looksLikePartNumber) {
+                                              setInventoryForm(prev => ({ ...prev, sku: searchQuery, name: searchQuery }));
+                                            } else {
+                                              setInventoryForm(prev => ({ ...prev, name: searchQuery }));
+                                            }
+                                          }
+                                          
+                                          setShowAddInventoryModal(true);
+                                        }}
+                                        className="w-full px-3 py-1.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
+                                      >
+                                        <Plus className="h-4 w-4" />
+                                        Create New Part
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="px-3 py-2 text-gray-500 text-sm">No items found</div>
+                                  )
                                 )}
                               </div>
                             )}
@@ -21477,6 +21542,8 @@ export default function Dashboard() {
         <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50" onClick={(e) => {
           if (e.target === e.currentTarget) {
             setShowAddInventoryModal(false);
+            setCreatingPartFromInvoice(false);
+            setCreatingPartForLineItem(null);
             setEditingInventoryItem(null);
             setInventoryForm({ name: '', category: '', description: '', sku: '', supplier: '', location: '', quantity: 0, min_stock: 0, unit_price: 0, cost: 0 });
             setPartNameSearch('');
@@ -21492,6 +21559,8 @@ export default function Dashboard() {
               <h2 className="text-xl font-bold text-gray-900">{editingInventoryItem ? 'Edit Inventory Item' : 'Add Inventory Item'}</h2>
               <button onClick={()=>{
                 setShowAddInventoryModal(false);
+                setCreatingPartFromInvoice(false);
+                setCreatingPartForLineItem(null);
                 setEditingInventoryItem(null);
                 setInventoryForm({ name: '', category: '', description: '', sku: '', supplier: '', location: '', quantity: 0, min_stock: 0, unit_price: 0, cost: 0 });
                 setPartNameSearch('');
@@ -21814,6 +21883,27 @@ export default function Dashboard() {
                     setPartNumberSuggestions([]);
                     setShowPartNumberDropdown(false);
                     fetchInventory();
+                    
+                    // If created from invoice modal, auto-select the new part
+                    if (creatingPartFromInvoice && creatingPartForLineItem !== null && data && data.length > 0) {
+                      const newPart = data[0];
+                      const lineItemIdx = creatingPartForLineItem;
+                      
+                      setCreatingPartFromInvoice(false);
+                      setCreatingPartForLineItem(null);
+                      
+                      // Auto-select the new part in the invoice line item
+                      setInvoiceLineItems(prev => prev.map((p, i) => i === lineItemIdx ? {
+                        ...p,
+                        reference_id: newPart.id,
+                        description: newPart.part_name || newPart.description || '',
+                        unit_price: newPart.selling_price || 0,
+                        total_price: +(p.quantity * (newPart.selling_price || 0)).toFixed(2)
+                      } : p));
+                      
+                      // Set the input to show the part number
+                      setInvoiceItemSearch(prev => ({ ...prev, [lineItemIdx]: newPart.part_number || newPart.part_name || '' }));
+                    }
                   }
                 }} 
                 className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600"
@@ -23255,6 +23345,7 @@ export default function Dashboard() {
               </div>
               <button onClick={() => {
                 setShowAddCustomerModal(false);
+                setCreatingCustomerFromInvoice(false);
                 setCustomerForm({ name: '', email: '', phone: '', address: '', city: '', state: '', zip_code: '', is_fleet: false, company: '', fleet_name: '', enable_fleet_discounts: false });
                 setCustomerNotes([]);
                 setAddCustomerFleetTrucks([]);
@@ -23635,6 +23726,7 @@ export default function Dashboard() {
             <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
               <button onClick={()=>{
                 setShowAddCustomerModal(false);
+                setCreatingCustomerFromInvoice(false);
                 setCustomerForm({ name: '', email: '', phone: '', address: '', city: '', state: '', zip_code: '', is_fleet: false, company: '', fleet_name: '', enable_fleet_discounts: false });
                 setCustomerNotes([]);
                 setAddCustomerFleetTrucks([]);
@@ -23817,6 +23909,43 @@ export default function Dashboard() {
                 setAddCustomerFleetTrucks([]);
                 setAddCustomerFleetDiscounts([]);
                 fetchCustomers();
+                
+                // If created from invoice modal, auto-select the new customer
+                if (creatingCustomerFromInvoice && newCustomer) {
+                  setCreatingCustomerFromInvoice(false);
+                  const individualName = [newCustomer.first_name, newCustomer.last_name].filter(Boolean).join(' ');
+                  const displayName = newCustomer.is_fleet 
+                    ? newCustomer.company || individualName || 'Unknown'
+                    : individualName || newCustomer.company || 'Unknown';
+                  
+                  setInvoiceFormData(prev => ({ ...prev, customer_id: newCustomer.id }));
+                  setInvoiceCustomerSearch(displayName);
+                  
+                  // Fetch fleet discounts if applicable
+                  if (newCustomer.is_fleet) {
+                    try {
+                      const shopId = await getShopId();
+                      if (shopId) {
+                        const { data: discounts, error } = await supabase
+                          .from('fleet_discounts')
+                          .select('*')
+                          .eq('customer_id', newCustomer.id)
+                          .eq('shop_id', shopId);
+                        
+                        if (!error && discounts) {
+                          setInvoiceCustomerDiscounts(discounts);
+                        } else {
+                          setInvoiceCustomerDiscounts([]);
+                        }
+                      }
+                    } catch (err) {
+                      console.error('Error fetching fleet discounts:', err);
+                      setInvoiceCustomerDiscounts([]);
+                    }
+                  } else {
+                    setInvoiceCustomerDiscounts([]);
+                  }
+                }
               }} className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600">Create Customer</button>
             </div>
           </div>
