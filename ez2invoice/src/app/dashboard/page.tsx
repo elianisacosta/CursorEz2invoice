@@ -234,28 +234,53 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   };
 
   // Invoice Settings - Default Tax Rate and Card Processing Fee (must be declared before invoiceFormData)
+  // Load from localStorage with robust error handling to prevent settings from resetting
   const [defaultTaxRate, setDefaultTaxRate] = useState<number>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('ez2invoice-default-tax-rate');
-      return saved ? parseFloat(saved) : 6;
+      try {
+        const saved = localStorage.getItem('ez2invoice-default-tax-rate');
+        if (saved) {
+          const parsed = parseFloat(saved);
+          if (!isNaN(parsed) && parsed >= 0) {
+            return parsed;
+          }
+        }
+      } catch (error) {
+        console.error('Error loading tax rate from localStorage:', error);
+      }
     }
-    return 6;
+    return 6; // Default fallback
   });
 
   const [cardProcessingFeePercentage, setCardProcessingFeePercentage] = useState<number>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('ez2invoice-card-fee-percentage');
-      return saved ? parseFloat(saved) : 2.5;
+      try {
+        const saved = localStorage.getItem('ez2invoice-card-fee-percentage');
+        if (saved) {
+          const parsed = parseFloat(saved);
+          if (!isNaN(parsed) && parsed >= 0) {
+            return parsed;
+          }
+        }
+      } catch (error) {
+        console.error('Error loading card fee from localStorage:', error);
+      }
     }
-    return 2.5;
+    return 2.5; // Default fallback
   });
 
   const [invoiceTerms, setInvoiceTerms] = useState<string>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('ez2invoice-invoice-terms');
-      return saved || 'Payment due within 30 days';
+      try {
+        const saved = localStorage.getItem('ez2invoice-invoice-terms');
+        if (saved && saved.trim().length > 0) {
+          return saved;
+        }
+      } catch (error) {
+        console.error('Error loading invoice terms from localStorage:', error);
+      }
     }
-    return 'Payment due within 30 days';
+    return 'Payment due within 30 days'; // Default fallback
   });
 
   const [invoiceFormData, setInvoiceFormData] = useState({
@@ -289,24 +314,61 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   ]);
   const [invoiceItemSearch, setInvoiceItemSearch] = useState<{ [key: number]: string }>({});
   const [applyCardFee, setApplyCardFee] = useState(false);
-  // Save settings to localStorage when they change
+  // Save settings to localStorage when they change - with error handling and persistence
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('ez2invoice-default-tax-rate', defaultTaxRate.toString());
+      try {
+        localStorage.setItem('ez2invoice-default-tax-rate', defaultTaxRate.toString());
+        // Also set a timestamp to track when it was last saved
+        localStorage.setItem('ez2invoice-default-tax-rate-timestamp', new Date().toISOString());
+      } catch (error) {
+        console.error('Error saving tax rate to localStorage:', error);
+      }
     }
   }, [defaultTaxRate]);
   
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('ez2invoice-card-fee-percentage', cardProcessingFeePercentage.toString());
+      try {
+        localStorage.setItem('ez2invoice-card-fee-percentage', cardProcessingFeePercentage.toString());
+        localStorage.setItem('ez2invoice-card-fee-percentage-timestamp', new Date().toISOString());
+      } catch (error) {
+        console.error('Error saving card fee to localStorage:', error);
+      }
     }
   }, [cardProcessingFeePercentage]);
   
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('ez2invoice-invoice-terms', invoiceTerms);
+      try {
+        localStorage.setItem('ez2invoice-invoice-terms', invoiceTerms);
+        localStorage.setItem('ez2invoice-invoice-terms-timestamp', new Date().toISOString());
+      } catch (error) {
+        console.error('Error saving invoice terms to localStorage:', error);
+      }
     }
   }, [invoiceTerms]);
+
+  // Function to explicitly save all settings (called by Save button)
+  const saveInvoiceSettings = () => {
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('ez2invoice-default-tax-rate', defaultTaxRate.toString());
+        localStorage.setItem('ez2invoice-card-fee-percentage', cardProcessingFeePercentage.toString());
+        localStorage.setItem('ez2invoice-invoice-terms', invoiceTerms);
+        // Set timestamps
+        const timestamp = new Date().toISOString();
+        localStorage.setItem('ez2invoice-default-tax-rate-timestamp', timestamp);
+        localStorage.setItem('ez2invoice-card-fee-percentage-timestamp', timestamp);
+        localStorage.setItem('ez2invoice-invoice-terms-timestamp', timestamp);
+        return true;
+      } catch (error) {
+        console.error('Error saving invoice settings:', error);
+        return false;
+      }
+    }
+    return false;
+  };
   const [invoicePayments, setInvoicePayments] = useState<any[]>([]);
   const [loadingPayments, setLoadingPayments] = useState(false);
   const [allInvoiceLineItems, setAllInvoiceLineItems] = useState<any[]>([]);
@@ -2393,7 +2455,22 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   </div>
                 ` : ''}
                 <div class="terms-title">TERMS:</div>
-                <div>${invoiceTerms || 'Payment due within 30 days'}</div>
+                <div>${(() => {
+                  // Use invoice's payment_terms if available, otherwise use global invoiceTerms setting
+                  const invoicePaymentTerms = (invoice as any).payment_terms;
+                  if (invoicePaymentTerms) {
+                    // Format payment terms for display
+                    if (invoicePaymentTerms === 'Due on receipt') {
+                      return 'Payment due upon receipt';
+                    } else if (invoicePaymentTerms.startsWith('Net ')) {
+                      return `Payment due within ${invoicePaymentTerms.replace('Net ', '')} days`;
+                    } else {
+                      return invoicePaymentTerms;
+                    }
+                  }
+                  // Fallback to global invoiceTerms setting
+                  return invoiceTerms || 'Payment due within 30 days';
+                })()}</div>
               </div>
               <div class="totals">
                 <div class="total-row">Subtotal: $${subtotal.toFixed(2)}</div>
@@ -17380,6 +17457,25 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         />
                         <p className="text-sm text-gray-500 mt-1">This text will appear under "TERMS:" in the invoice print preview</p>
                       </div>
+                    </div>
+                    
+                    {/* Save Button */}
+                    <div className="pt-4 border-t border-gray-200">
+                      <button
+                        onClick={() => {
+                          const saved = saveInvoiceSettings();
+                          if (saved) {
+                            showToast({ type: 'success', message: 'Invoice settings saved successfully!' });
+                          } else {
+                            showToast({ type: 'error', message: 'Failed to save settings. Please try again.' });
+                          }
+                        }}
+                        className="w-full bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors flex items-center justify-center space-x-2"
+                      >
+                        <FileText className="h-4 w-4" />
+                        <span>Save Settings</span>
+                      </button>
+                      <p className="text-xs text-gray-500 mt-2 text-center">Settings are automatically saved as you type, but you can click here to explicitly save them.</p>
                     </div>
                   </div>
                 </div>
