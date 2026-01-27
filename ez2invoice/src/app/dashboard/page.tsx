@@ -309,6 +309,239 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     unit_price: number;
     total_price: number;
   }
+
+  // Adjust inventory quantities based on invoice line items (parts only)
+  // direction: 'subtract' for sales (default), 'add' for returns/reversals
+  const adjustInventoryForInvoice = async (invoiceId: string, lineItems: InvoiceLineItem[], direction: 'subtract' | 'add' = 'subtract') => {
+    try {
+      // Only adjust for part line items that have a reference_id and positive quantity
+      const partItems = lineItems.filter(
+        (item) => item.item_type === 'part' && item.reference_id && item.quantity && item.quantity > 0
+      );
+
+      if (!partItems.length) return;
+
+      const { data: userData } = await supabase.auth.getUser();
+
+      for (const item of partItems) {
+        const partId = item.reference_id as string;
+        const quantityChange = Number(item.quantity) || 0;
+        if (!partId || !quantityChange) continue;
+
+        // Fetch current quantity for this part
+        const { data: part, error: partError } = await supabase
+          .from('parts')
+          .select('id, quantity_in_stock')
+          .eq('id', partId)
+          .single();
+
+        if (partError || !part) {
+          console.warn('Could not fetch part for inventory adjustment:', partError || partId);
+          continue;
+        }
+
+        const quantityBefore = part.quantity_in_stock || 0;
+        // Add or subtract based on direction
+        const quantityAfter = direction === 'add' 
+          ? quantityBefore + quantityChange 
+          : quantityBefore - quantityChange;
+
+        // Update inventory quantity
+        const { error: updateError } = await supabase
+          .from('parts')
+          .update({ quantity_in_stock: quantityAfter })
+          .eq('id', partId);
+
+        if (updateError) {
+          console.error('Error updating inventory quantity for part', partId, updateError);
+          continue;
+        }
+
+        // Record inventory history
+        try {
+          await supabase.from('inventory_history').insert({
+            part_id: partId,
+            activity_type: direction === 'add' ? 'return' : 'sale',
+            quantity_change: direction === 'add' ? quantityChange : -quantityChange,
+            quantity_before: quantityBefore,
+            quantity_after: quantityAfter,
+            reason: 'invoice',
+            notes: `Invoice ${invoiceId}${direction === 'add' ? ' (reversal)' : ''}`,
+            created_by: userData?.user?.email || 'System',
+          });
+        } catch (historyError) {
+          console.error('Error recording inventory history for part', partId, historyError);
+        }
+      }
+
+      // Refresh inventory list so UI stays in sync
+      await fetchInventory();
+    } catch (err) {
+      console.error('Unexpected error adjusting inventory for invoice:', err);
+    }
+  };
+
+  // Backfill inventory adjustments for existing invoices that were created before inventory tracking
+  const backfillInventoryForExistingInvoices = async () => {
+    try {
+      const shopId = await getShopId();
+      if (!shopId && !isFounder) {
+        console.warn('No shop_id found, skipping backfill');
+        return;
+      }
+
+      // Fetch all invoices
+      let invoicesQuery = supabase
+        .from('invoices')
+        .select('id, invoice_number, created_at');
+      
+      if (shopId) {
+        if (isFounder) {
+          invoicesQuery = invoicesQuery.or(`shop_id.eq.${shopId},shop_id.is.null`);
+        } else {
+          invoicesQuery = invoicesQuery.eq('shop_id', shopId);
+        }
+      } else if (isFounder) {
+        invoicesQuery = invoicesQuery.is('shop_id', null);
+      }
+
+      const { data: invoices, error: invoicesError } = await invoicesQuery.order('created_at', { ascending: true });
+
+      if (invoicesError || !invoices) {
+        console.error('Error fetching invoices for backfill:', invoicesError);
+        return;
+      }
+
+      let processedCount = 0;
+      let adjustedCount = 0;
+
+      // Process each invoice
+      for (const invoice of invoices) {
+        // Fetch line items for this invoice
+        const { data: lineItems, error: lineItemsError } = await supabase
+          .from('invoice_line_items')
+          .select('*')
+          .eq('invoice_id', invoice.id);
+
+        if (lineItemsError || !lineItems || lineItems.length === 0) {
+          continue; // Skip invoices with no line items or errors
+        }
+
+        // Check if inventory history already exists for this invoice
+        const partLineItems = lineItems.filter(
+          (item: any) => item.item_type === 'part' && item.reference_id && item.quantity && item.quantity > 0
+        );
+
+        if (partLineItems.length === 0) {
+          continue; // No parts in this invoice
+        }
+
+        // Convert to InvoiceLineItem format
+        const invoiceLineItems: InvoiceLineItem[] = lineItems.map((item: any) => ({
+          item_type: item.item_type as 'labor' | 'part',
+          reference_id: item.reference_id,
+          description: item.description || '',
+          quantity: item.quantity || 0,
+          unit_price: item.unit_price || 0,
+          total_price: item.total_price || 0
+        }));
+
+        // Adjust inventory for this invoice (using original invoice date for history)
+        const { data: userData } = await supabase.auth.getUser();
+        const partItems = invoiceLineItems.filter(
+          (item) => item.item_type === 'part' && item.reference_id && item.quantity && item.quantity > 0
+        );
+
+        let invoiceAdjusted = false;
+        for (const item of partItems) {
+          // Check if history already exists for this specific part and invoice
+          // Use the same format as regular adjustInventoryForInvoice: "Invoice {invoiceId}"
+          const { data: existingHistory } = await supabase
+            .from('inventory_history')
+            .select('id')
+            .eq('part_id', item.reference_id)
+            .like('notes', `Invoice ${invoice.id}%`) // Use like to match "Invoice {id}" or "Invoice {id} (reversal)"
+            .limit(1);
+          
+          if (existingHistory && existingHistory.length > 0) {
+            continue; // This part already processed, skip it
+          }
+          const partId = item.reference_id as string;
+          const quantitySold = Number(item.quantity) || 0;
+          if (!partId || !quantitySold) continue;
+
+          // Fetch current quantity for this part
+          const { data: part, error: partError } = await supabase
+            .from('parts')
+            .select('id, quantity_in_stock')
+            .eq('id', partId)
+            .single();
+
+          if (partError || !part) {
+            console.warn('Could not fetch part for backfill:', partId);
+            continue;
+          }
+
+          const quantityBefore = part.quantity_in_stock || 0;
+          const quantityAfter = quantityBefore - quantitySold;
+
+          // Update inventory quantity to reflect the sale
+          const { error: updateError } = await supabase
+            .from('parts')
+            .update({ quantity_in_stock: quantityAfter })
+            .eq('id', partId);
+
+          if (updateError) {
+            console.error('Error updating inventory in backfill for part', partId, updateError);
+            continue;
+          }
+
+          // Record inventory history with original invoice date
+          // Use same format as regular adjustInventoryForInvoice: "Invoice {invoiceId}"
+          try {
+            const invoiceDate = invoice.created_at ? new Date(invoice.created_at) : new Date();
+            await supabase.from('inventory_history').insert({
+              part_id: partId,
+              activity_type: 'sale',
+              quantity_change: -quantitySold,
+              quantity_before: quantityBefore,
+              quantity_after: quantityAfter,
+              reason: 'invoice',
+              notes: `Invoice ${invoice.id}`, // Use invoice.id to match regular function format
+              created_by: userData?.user?.email || 'System',
+              created_at: invoiceDate.toISOString(), // Use original invoice date
+            });
+          } catch (historyError) {
+            console.error('Error recording inventory history in backfill for part', partId, historyError);
+          }
+
+          invoiceAdjusted = true; // Mark that we adjusted at least one part for this invoice
+        }
+
+        if (invoiceAdjusted) {
+          adjustedCount++;
+        }
+        processedCount++;
+      }
+
+      // Refresh inventory list
+      await fetchInventory();
+      
+      showToast({ 
+        type: 'success', 
+        message: `Backfill complete: ${adjustedCount} invoice(s) processed, inventory adjusted` 
+      });
+      
+      console.log(`Backfill complete: Processed ${processedCount} invoices, adjusted ${adjustedCount}`);
+    } catch (err) {
+      console.error('Error in backfillInventoryForExistingInvoices:', err);
+      showToast({ 
+        type: 'error', 
+        message: 'Error backfilling inventory. Check console for details.' 
+      });
+    }
+  };
+
   const [invoiceLineItems, setInvoiceLineItems] = useState<InvoiceLineItem[]>([
     { item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 }
   ]);
@@ -10534,6 +10767,14 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     <FileText className="h-4 w-4" />
                     <span>Import CSV</span>
                   </button>
+                  <button 
+                    onClick={backfillInventoryForExistingInvoices}
+                    className="flex items-center space-x-2 px-4 py-2 border border-yellow-300 bg-yellow-50 text-yellow-800 rounded-lg hover:bg-yellow-100 transition-colors"
+                    title="Process all existing invoices and adjust inventory retroactively"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    <span>Backfill Inventory</span>
+                  </button>
                   <button onClick={()=>setShowAddInventoryModal(true)} className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 flex items-center gap-2">
                     <Plus className="h-4 w-4" />
                     Add Item
@@ -19923,6 +20164,25 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         return;
                       }
 
+                      // Fetch old line items before deleting (to reverse inventory adjustments)
+                      const { data: oldLineItems } = await supabase
+                        .from('invoice_line_items')
+                        .select('*')
+                        .eq('invoice_id', editingInvoice.id);
+
+                      // Reverse inventory adjustments for old line items (add quantities back)
+                      if (oldLineItems && oldLineItems.length > 0) {
+                        const oldItems: InvoiceLineItem[] = oldLineItems.map((item: any) => ({
+                          item_type: item.item_type as 'labor' | 'part',
+                          reference_id: item.reference_id,
+                          description: item.description || '',
+                          quantity: item.quantity || 0,
+                          unit_price: item.unit_price || 0,
+                          total_price: item.total_price || 0
+                        }));
+                        await adjustInventoryForInvoice(editingInvoice.id, oldItems, 'add');
+                      }
+
                       // Delete existing line items and create new ones
                       await supabase
                         .from('invoice_line_items')
@@ -19947,6 +20207,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
 
                         if (lineItemsError) {
                           console.warn('Could not update invoice line items:', lineItemsError);
+                        } else {
+                          // Successfully created new line items - adjust inventory for any parts used
+                          await adjustInventoryForInvoice(editingInvoice.id, invoiceLineItems, 'subtract');
                         }
                       }
 
@@ -20089,6 +20352,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         if (lineItemsError) {
                           // Log but don't fail - line items might not exist as a table
                           console.warn('Could not create invoice line items:', lineItemsError);
+                        } else {
+                          // Successfully created line items - adjust inventory for any parts used
+                          await adjustInventoryForInvoice(invoice.id, invoiceLineItems);
                         }
                       }
 
