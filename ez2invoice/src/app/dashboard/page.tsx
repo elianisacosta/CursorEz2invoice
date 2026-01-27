@@ -357,20 +357,37 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
           continue;
         }
 
-        // Record inventory history
-        try {
-          await supabase.from('inventory_history').insert({
-            part_id: partId,
-            activity_type: direction === 'add' ? 'return' : 'sale',
-            quantity_change: direction === 'add' ? quantityChange : -quantityChange,
-            quantity_before: quantityBefore,
-            quantity_after: quantityAfter,
-            reason: 'invoice',
-            notes: `Invoice ${invoiceId}${direction === 'add' ? ' (reversal)' : ''}`,
-            created_by: userData?.user?.email || 'System',
-          });
-        } catch (historyError) {
-          console.error('Error recording inventory history for part', partId, historyError);
+        // Check if history record already exists to prevent duplicates
+        // Check for any record with same part_id and invoice ID in notes (regardless of quantity_change)
+        const expectedNotes = `Invoice ${invoiceId}${direction === 'add' ? ' (reversal)' : ''}`;
+        const expectedQuantityChange = direction === 'add' ? quantityChange : -quantityChange;
+        
+        const { data: existingHistory } = await supabase
+          .from('inventory_history')
+          .select('id')
+          .eq('part_id', partId)
+          .eq('notes', expectedNotes)
+          .eq('reason', 'invoice')
+          .limit(1);
+
+        // Only insert if no duplicate exists
+        if (!existingHistory || existingHistory.length === 0) {
+          try {
+            await supabase.from('inventory_history').insert({
+              part_id: partId,
+              activity_type: direction === 'add' ? 'return' : 'sale',
+              quantity_change: expectedQuantityChange,
+              quantity_before: quantityBefore,
+              quantity_after: quantityAfter,
+              reason: 'invoice',
+              notes: expectedNotes,
+              created_by: userData?.user?.email || 'System',
+            });
+          } catch (historyError) {
+            console.error('Error recording inventory history for part', partId, historyError);
+          }
+        } else {
+          console.log('Skipping duplicate inventory history record for part', partId, 'invoice', invoiceId);
         }
       }
 
@@ -498,21 +515,35 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
 
           // Record inventory history with original invoice date
           // Use same format as regular adjustInventoryForInvoice: "Invoice {invoiceId}"
-          try {
-            const invoiceDate = invoice.created_at ? new Date(invoice.created_at) : new Date();
-            await supabase.from('inventory_history').insert({
-              part_id: partId,
-              activity_type: 'sale',
-              quantity_change: -quantitySold,
-              quantity_before: quantityBefore,
-              quantity_after: quantityAfter,
-              reason: 'invoice',
-              notes: `Invoice ${invoice.id}`, // Use invoice.id to match regular function format
-              created_by: userData?.user?.email || 'System',
-              created_at: invoiceDate.toISOString(), // Use original invoice date
-            });
-          } catch (historyError) {
-            console.error('Error recording inventory history in backfill for part', partId, historyError);
+          // Double-check for duplicates before inserting (check for same part_id and invoice ID in notes)
+          const expectedNotes = `Invoice ${invoice.id}`;
+          const { data: duplicateCheck } = await supabase
+            .from('inventory_history')
+            .select('id')
+            .eq('part_id', partId)
+            .eq('notes', expectedNotes)
+            .eq('reason', 'invoice')
+            .limit(1);
+
+          if (!duplicateCheck || duplicateCheck.length === 0) {
+            try {
+              const invoiceDate = invoice.created_at ? new Date(invoice.created_at) : new Date();
+              await supabase.from('inventory_history').insert({
+                part_id: partId,
+                activity_type: 'sale',
+                quantity_change: -quantitySold,
+                quantity_before: quantityBefore,
+                quantity_after: quantityAfter,
+                reason: 'invoice',
+                notes: expectedNotes,
+                created_by: userData?.user?.email || 'System',
+                created_at: invoiceDate.toISOString(), // Use original invoice date
+              });
+            } catch (historyError) {
+              console.error('Error recording inventory history in backfill for part', partId, historyError);
+            }
+          } else {
+            console.log('Skipping duplicate inventory history record in backfill for part', partId, 'invoice', invoice.id);
           }
 
           invoiceAdjusted = true; // Mark that we adjusted at least one part for this invoice
@@ -5497,7 +5528,25 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
         .select('*')
         .eq('part_id', partId)
         .order('created_at', { ascending: false });
-      if (data) setInventoryHistory(data || []);
+      
+      if (data) {
+        // Deduplicate records: keep only the first occurrence of records with same part_id, notes (invoice ID), and quantity_change
+        // This prevents duplicate entries from the same invoice
+        const seen = new Map<string, boolean>();
+        const deduplicated = data.filter((record: any) => {
+          // Create a unique key based on part_id, notes (invoice ID), and quantity_change
+          // For invoice-related records, notes will be "Invoice {invoiceId}" or "Invoice {invoiceId} (reversal)"
+          const key = `${record.part_id}_${record.notes}_${record.quantity_change}`;
+          
+          if (seen.has(key)) {
+            return false; // Duplicate, skip it
+          }
+          seen.set(key, true);
+          return true; // First occurrence, keep it
+        });
+        
+        setInventoryHistory(deduplicated || []);
+      }
       if (error) console.error('Error fetching inventory history:', error);
     } catch (err) {
       console.error('Error in fetchInventoryHistory:', err);
