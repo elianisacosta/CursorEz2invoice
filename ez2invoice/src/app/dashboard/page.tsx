@@ -13853,7 +13853,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
             const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
             
             // Financial Performance
-            const paidInvoices = invoices.filter(inv => inv.status === 'paid');
+            // Use outstanding amount to determine if invoice is fully paid (more accurate than status field)
+            const paidInvoices = invoices.filter(inv => getInvoiceOutstandingAmount(inv) <= 0.01);
             const totalRevenue = paidInvoices.reduce((sum, inv) => sum + (inv.total_amount || 0), 0);
             const lastYearRevenue = paidInvoices
               .filter(inv => {
@@ -13952,12 +13953,14 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
             }).length;
             const paidInvoicesChange = lastMonthPaidCount > 0 ? ((paidInvoicesCount - lastMonthPaidCount) / lastMonthPaidCount) * 100 : 0;
             
+            // Overdue invoices: outstanding amount > 0.01 AND due_date is in the past
             const overdueInvoices = invoices.filter(inv => {
-              if (inv.status === 'paid') return false;
+              const outstanding = getInvoiceOutstandingAmount(inv);
+              if (outstanding <= 0.01) return false; // Fully paid, not overdue
               if (!inv.due_date) return false;
               return new Date(inv.due_date) < now;
             });
-            const overdueTotal = overdueInvoices.reduce((sum, inv) => sum + (inv.total_amount || 0), 0);
+            const overdueTotal = overdueInvoices.reduce((sum, inv) => sum + getInvoiceOutstandingAmount(inv), 0);
             const lastMonthOverdue = overdueInvoices.filter(inv => {
               if (!inv.due_date) return false;
               const due = new Date(inv.due_date);
@@ -13965,13 +13968,14 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
             }).length;
             const overdueChange = lastMonthOverdue > 0 ? ((overdueInvoices.length - lastMonthOverdue) / lastMonthOverdue) * 100 : 0;
             
+            // Collection rate: percentage of invoices that are fully paid
             const collectionRate = invoices.length > 0 ? (paidInvoicesCount / invoices.length) * 100 : 0;
             const lastQuarterCollection = invoices.filter(inv => {
               if (!inv.created_at) return false;
               const created = new Date(inv.created_at);
               return created >= lastQuarter && created < thisMonthStart;
             });
-            const lastQuarterPaid = lastQuarterCollection.filter(inv => inv.status === 'paid').length;
+            const lastQuarterPaid = lastQuarterCollection.filter(inv => getInvoiceOutstandingAmount(inv) <= 0.01).length;
             const lastQuarterCollectionRate = lastQuarterCollection.length > 0 ? (lastQuarterPaid / lastQuarterCollection.length) * 100 : 0;
             const collectionRateChange = lastQuarterCollectionRate > 0 ? ((collectionRate - lastQuarterCollectionRate) / lastQuarterCollectionRate) * 100 : 0;
             
@@ -14020,7 +14024,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
             
             // Labor and Parts Revenue will be calculated after paidInvoicesLastMonth is declared
             
-            // Recent invoices (last 10)
+            // Recent invoices (last 10) - calculate status based on outstanding amount
             const recentInvoices = [...invoices]
               .sort((a, b) => {
                 const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
@@ -14033,13 +14037,23 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 const customerName = customer 
                   ? [customer.first_name, customer.last_name, customer.company].filter(Boolean).join(' ') || 'Unknown'
                   : 'Unknown';
+                
+                // Determine status based on outstanding amount and due date
+                const outstanding = getInvoiceOutstandingAmount(inv);
+                let status = 'unpaid';
+                if (outstanding <= 0.01) {
+                  status = 'paid';
+                } else if (inv.due_date && new Date(inv.due_date) < now) {
+                  status = 'overdue';
+                }
+                
                 return {
                   id: inv.id,
                   invoiceNumber: formatInvoiceNumber(inv.invoice_number),
                   customer: customerName,
                   amount: inv.total_amount || 0,
                   date: inv.created_at ? new Date(inv.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A',
-                  status: inv.status
+                  status: status
                 };
               });
             
@@ -14601,24 +14615,16 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               }).length);
             const avgInvoiceChange = lastMonthAvg > 0 ? ((avgInvoiceValue - lastMonthAvg) / lastMonthAvg) * 100 : 0;
             
-            const unpaidInvoices = invoices.filter(inv => {
-              const outstanding = (inv.total_amount || 0) - (inv.paid_amount || 0);
-              return outstanding > 0.01;
-            });
-            const unpaidTotal = unpaidInvoices.reduce((sum, inv) => {
-              const outstanding = (inv.total_amount || 0) - (inv.paid_amount || 0);
-              return sum + outstanding;
-            }, 0);
+            // Unpaid invoices: outstanding amount > 0.01
+            const unpaidInvoices = invoices.filter(inv => getInvoiceOutstandingAmount(inv) > 0.01);
+            const unpaidTotal = unpaidInvoices.reduce((sum, inv) => sum + getInvoiceOutstandingAmount(inv), 0);
             const lastWeekUnpaid = unpaidInvoices
               .filter(inv => {
                 if (!inv.created_at) return false;
                 const created = new Date(inv.created_at);
                 return created >= lastWeek;
               })
-              .reduce((sum, inv) => {
-                const outstanding = (inv.total_amount || 0) - (inv.paid_amount || 0);
-                return sum + outstanding;
-              }, 0);
+              .reduce((sum, inv) => sum + getInvoiceOutstandingAmount(inv), 0);
             const unpaidChange = lastWeekUnpaid > 0 ? ((unpaidTotal - lastWeekUnpaid) / lastWeekUnpaid) * 100 : 0;
             
             // Customer Insights
