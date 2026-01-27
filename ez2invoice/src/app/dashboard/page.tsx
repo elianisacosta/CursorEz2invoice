@@ -180,16 +180,35 @@ export default function Dashboard() {
     : (subscriptionBypass && isFounder ? 'enterprise' : (userPlanType || 'starter'));
   const [showCreateInvoiceModal, setShowCreateInvoiceModal] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
-  // Helper function to get today's date in YYYY-MM-DD format
-  // Note: This is used for initial state, so it uses a simple implementation
-  // The timezone-aware version is used elsewhere in the component
-  const getTodayDate = () => {
+// Helper function to get today's date in YYYY-MM-DD format
+// Note: This is used for initial state, so it uses a simple implementation
+// The timezone-aware version is used elsewhere in the component
+const getTodayDate = () => {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Helper to add N days to a YYYY-MM-DD string (falls back to today on parse error)
+const addDaysToDateString = (baseDate: string | undefined | null, days: number): string => {
+  const safeBase = baseDate && baseDate.trim() ? baseDate : getTodayDate();
+  const date = new Date(safeBase + 'T00:00:00');
+  if (Number.isNaN(date.getTime())) {
     const today = new Date();
+    today.setDate(today.getDate() + days);
     const year = today.getFullYear();
     const month = String(today.getMonth() + 1).padStart(2, '0');
     const day = String(today.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
-  };
+  }
+  date.setDate(date.getDate() + days);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
   // Helper function to format invoice number for display
   const formatInvoiceNumber = (invoiceNumber: string | null | undefined): string => {
@@ -242,6 +261,7 @@ export default function Dashboard() {
   const [invoiceFormData, setInvoiceFormData] = useState({
     customer_id: '',
     work_order_id: '',
+    payment_terms: 'Due on receipt', // Payment terms (Due on receipt, Net 15, Net 30, etc.)
     due_date: getTodayDate(),
     invoice_date: getTodayDate(), // Invoice creation date
     tax_rate: defaultTaxRate / 100, // Convert percentage to decimal
@@ -353,6 +373,48 @@ export default function Dashboard() {
         month: '2-digit',
         day: '2-digit',
         timeZone: timezoneStr,
+        ...options
+      };
+      
+      return dateObj.toLocaleDateString('en-US', defaultOptions);
+    } catch (error) {
+      return '—';
+    }
+  };
+
+  // Helper function to format date-only strings (YYYY-MM-DD) without timezone conversion
+  const formatDateOnly = (dateStr: string | null | undefined, options?: Intl.DateTimeFormatOptions): string => {
+    if (!dateStr) return '—';
+    try {
+      // Parse YYYY-MM-DD format directly without timezone conversion
+      // Handle both "YYYY-MM-DD" strings and ISO date strings
+      let dateObj: Date;
+      if (typeof dateStr === 'string' && dateStr.match(/^\d{4}-\d{2}-\d{2}/)) {
+        // Pure date string (YYYY-MM-DD)
+        const parts = dateStr.split('T')[0].split('-');
+        if (parts.length === 3) {
+          const year = parseInt(parts[0], 10);
+          const month = parseInt(parts[1], 10) - 1; // JavaScript months are 0-indexed
+          const day = parseInt(parts[2], 10);
+          dateObj = new Date(year, month, day);
+        } else {
+          // Fallback to timezone-aware formatting if not in expected format
+          return formatDateInTimezone(dateStr, options);
+        }
+      } else {
+        // ISO string or Date object - parse but don't apply timezone
+        const parsed = new Date(dateStr);
+        if (isNaN(parsed.getTime())) return '—';
+        // Extract date components in local time to avoid timezone shifts
+        dateObj = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+      }
+      
+      if (isNaN(dateObj.getTime())) return '—';
+      
+      const defaultOptions: Intl.DateTimeFormatOptions = {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
         ...options
       };
       
@@ -2673,7 +2735,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
       ? formatDateInTimezone(invoice.created_at, { month: 'short', day: 'numeric', year: 'numeric' })
       : 'N/A';
     const dueDate = invoice.due_date 
-      ? formatDateInTimezone(invoice.due_date, { month: 'short', day: 'numeric', year: 'numeric' })
+      ? formatDateOnly(invoice.due_date, { month: 'short', day: 'numeric', year: 'numeric' })
       : 'No due date';
     
     const subtotal = invoice.subtotal || 0;
@@ -4129,7 +4191,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
         ? formatDateInTimezone(invoice.created_at, { month: 'short', day: 'numeric', year: 'numeric' })
         : '';
       const dueDate = invoice.due_date 
-        ? formatDateInTimezone(invoice.due_date, { month: 'short', day: 'numeric', year: 'numeric' })
+        ? formatDateOnly(invoice.due_date, { month: 'short', day: 'numeric', year: 'numeric' })
         : '';
       const totalAmount = invoice.total_amount || 0;
       const paidAmount = invoice.paid_amount || 0;
@@ -11936,7 +11998,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                     <span className="text-gray-500">Date:</span> {formatDateInTimezone(invoice.created_at)}
                                   </div>
                                   <div className="col-span-2">
-                                    <span className="text-gray-500">Due Date:</span> {formatDateInTimezone(invoice.due_date)}
+                                    <span className="text-gray-500">Due Date:</span> {formatDateOnly(invoice.due_date)}
                                   </div>
                                 </div>
                                 <div className="flex items-center justify-end space-x-2 pt-2 border-t border-gray-100">
@@ -12038,7 +12100,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                         setInvoiceFormData({
                                           customer_id: invoice.customer_id || '',
                                           work_order_id: invoice.work_order_id || '',
-                                          due_date: invoice.due_date || '',
+                                          payment_terms: (invoice as any).payment_terms || 'Due on receipt',
+                                          due_date: invoice.due_date || getTodayDate(),
                                           invoice_date: invoiceDate, // Always has a value (today or parsed date)
                                           tax_rate: defaultTaxRate / 100, // Always use tax rate from settings
                                           notes: (invoice as any).notes || '',
@@ -12188,7 +12251,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                   {formatDateInTimezone((invoice as any).invoice_date || invoice.created_at)}
                                 </div>
                                 <div className="text-sm text-gray-600 min-w-0 whitespace-nowrap">
-                                  {formatDateInTimezone(invoice.due_date)}
+                                  {formatDateOnly(invoice.due_date)}
                                 </div>
                                 <div className="flex items-center justify-end space-x-2 min-w-0 flex-shrink-0 flex-wrap gap-1">
                                 <button
@@ -12260,8 +12323,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       setInvoiceFormData({
                         customer_id: invoice.customer_id || '',
                         work_order_id: invoice.work_order_id || '',
+                        payment_terms: (invoice as any).payment_terms || 'Due on receipt',
                         invoice_date: invoiceDate,
-                        due_date: invoice.due_date || '',
+                        due_date: invoice.due_date || getTodayDate(),
                         tax_rate: defaultTaxRate / 100, // Always use tax rate from settings
                         notes: (invoice as any).notes || '',
                         internal_notes: (invoice as any).internal_notes || ''
@@ -12518,7 +12582,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                   </td>
                                   <td className="px-6 py-4 text-gray-600">
                                     {invoice.due_date
-                                      ? formatDateInTimezone(invoice.due_date, {
+                                      ? formatDateOnly(invoice.due_date, {
                                           month: 'short',
                                           day: 'numeric',
                                           year: 'numeric'
@@ -18608,6 +18672,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     setInvoiceFormData({
                       customer_id: '',
                       work_order_id: '',
+                      payment_terms: 'Due on receipt',
                       due_date: getTodayDate(),
                       invoice_date: getTodayDate(),
                       tax_rate: defaultTaxRate / 100,
@@ -18864,27 +18929,98 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   </div>
                 </div>
 
-                {/* Date */}
+                {/* Terms */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    {editingInvoice ? 'Invoice Date' : 'Date'}
+                    Terms
                   </label>
-                  <input
-                    type="date"
-                    value={editingInvoice 
-                      ? (invoiceFormData.invoice_date || getTodayDate()) 
-                      : (invoiceFormData.due_date || getTodayDate())}
+                  <select
+                    value={invoiceFormData.payment_terms || 'Due on receipt'}
                     onChange={(e) => {
-                      if (editingInvoice) {
-                        // When editing, update invoice_date
-                        setInvoiceFormData(prev => ({ ...prev, invoice_date: e.target.value }));
-                      } else {
-                        // When creating new, update due_date
-                        setInvoiceFormData(prev => ({ ...prev, due_date: e.target.value }));
-                      }
+                      const terms = e.target.value;
+                      setInvoiceFormData(prev => {
+                        const updated = { ...prev, payment_terms: terms };
+                        // Map common net terms to day offsets
+                        const termOffsets: { [key: string]: number } = {
+                          'Net 15': 15,
+                          'Net 30': 30,
+                          'Net 60': 60,
+                          'Net 90': 90,
+                        };
+
+                        if (terms === 'Due on receipt') {
+                          // Due on receipt = same day as invoice date
+                          updated.due_date = prev.invoice_date || getTodayDate();
+                        } else if (termOffsets[terms]) {
+                          // Net terms = invoice date + N days
+                          updated.due_date = addDaysToDateString(prev.invoice_date, termOffsets[terms]);
+                        }
+
+                        return updated;
+                      });
                     }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                  />
+                  >
+                    <option value="Due on receipt">Due on receipt</option>
+                    <option value="Net 15">Net 15</option>
+                    <option value="Net 30">Net 30</option>
+                    <option value="Net 60">Net 60</option>
+                    <option value="Net 90">Net 90</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                {/* Invoice Date */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Invoice date
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="date"
+                      value={invoiceFormData.invoice_date || getTodayDate()}
+                      onChange={(e) => {
+                        setInvoiceFormData(prev => {
+                          const updated = { ...prev, invoice_date: e.target.value };
+                          // Keep due date in sync when terms are date-based
+                          const termOffsets: { [key: string]: number } = {
+                            'Net 15': 15,
+                            'Net 30': 30,
+                            'Net 60': 60,
+                            'Net 90': 90,
+                          };
+
+                          if (prev.payment_terms === 'Due on receipt') {
+                            updated.due_date = e.target.value;
+                          } else if (termOffsets[prev.payment_terms || '']) {
+                            updated.due_date = addDaysToDateString(e.target.value, termOffsets[prev.payment_terms || '']);
+                          }
+
+                          return updated;
+                        });
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                    />
+                  </div>
+                </div>
+
+                {/* Due Date */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Due date
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="date"
+                      value={invoiceFormData.due_date || getTodayDate()}
+                      onChange={(e) => {
+                        setInvoiceFormData(prev => ({ ...prev, due_date: e.target.value }));
+                      }}
+                      disabled={invoiceFormData.payment_terms === 'Due on receipt'}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -19562,6 +19698,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   setInvoiceFormData({
                     customer_id: '',
                     work_order_id: '',
+                    payment_terms: 'Due on receipt',
                     due_date: getTodayDate(),
                     invoice_date: getTodayDate(),
                     tax_rate: defaultTaxRate / 100,
@@ -19642,6 +19779,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         tax_amount: taxAmount,
                         total_amount: totalAmount,
                         status: invoiceStatus,
+                        payment_terms: invoiceFormData.payment_terms || 'Due on receipt',
                         due_date: invoiceFormData.due_date || null,
                         notes: invoiceFormData.notes || null,
                         created_at: updatedCreatedAt
@@ -19657,14 +19795,30 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         })
                         .eq('id', editingInvoice.id);
 
-                      // If error is about column not existing, retry without internal_notes
-                      if (invoiceError && (invoiceError.message?.includes('internal_notes') || invoiceError.message?.includes('column') || invoiceError.code === '42703')) {
-                        console.log('internal_notes column not found, updating without it');
-                        const { error: retryError } = await supabase
-                          .from('invoices')
-                          .update(updateData)
-                          .eq('id', editingInvoice.id);
-                        invoiceError = retryError;
+                      // If error is about column not existing, retry without problematic columns
+                      if (invoiceError) {
+                        const errorMessage = invoiceError.message || '';
+                        const errorCode = invoiceError.code || '';
+                        const isColumnError = errorMessage.includes('column') || 
+                                            errorMessage.includes('payment_terms') || 
+                                            errorMessage.includes('internal_notes') ||
+                                            errorCode === '42703' ||
+                                            errorCode === 'PGRST116';
+                        
+                        if (isColumnError) {
+                          console.log('Column error detected, retrying without problematic columns');
+                          // Create a copy without payment_terms and internal_notes
+                          const { payment_terms, ...dataWithoutTerms } = updateData;
+                          const { internal_notes, ...dataWithoutBoth } = dataWithoutTerms;
+                          
+                          // Try update without both columns
+                          const { error: retryError } = await supabase
+                            .from('invoices')
+                            .update(dataWithoutBoth)
+                            .eq('id', editingInvoice.id);
+                          
+                          invoiceError = retryError;
+                        }
                       }
 
                       if (invoiceError) {
@@ -19709,7 +19863,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       setInvoiceFormData({
                         customer_id: '',
                         work_order_id: '',
-                        due_date: '',
+                        payment_terms: 'Due on receipt',
+                        due_date: getTodayDate(),
                         invoice_date: getTodayDate(),
                         tax_rate: defaultTaxRate / 100,
                         notes: '',
@@ -19759,12 +19914,13 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         tax_rate: invoiceFormData.tax_rate || 0,
                         tax_amount: taxAmount,
                         total_amount: totalAmount,
+                        payment_terms: invoiceFormData.payment_terms || 'Due on receipt',
                         due_date: invoiceFormData.due_date || null,
                         notes: invoiceFormData.notes || null,
                         created_at: invoiceCreatedAt
                       };
 
-                      // Try to include internal_notes
+                      // Try to include internal_notes and payment_terms
                       let { data: invoice, error: invoiceError } = await supabase
                         .from('invoices')
                         .insert({
@@ -19774,16 +19930,38 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         .select()
                         .single();
 
-                      // If error is about column not existing, retry without internal_notes
-                      if (invoiceError && (invoiceError.message?.includes('internal_notes') || invoiceError.message?.includes('column') || invoiceError.code === '42703')) {
-                        console.log('internal_notes column not found, creating without it');
-                        const { data: retryInvoice, error: retryError } = await supabase
-                          .from('invoices')
-                          .insert(insertData)
-                          .select()
-                          .single();
-                        invoice = retryInvoice;
-                        invoiceError = retryError;
+                      // If error is about column not existing, retry without problematic columns
+                      if (invoiceError) {
+                        const errorMessage = invoiceError.message || '';
+                        const errorCode = invoiceError.code || '';
+                        const isColumnError = errorMessage.includes('column') || 
+                                            errorMessage.includes('payment_terms') || 
+                                            errorMessage.includes('internal_notes') ||
+                                            errorCode === '42703' ||
+                                            errorCode === 'PGRST116';
+                        
+                        if (isColumnError) {
+                          console.log('Column error detected, retrying without problematic columns');
+                          // Create a copy without payment_terms and internal_notes
+                          const { payment_terms, ...dataWithoutTerms } = insertData;
+                          const { internal_notes, ...dataWithoutBoth } = dataWithoutTerms;
+                          
+                          // Try insert without both columns first
+                          let retryData = dataWithoutBoth;
+                          const { data: retryInvoice, error: retryError } = await supabase
+                            .from('invoices')
+                            .insert(retryData)
+                            .select()
+                            .single();
+                          
+                          if (retryError) {
+                            console.error('Error creating invoice even without optional columns:', retryError);
+                            invoiceError = retryError;
+                          } else {
+                            invoice = retryInvoice;
+                            invoiceError = null;
+                          }
+                        }
                       }
 
                       if (invoiceError || !invoice) {
@@ -19827,7 +20005,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       setInvoiceFormData({
                         customer_id: '',
                         work_order_id: '',
-                        due_date: '',
+                        payment_terms: 'Due on receipt',
+                        due_date: getTodayDate(),
                         invoice_date: getTodayDate(),
                         tax_rate: defaultTaxRate / 100,
                         notes: '',
