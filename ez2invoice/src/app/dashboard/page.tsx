@@ -11656,7 +11656,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-2xl font-bold text-red-600">
                     {invoices.filter(inv => {
-                      if (inv.status === 'paid') return false;
+                      // Use calculated outstanding amount instead of raw status
+                      const outstanding = getInvoiceOutstandingAmount(inv);
+                      if (outstanding <= 0.01) return false; // treated as fully paid
                       if (!inv.due_date) return false;
                       return new Date(inv.due_date) < new Date();
                     }).length}
