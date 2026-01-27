@@ -2135,20 +2135,84 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
         const remainingBalance = invoiceTotal - alreadyPaid;
         const cardFee = paymentFormData.method === 'card' ? remainingBalance * (cardProcessingFeePercentage / 100) : 0;
         
-        const { error: paymentInsertError } = await supabase
+        // Normalize payment method for consistency (e.g., 'finance' -> 'financing')
+        const normalizedMethod = paymentFormData.method === 'finance' ? 'financing' : paymentFormData.method;
+        
+        // Try inserting with card_fee first, retry without it if column doesn't exist
+        let paymentInsertData = null;
+        let paymentInsertError = null;
+        
+        // First attempt: include card_fee
+        let insertPayload: any = {
+          invoice_id: invoiceForPayment.id,
+          amount: paymentAmount + cardFee, // Total payment amount including card fee
+          payment_method: normalizedMethod,
+          notes: paymentFormData.notes || null,
+          created_by: userData?.user?.id || null
+        };
+        
+        // Add card_fee if card payment and fee > 0
+        if (cardFee > 0) {
+          insertPayload.card_fee = cardFee;
+        }
+        
+        let { error: firstAttemptError, data: firstAttemptData } = await supabase
           .from('invoice_payments')
-          .insert({
-            invoice_id: invoiceForPayment.id,
-            amount: paymentAmount + cardFee, // Total payment amount including card fee
-            payment_method: paymentFormData.method,
-            card_fee: cardFee,
-            notes: paymentFormData.notes || null,
-            created_by: userData?.user?.id || null
-          });
+          .insert(insertPayload)
+          .select();
+        
+        // If error is about missing column (PGRST204), retry without card_fee
+        if (firstAttemptError && firstAttemptError.code === 'PGRST204' && 
+            (firstAttemptError.message?.includes('card_fee') || firstAttemptError.message?.includes('column'))) {
+          // Retry without card_fee column
+          const { card_fee, ...payloadWithoutCardFee } = insertPayload;
+          const { error: retryError, data: retryData } = await supabase
+            .from('invoice_payments')
+            .insert(payloadWithoutCardFee)
+            .select();
+          
+          paymentInsertError = retryError;
+          paymentInsertData = retryData;
+        } else {
+          paymentInsertError = firstAttemptError;
+          paymentInsertData = firstAttemptData;
+        }
         
         if (paymentInsertError) {
-          console.error('Error creating payment record:', paymentInsertError);
-          // Don't fail the whole operation, but log the error for debugging
+          // Check if error has meaningful content (not just an empty object)
+          const errorMessage = paymentInsertError.message || '';
+          const errorCode = paymentInsertError.code || '';
+          const errorDetails = paymentInsertError.details || '';
+          const errorHint = paymentInsertError.hint || '';
+          
+          // Check if this is a table-not-found, missing column, or RLS error (expected in some cases)
+          const isTableNotFound = errorCode === 'PGRST116' || 
+                                 errorMessage.includes('relation') || 
+                                 errorMessage.includes('table') ||
+                                 errorMessage.includes('does not exist');
+          const isMissingColumn = errorCode === 'PGRST204' || 
+                                 errorMessage.includes('column') ||
+                                 errorMessage.includes('Could not find');
+          const isRLSError = errorCode === '42501' || 
+                            errorMessage.includes('row-level security') ||
+                            errorMessage.includes('RLS');
+          
+          // Only log if there's actual error information and it's not an expected error
+          const hasErrorInfo = errorMessage || errorCode || errorDetails || errorHint;
+          const isEmptyError = !hasErrorInfo && 
+                              (typeof paymentInsertError === 'object' && 
+                               Object.keys(paymentInsertError).length === 0);
+          
+          if (!isEmptyError && !isTableNotFound && !isMissingColumn && !isRLSError && hasErrorInfo) {
+            console.error('Error creating payment record:', {
+              message: errorMessage || 'Unknown error',
+              code: errorCode,
+              details: errorDetails,
+              hint: errorHint
+            });
+          }
+          // Don't fail the whole operation - invoice was already updated successfully
+          // Payment record creation is optional - invoice payment tracking still works
         }
       } catch (paymentError) {
         // Table might not exist yet, that's okay - we still updated the invoice
@@ -14208,15 +14272,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               financialPaymentMethodBreakdown = [{ method: 'No payments yet', transactions: 0, amount: 0, percentage: 0 }];
             }
             
-            // Calculate payment method breakdown from actual invoice_payments data
-            const totalPaidThisMonth = paidInvoicesThisMonth.length;
-            const thisMonthPaymentIds = paidInvoicesThisMonth.map(inv => inv.id);
-            const thisMonthPayments = invoicePayments.filter((payment: any) => 
-              thisMonthPaymentIds.includes(payment.invoice_id) &&
-              payment.created_at &&
-              new Date(payment.created_at) >= thisMonthStart &&
-              new Date(payment.created_at) < now
-            );
+            // Calculate payment method breakdown from ALL invoice_payments data (not just this month)
+            // This ensures the comparison table shows all payment methods correctly
+            const allPayments = invoicePayments.filter((payment: any) => payment.created_at);
             
             const paymentMethodBreakdown = {
               card: { transactions: 0, amount: 0, lastMonthAmount: 0, change: 0 },
@@ -14228,30 +14286,42 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               other: { transactions: 0, amount: 0, lastMonthAmount: 0, change: 0 }
             };
             
-            // Calculate this month's payment method breakdown from actual payments
-            thisMonthPayments.forEach((payment: any) => {
+            // Calculate payment method breakdown from ALL actual payments
+            allPayments.forEach((payment: any) => {
               const method = (payment.payment_method || 'other').toLowerCase();
-              const methodKey = method === 'card' ? 'card'
-                : method === 'cash' ? 'cash'
-                : method === 'digital' || method === 'zelle' ? (method === 'zelle' ? 'zelle' : 'digital')
-                : method === 'check' ? 'check'
-                : method === 'financing' ? 'financing'
+              // Normalize 'finance' to 'financing' for consistency
+              const normalizedMethod = method === 'finance' ? 'financing' : method;
+              const methodKey = normalizedMethod === 'card' ? 'card'
+                : normalizedMethod === 'cash' ? 'cash'
+                : normalizedMethod === 'digital' || normalizedMethod === 'zelle' ? (normalizedMethod === 'zelle' ? 'zelle' : 'digital')
+                : normalizedMethod === 'check' ? 'check'
+                : normalizedMethod === 'financing' ? 'financing'
                 : 'other';
               
               paymentMethodBreakdown[methodKey as keyof typeof paymentMethodBreakdown].transactions += 1;
               paymentMethodBreakdown[methodKey as keyof typeof paymentMethodBreakdown].amount += parseFloat(payment.amount || 0);
             });
             
+            // Also calculate this month's payments for comparison
+            const totalPaidThisMonth = paidInvoicesThisMonth.length;
+            const thisMonthPaymentIds = paidInvoicesThisMonth.map(inv => inv.id);
+            const thisMonthPayments = allPayments.filter((payment: any) => 
+              thisMonthPaymentIds.includes(payment.invoice_id) &&
+              payment.created_at &&
+              new Date(payment.created_at) >= thisMonthStart &&
+              new Date(payment.created_at) < now
+            );
+            
             // If no payment data, distribute invoices evenly (fallback)
-            if (thisMonthPayments.length === 0 && totalPaidThisMonth > 0) {
-              const sortedPaidInvoices = [...paidInvoicesThisMonth].sort((a, b) => (b.total_amount || 0) - (a.total_amount || 0));
+            if (allPayments.length === 0 && paidInvoices.length > 0) {
+              const sortedPaidInvoices = [...paidInvoices].sort((a, b) => (b.total_amount || 0) - (a.total_amount || 0));
               const methods = ['card', 'cash', 'digital', 'zelle', 'check', 'financing', 'other'];
               let invoiceIndex = 0;
               
               methods.forEach((method, idx) => {
                 const count = idx < methods.length - 1 
-                  ? Math.floor(totalPaidThisMonth / methods.length)
-                  : totalPaidThisMonth - invoiceIndex;
+                  ? Math.floor(paidInvoices.length / methods.length)
+                  : paidInvoices.length - invoiceIndex;
                 let total = 0;
                 for (let i = 0; i < count && invoiceIndex < sortedPaidInvoices.length; i++) {
                   total += sortedPaidInvoices[invoiceIndex].total_amount || 0;
@@ -14315,6 +14385,32 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               ? ((finalThisMonthPartsRevenue - finalLastMonthPartsRevenue) / finalLastMonthPartsRevenue) * 100 
               : 0;
             
+            // Calculate this month's payment method breakdown separately for change calculations
+            const thisMonthPaymentBreakdown = {
+              card: { amount: 0, transactions: 0 },
+              cash: { amount: 0, transactions: 0 },
+              digital: { amount: 0, transactions: 0 },
+              zelle: { amount: 0, transactions: 0 },
+              check: { amount: 0, transactions: 0 },
+              financing: { amount: 0, transactions: 0 },
+              other: { amount: 0, transactions: 0 }
+            };
+            
+            thisMonthPayments.forEach((payment: any) => {
+              const method = (payment.payment_method || 'other').toLowerCase();
+              // Normalize 'finance' to 'financing' for consistency
+              const normalizedMethod = method === 'finance' ? 'financing' : method;
+              const methodKey = normalizedMethod === 'card' ? 'card'
+                : normalizedMethod === 'cash' ? 'cash'
+                : normalizedMethod === 'digital' || normalizedMethod === 'zelle' ? (normalizedMethod === 'zelle' ? 'zelle' : 'digital')
+                : normalizedMethod === 'check' ? 'check'
+                : normalizedMethod === 'financing' ? 'financing'
+                : 'other';
+              
+              thisMonthPaymentBreakdown[methodKey as keyof typeof thisMonthPaymentBreakdown].transactions += 1;
+              thisMonthPaymentBreakdown[methodKey as keyof typeof thisMonthPaymentBreakdown].amount += parseFloat(payment.amount || 0);
+            });
+            
             // Calculate last month amounts for comparison from actual payments
             const lastMonthPaymentIds = paidInvoicesLastMonth.map(inv => inv.id);
             const lastMonthPayments = invoicePayments.filter((payment: any) => 
@@ -14337,11 +14433,13 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
             
             lastMonthPayments.forEach((payment: any) => {
               const method = (payment.payment_method || 'other').toLowerCase();
-              const methodKey = method === 'card' ? 'card'
-                : method === 'cash' ? 'cash'
-                : method === 'digital' || method === 'zelle' ? (method === 'zelle' ? 'zelle' : 'digital')
-                : method === 'check' ? 'check'
-                : method === 'financing' ? 'financing'
+              // Normalize 'finance' to 'financing' for consistency
+              const normalizedMethod = method === 'finance' ? 'financing' : method;
+              const methodKey = normalizedMethod === 'card' ? 'card'
+                : normalizedMethod === 'cash' ? 'cash'
+                : normalizedMethod === 'digital' || normalizedMethod === 'zelle' ? (normalizedMethod === 'zelle' ? 'zelle' : 'digital')
+                : normalizedMethod === 'check' ? 'check'
+                : normalizedMethod === 'financing' ? 'financing'
                 : 'other';
               
               lastMonthPaymentBreakdown[methodKey as keyof typeof lastMonthPaymentBreakdown].amount += parseFloat(payment.amount || 0);
@@ -14366,23 +14464,49 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               });
             }
             
-            // Calculate changes
+            // Calculate changes - use this month vs last month for comparison
             Object.keys(paymentMethodBreakdown).forEach(method => {
-              const thisMonth = paymentMethodBreakdown[method as keyof typeof paymentMethodBreakdown];
+              const allTime = paymentMethodBreakdown[method as keyof typeof paymentMethodBreakdown];
+              const thisMonth = thisMonthPaymentBreakdown[method as keyof typeof thisMonthPaymentBreakdown];
               const lastMonth = lastMonthPaymentBreakdown[method as keyof typeof lastMonthPaymentBreakdown];
-              thisMonth.lastMonthAmount = lastMonth.amount;
-              thisMonth.change = lastMonth.amount > 0
+              
+              // Update lastMonthAmount for display
+              allTime.lastMonthAmount = lastMonth.amount;
+              
+              // Calculate change based on this month vs last month
+              allTime.change = lastMonth.amount > 0
                 ? ((thisMonth.amount - lastMonth.amount) / lastMonth.amount) * 100
                 : (thisMonth.amount > 0 ? 100 : 0);
             });
             
-            // Card fees calculations
+            // Card fees calculations - use actual card_fee from payments if available, otherwise calculate
+            const cardPayments = allPayments.filter((p: any) => (p.payment_method || '').toLowerCase() === 'card');
+            const actualCardFees = cardPayments.reduce((sum: number, p: any) => sum + parseFloat(p.card_fee || 0), 0);
             const cardAmount = paymentMethodBreakdown.card.amount;
-            const cardFees = cardAmount * cardFeeRate;
+            // Use actual fees if available, otherwise calculate from amount
+            const cardFees = actualCardFees > 0 ? actualCardFees : cardAmount * cardFeeRate;
             const cardNet = cardAmount - cardFees;
-            const lastMonthCardAmount = paymentMethodBreakdown.card.lastMonthAmount;
-            const lastMonthCardFees = lastMonthCardAmount * cardFeeRate;
-            const cardFeesChange = lastMonthCardFees > 0 ? ((cardFees - lastMonthCardFees) / lastMonthCardFees) * 100 : 0;
+            
+            // Calculate this month's card fees
+            const thisMonthCardPayments = thisMonthPayments.filter((p: any) => (p.payment_method || '').toLowerCase() === 'card');
+            const thisMonthCardFees = thisMonthCardPayments.reduce((sum: number, p: any) => sum + parseFloat(p.card_fee || 0), 0);
+            const thisMonthCardAmount = thisMonthCardPayments.reduce((sum: number, p: any) => sum + parseFloat(p.amount || 0), 0);
+            const calculatedThisMonthCardFees = thisMonthCardFees > 0 ? thisMonthCardFees : thisMonthCardAmount * cardFeeRate;
+            
+            // Calculate last month's card fees for comparison
+            const lastMonthCardPayments = invoicePayments.filter((payment: any) => {
+              const method = (payment.payment_method || '').toLowerCase();
+              if (method !== 'card') return false;
+              if (!payment.created_at) return false;
+              const paymentDate = new Date(payment.created_at);
+              return paymentDate >= lastMonth && paymentDate <= lastMonthEnd;
+            });
+            const lastMonthCardFees = lastMonthCardPayments.reduce((sum: number, p: any) => sum + parseFloat(p.card_fee || 0), 0);
+            const lastMonthCardAmount = lastMonthCardPayments.reduce((sum: number, p: any) => sum + parseFloat(p.amount || 0), 0);
+            const calculatedLastMonthCardFees = lastMonthCardFees > 0 ? lastMonthCardFees : lastMonthCardAmount * cardFeeRate;
+            
+            paymentMethodBreakdown.card.lastMonthAmount = lastMonthCardAmount;
+            const cardFeesChange = calculatedLastMonthCardFees > 0 ? ((calculatedThisMonthCardFees - calculatedLastMonthCardFees) / calculatedLastMonthCardFees) * 100 : 0;
             
             // Card invoices for fee breakdown table
             // Get card payments for this month
@@ -14418,13 +14542,30 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 };
               });
             
-            // Payment method comparison data
+            // Payment method comparison data - calculate fees from actual payment data
             const paymentMethodComparison = Object.keys(paymentMethodBreakdown).map(method => {
               const data = paymentMethodBreakdown[method as keyof typeof paymentMethodBreakdown];
               const methodInfo = paymentMethodsData[method as keyof typeof paymentMethodsData];
               const avgTransaction = data.transactions > 0 ? data.amount / data.transactions : 0;
-              const processingFees = method === 'card' ? cardFees : 0;
-              const feeRate = methodInfo.feeRate * 100;
+              
+              // Calculate actual processing fees from payment records
+              let processingFees = 0;
+              if (method === 'card') {
+                // Use actual card_fee from card payments
+                const methodPayments = allPayments.filter((p: any) => {
+                  const pMethod = (p.payment_method || '').toLowerCase();
+                  return pMethod === 'card';
+                });
+                processingFees = methodPayments.reduce((sum: number, p: any) => sum + parseFloat(p.card_fee || 0), 0);
+                // Fallback to calculated fee if no actual fees recorded
+                if (processingFees === 0 && data.amount > 0) {
+                  processingFees = data.amount * cardFeeRate;
+                }
+              }
+              
+              const feeRate = method === 'card' && data.amount > 0 
+                ? (processingFees / data.amount) * 100 
+                : methodInfo.feeRate * 100;
               const netRevenue = data.amount - processingFees;
               
               return {
@@ -14476,11 +14617,13 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               
               monthPayments.forEach((payment: any) => {
                 const method = (payment.payment_method || 'other').toLowerCase();
-                const methodKey = method === 'card' ? 'card'
-                  : method === 'cash' ? 'cash'
-                  : method === 'digital' || method === 'zelle' ? (method === 'zelle' ? 'zelle' : 'digital')
-                  : method === 'check' ? 'check'
-                  : method === 'financing' ? 'financing'
+                // Normalize 'finance' to 'financing' for consistency
+                const normalizedMethod = method === 'finance' ? 'financing' : method;
+                const methodKey = normalizedMethod === 'card' ? 'card'
+                  : normalizedMethod === 'cash' ? 'cash'
+                  : normalizedMethod === 'digital' || normalizedMethod === 'zelle' ? (normalizedMethod === 'zelle' ? 'zelle' : 'digital')
+                  : normalizedMethod === 'check' ? 'check'
+                  : normalizedMethod === 'financing' ? 'financing'
                   : 'other';
                 
                 monthBreakdown[methodKey as keyof typeof monthBreakdown] += parseFloat(payment.amount || 0);
@@ -14509,8 +14652,26 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               });
             }
             
-            // Card fees over time
-            const monthlyCardFees = monthlyPaymentData.map(m => (m.card || 0) * cardFeeRate);
+            // Card fees over time - calculate from actual payment data
+            const monthlyCardFees = monthlyPaymentData.map((m, index) => {
+              const monthIndex = 5 - index; // Reverse index (0 = 5 months ago, 5 = current month)
+              const monthStart = new Date(now.getFullYear(), now.getMonth() - monthIndex, 1);
+              const monthEnd = new Date(now.getFullYear(), now.getMonth() - monthIndex + 1, 0);
+              
+              // Get card payments for this month
+              const monthCardPayments = invoicePayments.filter((payment: any) => {
+                const method = (payment.payment_method || '').toLowerCase();
+                if (method !== 'card') return false;
+                if (!payment.created_at) return false;
+                const paymentDate = new Date(payment.created_at);
+                return paymentDate >= monthStart && paymentDate <= monthEnd;
+              });
+              
+              // Use actual card_fee if available, otherwise calculate
+              const actualFees = monthCardPayments.reduce((sum: number, p: any) => sum + parseFloat(p.card_fee || 0), 0);
+              const monthCardAmount = monthCardPayments.reduce((sum: number, p: any) => sum + parseFloat(p.amount || 0), 0);
+              return actualFees > 0 ? actualFees : monthCardAmount * cardFeeRate;
+            });
             
             // Recent transactions (from actual invoice payments)
             const recentPayments = [...invoicePayments]
@@ -14531,16 +14692,18 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   ? [customer.first_name, customer.last_name, customer.company].filter(Boolean).join(' ') || 'Unknown'
                   : 'Unknown';
                 
-                // Get actual payment method
+                // Get actual payment method and normalize
                 const method = (payment.payment_method || 'card').toLowerCase();
-                const methodName = method === 'card' ? 'Card'
-                  : method === 'cash' ? 'Cash'
-                  : method === 'digital' ? 'Digital Payment'
-                  : method === 'zelle' ? 'Zelle'
-                  : method === 'check' ? 'Check'
-                  : method === 'financing' ? 'Financing Option'
+                // Normalize 'finance' to 'financing' for consistency
+                const normalizedMethod = method === 'finance' ? 'financing' : method;
+                const methodName = normalizedMethod === 'card' ? 'Card'
+                  : normalizedMethod === 'cash' ? 'Cash'
+                  : normalizedMethod === 'digital' ? 'Digital Payment'
+                  : normalizedMethod === 'zelle' ? 'Zelle'
+                  : normalizedMethod === 'check' ? 'Check'
+                  : normalizedMethod === 'financing' ? 'Financing Option'
                   : 'Other';
-                const fee = method === 'card' ? parseFloat(payment.card_fee || 0) : 0;
+                const fee = normalizedMethod === 'card' ? parseFloat(payment.card_fee || 0) : 0;
                 
                 return {
                   id: payment.id || `TXN-${String(1000 + index).padStart(4, '0')}`,
@@ -18984,19 +19147,23 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   Payment Method
                 </label>
                 <div className="grid grid-cols-3 gap-2">
-                  {(['card', 'cash', 'check', 'finance', 'zelle', 'other'] as const).map((method) => (
-                    <button
-                      key={method}
-                      onClick={() => setPaymentFormData(prev => ({ ...prev, method }))}
-                      className={`px-4 py-2 rounded-lg border transition-colors ${
-                        paymentFormData.method === method
-                          ? 'bg-primary-500 text-white border-primary-500'
-                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                      }`}
-                    >
-                      {method.charAt(0).toUpperCase() + method.slice(1)}
-                    </button>
-                  ))}
+                  {(['card', 'cash', 'check', 'finance', 'zelle', 'other'] as const).map((method) => {
+                    // Display label: 'finance' shows as 'Financing'
+                    const displayLabel = method === 'finance' ? 'Financing' : method.charAt(0).toUpperCase() + method.slice(1);
+                    return (
+                      <button
+                        key={method}
+                        onClick={() => setPaymentFormData(prev => ({ ...prev, method }))}
+                        className={`px-4 py-2 rounded-lg border transition-colors ${
+                          paymentFormData.method === method
+                            ? 'bg-primary-500 text-white border-primary-500'
+                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        {displayLabel}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -19879,7 +20046,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       <div className="space-y-3">
                         {invoicePayments.map((payment, index) => {
                           const paymentAmount = payment.amount || 0;
-                          const paymentMethod = payment.payment_method || 'unknown';
+                          const rawPaymentMethod = payment.payment_method || 'unknown';
+                          // Normalize payment method for display (handle both 'finance' and 'financing')
+                          const paymentMethod = rawPaymentMethod === 'finance' ? 'financing' : rawPaymentMethod;
                           const cardFee = payment.card_fee || 0;
                           const baseAmount = paymentAmount - cardFee;
                           
@@ -19892,6 +20061,15 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           const isFullPayment = cumulativePaid >= invoiceTotal - 0.01; // Account for rounding
                           const paymentType = isFullPayment ? 'Full payment' : 'Partial payment';
                           
+                          // Format payment method for display
+                          const displayMethod = paymentMethod === 'card' ? 'Card' :
+                                               paymentMethod === 'cash' ? 'Cash' :
+                                               paymentMethod === 'check' ? 'Check' :
+                                               paymentMethod === 'financing' ? 'Financing' :
+                                               paymentMethod === 'zelle' ? 'Zelle' :
+                                               paymentMethod === 'digital' ? 'Digital' :
+                                               paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1);
+                          
                           return (
                             <div key={payment.id} className="bg-gray-50 rounded-lg p-3 flex items-center justify-between">
                               <div className="flex items-center gap-3 flex-1">
@@ -19899,7 +20077,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                   {formatDateInTimezone(payment.created_at)}
                                 </span>
                                 <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
-                                  {paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1)}
+                                  {displayMethod}
                                 </span>
                                 <span className="text-sm text-gray-600">
                                   {paymentType}
@@ -19921,7 +20099,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       </div>
                     ) : (editingInvoice && editingInvoice.paid_amount && editingInvoice.paid_amount > 0) ? (
                       // Show payment info from invoice if no payment records exist
-                      // Try to infer payment method from card fee or check if there's a payment_method field
+                      // Try to fetch payment method from invoice_payments table first
                       (() => {
                         const invoiceTotal = editingInvoice.total_amount || 0;
                         const paidAmount = editingInvoice.paid_amount || 0;
@@ -19930,22 +20108,33 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         const expectedTotal = subtotal + tax;
                         // If total is more than expected, likely has card fee
                         const hasCardFee = invoiceTotal > expectedTotal * 1.001; // Small tolerance for rounding
-                        // Infer payment method: if there's a card fee, it was likely paid with card
-                        // Otherwise, default to Cash (or try to get from invoice_payments if available)
-                        let paymentMethod = 'cash';
+                        
+                        // Try to get payment method from the most recent payment record
+                        // If invoicePayments is empty but we're here, try to fetch it
+                        let paymentMethod = 'cash'; // Default fallback
                         if (hasCardFee) {
                           paymentMethod = 'card';
+                        } else if (invoicePayments.length > 0) {
+                          // Use the most recent payment method
+                          const latestPayment = invoicePayments[0];
+                          const rawMethod = latestPayment.payment_method || 'cash';
+                          paymentMethod = rawMethod === 'finance' ? 'financing' : rawMethod;
                         } else {
-                          // Try to get payment method from invoice_payments table if available
-                          // For now, if no card fee, assume cash unless we can fetch from payments table
+                          // Last resort: try to infer from invoice or default to cash
                           paymentMethod = (editingInvoice as any).payment_method || 'cash';
+                          if (paymentMethod === 'finance') paymentMethod = 'financing';
                         }
+                        
                         const cardFee = hasCardFee ? invoiceTotal - expectedTotal : 0;
                         const baseAmount = paidAmount - cardFee;
                         
                         // Format payment method for display
                         const displayMethod = paymentMethod === 'card' ? 'Card' : 
-                                             paymentMethod === 'cash' ? 'Cash' : 
+                                             paymentMethod === 'cash' ? 'Cash' :
+                                             paymentMethod === 'check' ? 'Check' :
+                                             paymentMethod === 'financing' ? 'Financing' :
+                                             paymentMethod === 'zelle' ? 'Zelle' :
+                                             paymentMethod === 'digital' ? 'Digital' :
                                              paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1);
                         
                         return (
