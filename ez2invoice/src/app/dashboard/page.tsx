@@ -1051,16 +1051,18 @@ export default function Dashboard() {
   const [selectedCustomerFleetTrucks, setSelectedCustomerFleetTrucks] = useState<any[]>([]);
   const [selectedFleetTruck, setSelectedFleetTruck] = useState<string>('');
   
-  // Customer search for work order creation
-  const [customerSearchQuery, setCustomerSearchQuery] = useState('');
-  const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
-  const [invoiceCustomerSearch, setInvoiceCustomerSearch] = useState('');
-  const [showInvoiceCustomerDropdown, setShowInvoiceCustomerDropdown] = useState(false);
-  const [creatingCustomerFromInvoice, setCreatingCustomerFromInvoice] = useState(false);
-  const [creatingPartFromInvoice, setCreatingPartFromInvoice] = useState(false);
-  const [creatingPartForLineItem, setCreatingPartForLineItem] = useState<number | null>(null);
-  const [estimateCustomerSearch, setEstimateCustomerSearch] = useState('');
-  const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState(false);
+// Customer search for work order creation
+const [customerSearchQuery, setCustomerSearchQuery] = useState('');
+const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
+const [invoiceCustomerSearch, setInvoiceCustomerSearch] = useState('');
+const [showInvoiceCustomerDropdown, setShowInvoiceCustomerDropdown] = useState(false);
+const [creatingCustomerFromInvoice, setCreatingCustomerFromInvoice] = useState(false);
+const [creatingPartFromInvoice, setCreatingPartFromInvoice] = useState(false);
+const [creatingPartForLineItem, setCreatingPartForLineItem] = useState<number | null>(null);
+const [creatingLaborFromInvoice, setCreatingLaborFromInvoice] = useState(false);
+const [creatingLaborForLineItem, setCreatingLaborForLineItem] = useState<number | null>(null);
+const [estimateCustomerSearch, setEstimateCustomerSearch] = useState('');
+const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState(false);
 
   // Function to reset form data when opening new work order modal
   const resetWorkOrderForm = () => {
@@ -19045,8 +19047,8 @@ export default function Dashboard() {
                                         return null;
                                       })()}
                                     </div>
-                                  </div>
-                                ))}
+                              </div>
+                            ))}
                                 {(item.item_type === 'labor' ? filteredLaborItems : filteredParts).length === 0 && (
                                   item.item_type === 'part' ? (
                                     <div className="px-3 py-2">
@@ -19078,6 +19080,31 @@ export default function Dashboard() {
                                       >
                                         <Plus className="h-4 w-4" />
                                         Create New Part
+                                      </button>
+                                    </div>
+                                  ) : item.item_type === 'labor' ? (
+                                    <div className="px-3 py-2">
+                                      <div className="text-sm text-gray-500 mb-2">No labor items found</div>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          setCreatingLaborFromInvoice(true);
+                                          setCreatingLaborForLineItem(idx);
+
+                                          // Pre-populate labor form with search query
+                                          const searchQuery = searchTerm.trim();
+                                          if (searchQuery) {
+                                            setLaborForm(prev => ({ ...prev, service_name: searchQuery }));
+                                          }
+
+                                          setShowAddLaborModal(true);
+                                        }}
+                                        className="w-full px-3 py-1.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
+                                      >
+                                        <Plus className="h-4 w-4" />
+                                        Create New Labor
                                       </button>
                                     </div>
                                   ) : (
@@ -21314,6 +21341,8 @@ export default function Dashboard() {
                 setShowAddLaborModal(false);
                 setLaborCategorySearch('');
                 setShowLaborCategoryDropdown(false);
+                setCreatingLaborFromInvoice(false);
+                setCreatingLaborForLineItem(null);
               }} className="text-gray-400 hover:text-gray-600"><X className="h-6 w-6"/></button>
             </div>
             <div className="p-6 space-y-6">
@@ -21467,6 +21496,8 @@ export default function Dashboard() {
                 setShowAddLaborModal(false);
                 setLaborCategorySearch('');
                 setShowLaborCategoryDropdown(false);
+                setCreatingLaborFromInvoice(false);
+                setCreatingLaborForLineItem(null);
               }} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
               <button onClick={async ()=>{
                 if(!laborForm.service_name.trim()){ console.warn('Service name is required'); return; }
@@ -21524,11 +21555,55 @@ export default function Dashboard() {
                   return;
                 }
                 
-                if(data){
+                if (data) {
+                  const newLabor: any = Array.isArray(data) ? data[0] : data;
+
+                  // If we came here from the invoice "Create New Labor" flow, auto-select the new labor item
+                  if (creatingLaborFromInvoice && creatingLaborForLineItem !== null && newLabor) {
+                    let finalRate = typeof newLabor.rate === 'number' ? newLabor.rate : Number(newLabor.rate) || 0;
+
+                    // Apply any fleet discount for this labor item
+                    const discount = invoiceCustomerDiscounts.find(d =>
+                      d.scope === 'labor' && d.labor_item_id === newLabor.id
+                    );
+
+                    if (discount) {
+                      if (discount.percent_off && discount.percent_off > 0) {
+                        finalRate = finalRate * (1 - discount.percent_off / 100);
+                      } else if (discount.fixed_amount && discount.fixed_amount > 0) {
+                        finalRate = Math.max(0, finalRate - discount.fixed_amount);
+                      }
+                    }
+
+                    const lineIndex = creatingLaborForLineItem;
+                    setInvoiceLineItems(prev =>
+                      prev.map((line, i) => {
+                        if (i !== lineIndex) return line;
+                        const quantity = line.quantity || 1;
+                        const totalPrice = +(quantity * finalRate).toFixed(2);
+                        return {
+                          ...line,
+                          item_type: 'labor',
+                          reference_id: newLabor.id,
+                          description: newLabor.description || newLabor.service_name || '',
+                          unit_price: finalRate,
+                          total_price: totalPrice,
+                        };
+                      })
+                    );
+
+                    setInvoiceItemSearch(prev => ({
+                      ...prev,
+                      [lineIndex]: newLabor.service_name || '',
+                    }));
+                  }
+
                   setShowAddLaborModal(false);
                   setLaborForm({ service_name:'', category:'', description:'', rate_type:'hourly', rate:0, est_hours:'' });
                   setLaborCategorySearch('');
                   setShowLaborCategoryDropdown(false);
+                  setCreatingLaborFromInvoice(false);
+                  setCreatingLaborForLineItem(null);
                   fetchLaborItems();
                 }
               }} className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600">Create Labor Item</button>
