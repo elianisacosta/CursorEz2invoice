@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 
@@ -1611,6 +1611,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
     due_date?: string;
     paid_amount?: number | null;
     paid_at?: string | null;
+    /** From invoice_balances_v: total - paid, >= 0 */
+    balance_due?: number | null;
+    /** From invoice_balances_v: Paid | Partial | Unpaid | Draft | void/cancelled */
+    computed_status?: string | null;
     customer_id?: string;
     shop_id?: string;
     work_order_id?: string | null;
@@ -1978,22 +1982,17 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
   };
   useEffect(()=>{ fetchEstimates(); },[]);
 
-  // Fetch invoices from Supabase
+  // Fetch invoices from Supabase (invoice_balances_v = single source of truth for paid_amount, balance_due, computed_status)
   const fetchInvoices = async () => {
     setInvoicesLoading(true);
     try {
       const shopId = await getShopId();
+      // Use view for balance consistency; fallback to invoices if view doesn't exist yet
       let query = supabase
-        .from('invoices')
-        .select(`
-          *,
-          customer:customers(id, first_name, last_name, email, phone, company)
-        `)
+        .from('invoice_balances_v')
+        .select('*')
         .order('created_at', { ascending: false });
-      
-      // Filter by shop_id if available
-      // For founders: includes data with shop_id OR shop_id IS NULL (to get old data)
-      // For regular users: only includes data with matching shop_id
+
       if (shopId) {
         if (isFounder) {
           query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
@@ -2001,30 +2000,71 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
           query = query.eq('shop_id', shopId);
         }
       }
-      
-      const { data, error } = await query;
-      
-      if (data) setInvoices(data as unknown as Invoice[]);
 
-      if (error) {
-        const errorStringified = JSON.stringify(error);
+      const { data: viewData, error: viewError } = await query;
+
+      if (viewError) {
+        const code = (viewError as any)?.code || '';
+        const msg = (viewError as any)?.message || '';
+        const isViewMissing = code === '42P01' || code === 'PGRST116' || /relation "invoice_balances_v" does not exist/i.test(msg);
+        if (isViewMissing) {
+          // Fallback: fetch from invoices (pre-view behavior)
+          let fallbackQuery = supabase
+            .from('invoices')
+            .select('*, customer:customers(id, first_name, last_name, email, phone, company)')
+            .order('created_at', { ascending: false });
+          if (shopId) {
+            if (isFounder) fallbackQuery = fallbackQuery.or(`shop_id.eq.${shopId},shop_id.is.null`);
+            else fallbackQuery = fallbackQuery.eq('shop_id', shopId);
+          }
+          const { data: invData, error: invError } = await fallbackQuery;
+          if (!invError && invData) {
+            setInvoices(invData as unknown as Invoice[]);
+          }
+          setInvoicesLoading(false);
+          return;
+        }
+      }
+
+      if (viewData && viewData.length >= 0) {
+        const customerIds = [...new Set((viewData as any[]).map((r: any) => r.customer_id).filter(Boolean))] as string[];
+        let customerMap: Record<string, Invoice['customer']> = {};
+        if (customerIds.length > 0) {
+          const { data: customers } = await supabase
+            .from('customers')
+            .select('id, first_name, last_name, email, phone, company')
+            .in('id', customerIds);
+          if (customers) {
+            customerMap = (customers as any[]).reduce((acc, c) => ({ ...acc, [c.id]: c }), {});
+          }
+        }
+        const invoicesWithCustomer: Invoice[] = (viewData as any[]).map((row: any) => ({
+          ...row,
+          customer: row.customer_id ? customerMap[row.customer_id] ?? null : null
+        }));
+        setInvoices(invoicesWithCustomer);
+      } else if (viewError) {
+        throw viewError;
+      }
+
+      if (viewError) {
+        const errorStringified = JSON.stringify(viewError);
         const isEmptyErrorObject = errorStringified === '{}' || errorStringified === 'null';
-        const errorCode = (error as any)?.code || '';
-        const errorMessage = (error as any)?.message || '';
+        const errorCode = (viewError as any)?.code || '';
+        const errorMessage = (viewError as any)?.message || '';
         const hasTableNotFoundError =
           errorCode === 'PGRST116' ||
+          errorMessage.includes('relation "invoice_balances_v" does not exist') ||
           errorMessage.includes('relation "invoices" does not exist') ||
           errorMessage.includes('table "invoices" does not exist') ||
           errorCode === '42P01';
-        
-        const isActuallyEmpty = isEmptyErrorObject || (!errorCode && !errorMessage && Object.keys(error as any).length === 0);
-        
+        const isActuallyEmpty = isEmptyErrorObject || (!errorCode && !errorMessage && Object.keys(viewError as any).length === 0);
         if (isActuallyEmpty || hasTableNotFoundError) {
-          // Silently handle empty errors and table-not-found errors
+          // Silently handle empty errors and table/view-not-found errors
         } else {
           const hasMeaningfulError = errorCode || (errorMessage && errorMessage.trim().length > 0);
           if (hasMeaningfulError) {
-            console.error('Error fetching invoices:', error);
+            console.error('Error fetching invoices:', viewError);
           }
         }
       }
@@ -2408,52 +2448,50 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
       // Calculate total card fees
       const totalCardFees = payments.reduce((sum, p) => sum + (Number(p.card_fee) || 0), 0);
 
-      // Fetch item names for line items that have reference_id
+      // Fetch item display for print: for parts Item=part_number, Description=parts.description; for labor Item=service_name, Description=description
       const lineItemsWithNames = lineItems && lineItems.length > 0
         ? await Promise.all(
             lineItems.map(async (item: any) => {
-              let itemName = item.description || '';
-              
-              // Try to get item name from reference if available
-              // Check if reference_id exists (it might not if the column wasn't added yet)
+              let itemDisplay = item.description || '';
+              let descDisplay = item.description || '';
+              const itemType = (item.item_type || 'labor').toLowerCase();
+
               if (item.reference_id) {
                 try {
-                  const itemType = (item.item_type || '').toLowerCase();
                   if (itemType === 'labor') {
                     const { data: laborItem, error: laborError } = await supabase
                       .from('labor_items')
-                      .select('service_name')
+                      .select('service_name, description')
                       .eq('id', item.reference_id)
                       .single();
-                    if (!laborError && laborItem?.service_name) {
-                      itemName = laborItem.service_name;
+                    if (!laborError && laborItem) {
+                      itemDisplay = laborItem.service_name || item.description || 'Labor';
+                      descDisplay = laborItem.description || item.description || '';
                     }
                   } else if (itemType === 'part') {
                     const { data: partItem, error: partError } = await supabase
                       .from('parts')
-                      .select('part_name')
+                      .select('part_number, part_name, description')
                       .eq('id', item.reference_id)
                       .single();
-                    if (!partError && partItem?.part_name) {
-                      itemName = partItem.part_name;
+                    if (!partError && partItem) {
+                      itemDisplay = partItem.part_number || partItem.part_name || item.description || 'Part';
+                      descDisplay = partItem.description || partItem.part_name || item.description || '';
                     }
                   }
                 } catch (err) {
-                  // If fetch fails, use description
-                  console.log('Could not fetch item name for reference_id:', item.reference_id, err);
+                  console.log('Could not fetch item for reference_id:', item.reference_id, err);
                 }
               }
-              
-              // If we still don't have an item name, use description
-              if (!itemName || itemName.trim() === '') {
-                itemName = item.description || 'Item';
-              }
-              
-              return { 
-                ...item, 
-                itemName,
+
+              if (!itemDisplay || itemDisplay.trim() === '') itemDisplay = item.description || 'Item';
+              if (!descDisplay || descDisplay.trim() === '') descDisplay = item.description || itemDisplay;
+
+              return {
+                ...item,
+                itemDisplay,
+                descDisplay,
                 item_type: item.item_type || 'labor',
-                description: item.description || itemName,
                 quantity: Number(item.quantity) || 1,
                 unit_price: Number(item.unit_price) || 0,
                 total_price: Number(item.total_price) || 0
@@ -2462,19 +2500,18 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
           )
         : [];
 
-      // Build line items HTML
+      // Build line items HTML (TYPE, ITEM, DESCRIPTION, QTY, PRICE, TOTAL — no separate Part Number column)
       const lineItemsHtml = lineItemsWithNames && lineItemsWithNames.length > 0
         ? lineItemsWithNames.map((item: any) => {
             const itemType = item.item_type || 'labor';
             const displayType = itemType.toLowerCase() === 'labor' ? 'Labor' : itemType.toLowerCase() === 'part' ? 'Part' : 'Service';
-            const itemName = item.itemName || item.description || 'Item';
-            const itemDescription = item.description || itemName;
-            
+            const itemDisplayVal = item.itemDisplay || item.description || 'Item';
+            const descDisplayVal = item.descDisplay || item.description || itemDisplayVal;
             return `
               <tr>
                 <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${displayType}</td>
-                <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${itemName}</td>
-                <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${itemDescription}</td>
+                <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${itemDisplayVal}</td>
+                <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${descDisplayVal}</td>
                 <td style="padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: right;">${Number(item.quantity) || 1}</td>
                 <td style="padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: right;">$${Number(item.unit_price || 0).toFixed(2)}</td>
                 <td style="padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: right;">$${Number(item.total_price || 0).toFixed(2)}</td>
@@ -3148,7 +3185,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
     const taxAmount = invoice.tax_amount || 0;
     const total = invoice.total_amount || 0;
     const paidAmount = invoice.paid_amount || 0;
-    const balanceDue = total - paidAmount;
+    const balanceDue = invoice.balance_due != null ? Math.max(0, Number(invoice.balance_due)) : Math.max(0, total - paidAmount);
+    const statusLabel = (invoice.computed_status || invoice.status || 'Pending').toString();
+    const statusDisplay = statusLabel.charAt(0).toUpperCase() + statusLabel.slice(1).toLowerCase();
 
     // Get shop information for email
     const shopId = await getShopId();
@@ -3243,7 +3282,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
         ` : ''}
 
         <div style="background-color: #eff6ff; padding: 15px; border-radius: 8px; margin-top: 20px; border-left: 4px solid #2563eb;">
-          <p style="margin: 0;"><strong>Status:</strong> ${invoice.status.charAt(0).toUpperCase() + invoice.status.slice(1)}</p>
+          <p style="margin: 0;"><strong>Status:</strong> ${statusDisplay}</p>
           ${balanceDue > 0 ? `<p style="margin: 10px 0 0 0;">Please remit payment of <strong>$${balanceDue.toFixed(2)}</strong> by ${dueDate}.</p>` : '<p style="margin: 10px 0 0 0;">This invoice has been paid in full. Thank you!</p>'}
         </div>
 
@@ -4600,17 +4639,16 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
         : '';
       const totalAmount = invoice.total_amount || 0;
       const paidAmount = invoice.paid_amount || 0;
-      const balanceDue = totalAmount - paidAmount;
-      
-      // Determine status
-      let status = invoice.status || 'pending';
+      const balanceDue = invoice.balance_due != null ? Number(invoice.balance_due) : Math.max(0, totalAmount - paidAmount);
+      // Use computed_status from view when present, else derive
+      let status = (invoice.computed_status ?? '').toLowerCase() || invoice.status || 'pending';
       if (totalAmount === 0) {
         status = 'pending';
       } else if (balanceDue <= 0.01) {
         status = 'paid';
       } else if (paidAmount > 0) {
         status = 'partial';
-      } else {
+      } else if (!status || status === 'pending') {
         status = 'unpaid';
       }
 
@@ -6769,6 +6807,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
   };
 
   const getInvoiceOutstandingAmount = (invoice: Invoice): number => {
+    if (invoice.balance_due != null && invoice.balance_due !== undefined) {
+      return Number(invoice.balance_due);
+    }
     const total = invoice.total_amount || 0;
     const paid = invoice.paid_amount || 0;
     return Math.max(0, total - paid);
@@ -6845,6 +6886,47 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
     '31-90': 0,
     '90+': 0
   });
+
+  // Filtered invoices for list + summary (respects search and status filter)
+  const filteredInvoicesForList = useMemo(() => {
+    return invoices.filter((invoice) => {
+      const customerName = getInvoiceCustomerName(invoice);
+      let matchesSearch = true;
+      if (invoiceSearchQuery) {
+        const searchQuery = invoiceSearchQuery.toLowerCase().trim();
+        matchesSearch = false;
+        if (formatInvoiceNumber(invoice.invoice_number).toLowerCase().includes(searchQuery)) matchesSearch = true;
+        if (!matchesSearch && customerName.toLowerCase().includes(searchQuery)) matchesSearch = true;
+        if (!matchesSearch && getWorkOrderNumber(invoice.work_order_id).toLowerCase().includes(searchQuery)) matchesSearch = true;
+        if (!matchesSearch && invoice.customer?.phone) {
+          const normalizePhone = (p: string) => p.replace(/\D/g, '');
+          const normalizedPhone = normalizePhone(invoice.customer.phone).toLowerCase();
+          const normalizedSearch = normalizePhone(searchQuery);
+          if (normalizedPhone.includes(normalizedSearch) || normalizedSearch.includes(normalizedPhone)) matchesSearch = true;
+        }
+        if (!matchesSearch && (invoice.notes || '').toLowerCase().includes(searchQuery)) matchesSearch = true;
+      }
+      const status = (invoice.computed_status ?? '').toLowerCase() || (() => {
+        const total = invoice.total_amount || 0;
+        const paid = invoice.paid_amount || 0;
+        const bal = (invoice.balance_due != null ? Number(invoice.balance_due) : total - paid);
+        if (total <= 0) return 'pending';
+        if (bal <= 0.01) return 'paid';
+        if (paid > 0.01) return 'partial';
+        return 'unpaid';
+      })();
+      let matchesStatus = true;
+      if (invoiceStatusFilter !== 'All Status') {
+        if (invoiceStatusFilter === 'Pending') matchesStatus = status === 'pending';
+        else if (invoiceStatusFilter === 'Unpaid') matchesStatus = status === 'pending' || status === 'unpaid';
+        else if (invoiceStatusFilter === 'Paid') matchesStatus = status === 'paid';
+        else if (invoiceStatusFilter === 'Sent') matchesStatus = status === 'sent';
+        else if (invoiceStatusFilter === 'Partial') matchesStatus = status === 'partial';
+        else if (invoiceStatusFilter === 'Overdue') matchesStatus = status === 'overdue';
+      }
+      return matchesSearch && matchesStatus;
+    });
+  }, [invoices, invoiceSearchQuery, invoiceStatusFilter]);
 
   const navigationItems = [
     { id: 'overview', name: 'Overview', icon: LayoutDashboard },
@@ -12138,29 +12220,36 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
           {/* Invoices Tab Content */}
           {activeTab === 'invoices' && (
             <div className="space-y-6">
-              {/* Invoice Stats */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {/* Invoice Stats (respects current search/status filter) */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-2xl font-bold text-gray-900">
-                    {formatCurrency(invoices.reduce((sum, inv) => sum + ((inv.paid_amount || 0)), 0))}
+                    {formatCurrency(filteredInvoicesForList.reduce((sum, inv) => sum + (inv.total_amount || 0), 0))}
                   </div>
-                  <div className="text-sm text-gray-600">Total Revenue</div>
+                  <div className="text-sm text-gray-600">Total</div>
+                </div>
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                  <div className="text-2xl font-bold text-green-700">
+                    {formatCurrency(filteredInvoicesForList.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0))}
+                  </div>
+                  <div className="text-sm text-gray-600">Paid</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-2xl font-bold text-red-600">
-                    {invoices.filter(inv => {
-                      // Use calculated outstanding amount instead of raw status
+                    {formatCurrency(filteredInvoicesForList.reduce((sum, inv) => sum + (getInvoiceOutstandingAmount(inv)), 0))}
+                  </div>
+                  <div className="text-sm text-gray-600">Outstanding</div>
+                </div>
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                  <div className="text-2xl font-bold text-red-600">
+                    {filteredInvoicesForList.filter(inv => {
                       const outstanding = getInvoiceOutstandingAmount(inv);
-                      if (outstanding <= 0.01) return false; // treated as fully paid
+                      if (outstanding <= 0.01) return false;
                       if (!inv.due_date) return false;
                       return new Date(inv.due_date) < new Date();
                     }).length}
                   </div>
                   <div className="text-sm text-gray-600">Overdue</div>
-                </div>
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                  <div className="text-2xl font-bold text-gray-900">{invoices.length}</div>
-                  <div className="text-sm text-gray-600">Total Invoices</div>
                 </div>
               </div>
 
@@ -12245,12 +12334,14 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     </div>
                   ) : (
                     <div className="min-w-0 overflow-x-auto">
-                      {/* Table Header - Desktop Only */}
-                      <div className="hidden md:grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4 min-w-0" style={{ gridTemplateColumns: 'minmax(130px, 1.3fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
+                      {/* Table Header - Desktop Only (Total | Paid | Balance Due) */}
+                      <div className="hidden md:grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4 min-w-0" style={{ gridTemplateColumns: 'minmax(130px, 1.3fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr) minmax(90px, 1fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
                         <div className="min-w-0">Invoice ID</div>
                         <div className="min-w-0">Customer</div>
                         <div className="min-w-0">Work Order</div>
-                        <div className="min-w-0">Amount</div>
+                        <div className="min-w-0 text-right">Total</div>
+                        <div className="min-w-0 text-right">Paid</div>
+                        <div className="min-w-0 text-right">Balance Due</div>
                         <div className="min-w-0">Status</div>
                         <div className="min-w-0">Date</div>
                         <div className="min-w-0">Due Date</div>
@@ -12260,99 +12351,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       {/* Invoice List */}
                       <div className="space-y-3">
                         {(() => {
-                          const filteredInvoices = invoices.filter((invoice) => {
-                            const customerName = getInvoiceCustomerName(invoice);
-                            
-                            // Search filter
-                            let matchesSearch = true;
-                            if (invoiceSearchQuery) {
-                              const searchQuery = invoiceSearchQuery.toLowerCase().trim();
-                              matchesSearch = false;
-                              
-                              // Search by invoice number
-                              if (formatInvoiceNumber(invoice.invoice_number).toLowerCase().includes(searchQuery)) {
-                                matchesSearch = true;
-                              }
-                              
-                              // Search by customer name
-                              if (!matchesSearch && customerName.toLowerCase().includes(searchQuery)) {
-                                matchesSearch = true;
-                              }
-                              
-                              // Search by work order number
-                              if (!matchesSearch && getWorkOrderNumber(invoice.work_order_id).toLowerCase().includes(searchQuery)) {
-                                matchesSearch = true;
-                              }
-                              
-                              // Search by phone number
-                              if (!matchesSearch) {
-                                const customerPhone = invoice.customer?.phone || '';
-                                if (customerPhone) {
-                                  // Remove all non-digit characters for comparison
-                                  const normalizePhone = (p: string) => p.replace(/\D/g, '');
-                                  const normalizedPhone = normalizePhone(customerPhone).toLowerCase();
-                                  const normalizedSearch = normalizePhone(searchQuery);
-                                  
-                                  if (normalizedPhone.includes(normalizedSearch) || normalizedSearch.includes(normalizedPhone)) {
-                                    matchesSearch = true;
-                                  }
-                                }
-                              }
-                              
-                              // Search by notes
-                              if (!matchesSearch) {
-                                const invoiceNotes = invoice.notes || '';
-                                if (invoiceNotes.toLowerCase().includes(searchQuery)) {
-                                  matchesSearch = true;
-                                }
-                              }
-                            }
-                            
-                            // Calculate actual status based on paid_amount vs total_amount for filtering
-                            const totalAmount = invoice.total_amount || 0;
-                            const paidAmount = invoice.paid_amount || 0;
-                            const balanceDue = totalAmount - paidAmount;
-                            
-                            // Determine status based on payment amounts (prioritize calculated status over database status)
-                            let calculatedStatus: string;
-                            if (totalAmount === 0) {
-                              // Invoice with $0 total is always pending
-                              calculatedStatus = 'pending';
-                            } else if (balanceDue <= 0.01) {
-                              // Fully paid (balance due is $0 or less, accounting for rounding)
-                              calculatedStatus = 'paid';
-                            } else if (paidAmount > 0) {
-                              // Partially paid
-                              calculatedStatus = 'partial';
-                            } else {
-                              // Not paid yet
-                              calculatedStatus = 'unpaid';
-                            }
-                            
-                            // Status filter - use calculated status
-                            const invoiceStatus = (calculatedStatus || 'pending').toLowerCase();
-                            let matchesStatus = true;
-                            
-                            if (invoiceStatusFilter !== 'All Status') {
-                              if (invoiceStatusFilter === 'Pending') {
-                                matchesStatus = invoiceStatus === 'pending';
-                              } else if (invoiceStatusFilter === 'Unpaid') {
-                                matchesStatus = invoiceStatus === 'pending' || invoiceStatus === 'unpaid';
-                              } else if (invoiceStatusFilter === 'Paid') {
-                                matchesStatus = invoiceStatus === 'paid';
-                              } else if (invoiceStatusFilter === 'Sent') {
-                                matchesStatus = invoiceStatus === 'sent';
-                              } else if (invoiceStatusFilter === 'Partial') {
-                                matchesStatus = invoiceStatus === 'partial';
-                              } else if (invoiceStatusFilter === 'Overdue') {
-                                matchesStatus = invoiceStatus === 'overdue';
-                              }
-                            }
-                            
-                            return matchesSearch && matchesStatus;
-                          });
-                          
-                          if (filteredInvoices.length === 0) {
+                          if (filteredInvoicesForList.length === 0) {
                             return (
                               <div className="text-center py-12">
                                 <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
@@ -12366,30 +12365,15 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                             );
                           }
                           
-                          return filteredInvoices.map((invoice) => {
+                          return filteredInvoicesForList.map((invoice) => {
                             const customerName = getInvoiceCustomerName(invoice);
-                            
-                            // Calculate actual status based on paid_amount vs total_amount
-                            // This ensures the status is always accurate even if the database status field is stale
                             const totalAmount = invoice.total_amount || 0;
                             const paidAmount = invoice.paid_amount || 0;
-                            const balanceDue = totalAmount - paidAmount;
-                            
-                            // Determine status based on payment amounts (prioritize calculated status over database status)
-                            let displayStatus: string;
-                            if (totalAmount === 0) {
-                              // Invoice with $0 total is always pending
-                              displayStatus = 'pending';
-                            } else if (balanceDue <= 0.01) {
-                              // Fully paid (balance due is $0 or less, accounting for rounding)
-                              displayStatus = 'paid';
-                            } else if (paidAmount > 0) {
-                              // Partially paid
-                              displayStatus = 'partial';
-                            } else {
-                              // Not paid yet
-                              displayStatus = 'unpaid';
-                            }
+                            const balanceDue = invoice.balance_due != null ? Number(invoice.balance_due) : Math.max(0, totalAmount - paidAmount);
+                            // Use computed_status from view when present, else derive
+                            const displayStatus = (invoice.computed_status ?? '').toLowerCase() || (
+                              totalAmount <= 0 ? 'pending' : balanceDue <= 0.01 ? 'paid' : paidAmount > 0 ? 'partial' : 'unpaid'
+                            );
                             
                             const statusColors: { [key: string]: string } = {
                             paid: 'bg-green-100 text-green-800', // 🟢 Paid - Green (completed/success)
@@ -12413,8 +12397,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                     <div className="text-sm text-gray-600 font-medium">{customerName}</div>
                                   </div>
                                   <div className="text-right">
-                                    <div className="font-semibold text-gray-900 text-lg mb-1">
-                                      {formatCurrency(Math.max(0, (invoice.total_amount || 0) - (invoice.paid_amount || 0)))}
+                                    <div className="text-xs text-gray-500 space-y-0.5 mb-1">
+                                      <div>Total {formatCurrency(invoice.total_amount ?? 0)} · Paid {formatCurrency(invoice.paid_amount ?? 0)} · Due {formatCurrency(balanceDue)}</div>
                                     </div>
                                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColors[displayStatus as keyof typeof statusColors] || 'bg-gray-100 text-gray-800'}`}>
                                       {displayStatus ? displayStatus.charAt(0).toUpperCase() + displayStatus.slice(1) : 'Pending'}
@@ -12659,8 +12643,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                 </div>
                               </div>
 
-                              {/* Desktop Table View */}
-                              <div className="hidden md:grid gap-4 items-center py-3 border-b border-gray-100 hover:bg-gray-50 min-w-0" style={{ gridTemplateColumns: 'minmax(130px, 1.3fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
+                              {/* Desktop Table View (Total | Paid | Balance Due) */}
+                              <div className="hidden md:grid gap-4 items-center py-3 border-b border-gray-100 hover:bg-gray-50 min-w-0" style={{ gridTemplateColumns: 'minmax(130px, 1.3fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr) minmax(90px, 1fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
                                 <div className="font-medium text-gray-900 min-w-0 truncate">
                                   {formatInvoiceNumber(invoice.invoice_number)}
                                 </div>
@@ -12670,8 +12654,14 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                 <div className="text-sm text-gray-600 min-w-0 truncate">
                                   {getWorkOrderNumber(invoice.work_order_id)}
                                 </div>
-                                <div className="font-semibold text-gray-900 min-w-0 whitespace-nowrap">
-                                  {formatCurrency(Math.max(0, (invoice.total_amount || 0) - (invoice.paid_amount || 0)))}
+                                <div className="font-medium text-gray-900 min-w-0 whitespace-nowrap text-right">
+                                  {formatCurrency(invoice.total_amount ?? 0)}
+                                </div>
+                                <div className="font-medium text-green-700 min-w-0 whitespace-nowrap text-right">
+                                  {formatCurrency(invoice.paid_amount ?? 0)}
+                                </div>
+                                <div className="font-semibold text-gray-900 min-w-0 whitespace-nowrap text-right">
+                                  {formatCurrency(balanceDue)}
                                 </div>
                                 <div className="min-w-0 flex items-center">
                                   <span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${statusColors[displayStatus as keyof typeof statusColors] || 'bg-gray-100 text-gray-800'}`}>
@@ -12987,7 +12977,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                               <th className="px-6 py-3 text-left">Customer</th>
                               <th className="px-6 py-3 text-left">Date</th>
                               <th className="px-6 py-3 text-left">Due Date</th>
-                              <th className="px-6 py-3 text-right">Amount</th>
+                              <th className="px-6 py-3 text-right">Total</th>
+                              <th className="px-6 py-3 text-right">Paid</th>
                               <th className="px-6 py-3 text-right">Outstanding</th>
                               <th className="px-6 py-3 text-left">Aging</th>
                             </tr>
@@ -13021,7 +13012,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                       : 'No due date'}
                                   </td>
                                   <td className="px-6 py-4 text-right font-medium text-gray-900">
-                                    {formatCurrency(invoice.total_amount || 0)}
+                                    {formatCurrency(invoice.total_amount ?? 0)}
+                                  </td>
+                                  <td className="px-6 py-4 text-right text-green-700">
+                                    {formatCurrency(invoice.paid_amount ?? 0)}
                                   </td>
                                   <td className="px-6 py-4 text-right text-gray-900 font-semibold">
                                     {formatCurrency(outstandingAmount)}
@@ -14102,9 +14096,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   ? [customer.first_name, customer.last_name, customer.company].filter(Boolean).join(' ') || 'Unknown'
                   : 'Unknown';
                 
-                // Determine status based on outstanding amount and due date
+                // Use computed_status from view when present, else derive from outstanding and due date
                 const outstanding = getInvoiceOutstandingAmount(inv);
-                let status = 'unpaid';
+                let status = (inv.computed_status ?? '').toLowerCase() || 'unpaid';
                 if (outstanding <= 0.01) {
                   status = 'paid';
                 } else if (inv.due_date && new Date(inv.due_date) < now) {
@@ -14819,7 +14813,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
             const customerSpending = customers.map(c => {
               const customerInvoices = invoices.filter(inv => inv.customer_id === c.id);
               const totalSpent = customerInvoices
-                .filter(inv => inv.status === 'paid')
+                .filter(inv => getInvoiceOutstandingAmount(inv) <= 0.01)
                 .reduce((sum, inv) => sum + (inv.total_amount || 0), 0);
               return { customer: c, totalSpent, invoiceCount: customerInvoices.length };
             });
@@ -14830,7 +14824,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               .filter(cs => {
                 const lastYearInvoices = invoices.filter(inv => 
                   inv.customer_id === cs.customer.id && 
-                  inv.status === 'paid' &&
+                  getInvoiceOutstandingAmount(inv) <= 0.01 &&
                   inv.paid_at && 
                   new Date(inv.paid_at) >= lastYear && 
                   new Date(inv.paid_at) < thisMonthStart
@@ -14840,7 +14834,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               .map(cs => {
                 const lastYearInvoices = invoices.filter(inv => 
                   inv.customer_id === cs.customer.id && 
-                  inv.status === 'paid' &&
+                  getInvoiceOutstandingAmount(inv) <= 0.01 &&
                   inv.paid_at && 
                   new Date(inv.paid_at) >= lastYear && 
                   new Date(inv.paid_at) < thisMonthStart
@@ -14971,10 +14965,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 const last30Days = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
                 const last60Days = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
                 const recentSpending = customerInvoices
-                  .filter(inv => inv.status === 'paid' && inv.paid_at && new Date(inv.paid_at) >= last30Days)
+                  .filter(inv => getInvoiceOutstandingAmount(inv) <= 0.01 && inv.paid_at && new Date(inv.paid_at) >= last30Days)
                   .reduce((sum, inv) => sum + (inv.total_amount || 0), 0);
                 const previousSpending = customerInvoices
-                  .filter(inv => inv.status === 'paid' && inv.paid_at && new Date(inv.paid_at) >= last60Days && new Date(inv.paid_at) < last30Days)
+                  .filter(inv => getInvoiceOutstandingAmount(inv) <= 0.01 && inv.paid_at && new Date(inv.paid_at) >= last60Days && new Date(inv.paid_at) < last30Days)
                   .reduce((sum, inv) => sum + (inv.total_amount || 0), 0);
                 const trend = recentSpending > previousSpending ? 'up' : recentSpending < previousSpending ? 'down' : 'neutral';
                 
@@ -16742,7 +16736,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     const matchingWorkOrderIds = matching.map(wo => wo.id);
                     const matchingInvoices = invoices.filter(inv => 
                       inv.work_order_id && matchingWorkOrderIds.includes(inv.work_order_id) &&
-                      inv.status === 'paid'
+                      getInvoiceOutstandingAmount(inv) <= 0.01
                     );
                     const revenue = matchingInvoices.reduce((sum, inv) => sum + (inv.total_amount || 0), 0);
 
