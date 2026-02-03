@@ -46,14 +46,14 @@ export default function Footer() {
             </h3>
             <ul className="space-y-3">
               <li>
-                <a href="#terms" className="text-gray-600 hover:text-primary-500 transition-colors">
+                <Link href="/terms" className="text-gray-600 hover:text-primary-500 smooth-transition" prefetch={true}>
                   Terms
-                </a>
+                </Link>
               </li>
               <li>
-                <a href="#privacy" className="text-gray-600 hover:text-primary-500 transition-colors">
+                <Link href="/privacy" className="text-gray-600 hover:text-primary-500 smooth-transition" prefetch={true}>
                   Privacy
-                </a>
+                </Link>
               </li>
             </ul>
           </div>
