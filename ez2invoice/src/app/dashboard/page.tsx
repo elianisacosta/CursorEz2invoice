@@ -172,7 +172,8 @@ export default function Dashboard() {
   const [userPlanType, setUserPlanType] = useState<string | null>('starter'); // Track user's actual plan from database (null = no subscription)
   const [isVerifyingCheckout, setIsVerifyingCheckout] = useState(false); // Track if we're verifying a checkout session
   const [cachedShopId, setCachedShopId] = useState<string | null>(null); // Cache shopId to avoid repeated getShopId() calls
-  
+  const hasLoggedNoUserRef = useRef(false); // Log "No user found" at most once to avoid 9 duplicate issues from multiple getShopId() callers
+
   // Use simulated tier if active, otherwise use actual plan from database
   // When 'real' is selected and bypass is active, use 'enterprise' (bypass mode)
   // If userPlanType is null, treat as 'starter' for UI purposes (but access is blocked)
@@ -3387,7 +3388,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
     try {
       const { data: userData } = await supabase.auth.getUser();
       if (!userData?.user?.id || !userData?.user?.email) {
-        console.error('No user found or missing email');
+        if (!hasLoggedNoUserRef.current) {
+          hasLoggedNoUserRef.current = true;
+          console.error('No user found or missing email');
+        }
         return null;
       }
       
@@ -5694,6 +5698,18 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
       });
     }
   }, [activeTab, canAccessFeature, showToast]);
+
+  // Redirect from Vendors/Bills/Accounts Payable if not Professional or above
+  const canAccessVendors = effectivePlanType === 'professional' || effectivePlanType === 'enterprise';
+  useEffect(() => {
+    if ((activeTab === 'vendors' || activeTab === 'bills' || activeTab === 'accounts-payable') && !canAccessVendors) {
+      setActiveTab('overview');
+      showToast({
+        type: 'error',
+        message: 'Vendors and Accounts Payable are available on Professional and Enterprise plans. Please upgrade to access.'
+      });
+    }
+  }, [activeTab, canAccessVendors, showToast]);
 
   // Load shop information when Organization settings tab is opened
   useEffect(() => {
@@ -9935,7 +9951,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 )}
               </div>
               
-              {/* Vendors with dropdown */}
+              {/* Vendors with dropdown – Professional and above only */}
+              {(effectivePlanType === 'professional' || effectivePlanType === 'enterprise') && (
               <div>
                 <button
                   onClick={() => {
@@ -9989,7 +10006,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   </div>
                 )}
               </div>
-              
+              )}
+
               {/* Analytics with dropdown */}
               <div>
                 <button
