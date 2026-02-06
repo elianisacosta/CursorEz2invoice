@@ -10,14 +10,16 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "-": "^0.0.1",
     "@supabase/supabase-js": "^2.76.1",
     "critters": "^0.0.23",
+    "D": "^1.0.0",
     "lucide-react": "^0.546.0",
     "next": "^16.0.7",
-    "stripe": "^16.0.0",
     "react": "19.2.0",
     "react-dom": "19.2.0",
-    "react-signature-canvas": "^1.0.7"
+    "react-signature-canvas": "^1.0.7",
+    "stripe": "^16.0.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -25,7 +27,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/react-signature-canvas": "^1.0.7",
-    "baseline-browser-mapping": "^2.9.4",
+    "baseline-browser-mapping": "^2.9.19",
     "eslint": "^9",
     "eslint-config-next": "16.0.0",
     "tailwindcss": "^4",

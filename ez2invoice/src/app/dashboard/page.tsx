@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 
@@ -1635,6 +1635,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
   }
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
+  const lastOptimisticInvoiceRef = useRef<{ id: string; total_amount: number; apply_card_fee: boolean; card_fee_amount: number; balance_due: number } | null>(null);
   const [accountsReceivableView, setAccountsReceivableView] = useState<'outstanding' | 'aging'>('outstanding');
   const [accountsReceivableFilter, setAccountsReceivableFilter] = useState<'all' | AgingBucket>('all');
   const [accountsReceivableSearch, setAccountsReceivableSearch] = useState('');
@@ -2032,7 +2033,17 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
           }
           const { data: invData, error: invError } = await fallbackQuery;
           if (!invError && invData) {
-            setInvoices(invData as unknown as Invoice[]);
+            const list = invData as unknown as Invoice[];
+            setInvoices((prev) => {
+              const opt = lastOptimisticInvoiceRef.current;
+              lastOptimisticInvoiceRef.current = null;
+              if (!opt) return list;
+              return list.map((inv) =>
+                inv.id === opt.id
+                  ? { ...inv, total_amount: opt.total_amount, apply_card_fee: opt.apply_card_fee, card_fee_amount: opt.card_fee_amount, balance_due: opt.balance_due }
+                  : inv
+              ) as Invoice[];
+            });
           }
           setInvoicesLoading(false);
           return;
@@ -2055,7 +2066,16 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
           ...row,
           customer: row.customer_id ? customerMap[row.customer_id] ?? null : null
         }));
-        setInvoices(invoicesWithCustomer);
+        setInvoices((prev) => {
+          const opt = lastOptimisticInvoiceRef.current;
+          lastOptimisticInvoiceRef.current = null;
+          if (!opt) return invoicesWithCustomer;
+          return invoicesWithCustomer.map((inv) =>
+            inv.id === opt.id
+              ? { ...inv, total_amount: opt.total_amount, apply_card_fee: opt.apply_card_fee, card_fee_amount: opt.card_fee_amount, balance_due: opt.balance_due }
+              : inv
+          ) as Invoice[];
+        });
       } else if (viewError) {
         throw viewError;
       }
@@ -6891,23 +6911,38 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
   });
 
   // Filtered invoices for list + summary (respects search and status filter)
+  // Search: customer name, phone, notes, invoice number, work order
   const filteredInvoicesForList = useMemo(() => {
     return invoices.filter((invoice) => {
-      const customerName = getInvoiceCustomerName(invoice);
+      const effectiveCustomer = invoice.customer || (invoice.customer_id ? (customers as any[]).find((c: any) => String(c.id) === String(invoice.customer_id)) : null);
+      const customerName = effectiveCustomer
+        ? (effectiveCustomer.company || [effectiveCustomer.first_name, effectiveCustomer.last_name].filter(Boolean).join(' ').trim() || 'Customer')
+        : getInvoiceCustomerName(invoice);
       let matchesSearch = true;
       if (invoiceSearchQuery) {
-        const searchQuery = invoiceSearchQuery.toLowerCase().trim();
+        const q = invoiceSearchQuery.toLowerCase().trim();
         matchesSearch = false;
-        if (formatInvoiceNumber(invoice.invoice_number).toLowerCase().includes(searchQuery)) matchesSearch = true;
-        if (!matchesSearch && customerName.toLowerCase().includes(searchQuery)) matchesSearch = true;
-        if (!matchesSearch && getWorkOrderNumber(invoice.work_order_id).toLowerCase().includes(searchQuery)) matchesSearch = true;
-        if (!matchesSearch && invoice.customer?.phone) {
+        // Invoice number: formatted (e.g. "Invoice #123") and raw (e.g. "INV-123", "123")
+        if (formatInvoiceNumber(invoice.invoice_number).toLowerCase().includes(q)) matchesSearch = true;
+        if (!matchesSearch && (invoice.invoice_number || '').toString().toLowerCase().includes(q)) matchesSearch = true;
+        // Customer name: full name, first, last, company
+        if (!matchesSearch && customerName.toLowerCase().includes(q)) matchesSearch = true;
+        if (!matchesSearch && (effectiveCustomer?.first_name || '').toLowerCase().includes(q)) matchesSearch = true;
+        if (!matchesSearch && (effectiveCustomer?.last_name || '').toLowerCase().includes(q)) matchesSearch = true;
+        if (!matchesSearch && (effectiveCustomer?.company || '').toLowerCase().includes(q)) matchesSearch = true;
+        if (!matchesSearch && (effectiveCustomer?.email || '').toLowerCase().includes(q)) matchesSearch = true;
+        // Work order: formatted (e.g. "WO-001") and raw id for partial match
+        if (!matchesSearch && getWorkOrderNumber(invoice.work_order_id).toLowerCase().includes(q)) matchesSearch = true;
+        if (!matchesSearch && (invoice.work_order_id || '').toString().toLowerCase().includes(q)) matchesSearch = true;
+        // Phone: normalized digits so "5551234567" or "555-123-4567" match
+        if (!matchesSearch && effectiveCustomer?.phone) {
           const normalizePhone = (p: string) => p.replace(/\D/g, '');
-          const normalizedPhone = normalizePhone(invoice.customer.phone).toLowerCase();
-          const normalizedSearch = normalizePhone(searchQuery);
-          if (normalizedPhone.includes(normalizedSearch) || normalizedSearch.includes(normalizedPhone)) matchesSearch = true;
+          const normalizedPhone = normalizePhone(String(effectiveCustomer.phone));
+          const normalizedSearch = normalizePhone(q);
+          if (normalizedSearch.length >= 3 && (normalizedPhone.includes(normalizedSearch) || normalizedSearch.includes(normalizedPhone))) matchesSearch = true;
         }
-        if (!matchesSearch && (invoice.notes || '').toLowerCase().includes(searchQuery)) matchesSearch = true;
+        // Notes
+        if (!matchesSearch && (invoice.notes || '').toLowerCase().includes(q)) matchesSearch = true;
       }
       const status = (invoice.computed_status ?? '').toLowerCase() || (() => {
         const total = invoice.total_amount || 0;
@@ -6929,7 +6964,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
       }
       return matchesSearch && matchesStatus;
     });
-  }, [invoices, invoiceSearchQuery, invoiceStatusFilter]);
+  }, [invoices, invoiceSearchQuery, invoiceStatusFilter, customers]);
 
   const navigationItems = [
     { id: 'overview', name: 'Overview', icon: LayoutDashboard },
@@ -9355,18 +9390,21 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
   };
 
   // Function to complete work order and create invoice
-  const handleCompleteAndBill = async (bayName: string, workOrderNumber: string) => {
-    if (!workOrderNumber) {
+  const handleCompleteAndBill = async (bayName: string, workOrderNumberOrId: string) => {
+    if (!workOrderNumberOrId) {
       alert('No work order found for this bay');
       return;
     }
 
     try {
-      // Find the work order
-      const workOrder = workOrders.find(wo => {
+      // Find the work order (match by id or work_order_number)
+      let workOrder = workOrders.find(wo => {
         const woNumber = wo.work_order_number || wo.id;
-        return woNumber === workOrderNumber;
+        return woNumber === workOrderNumberOrId;
       });
+      if (!workOrder) {
+        workOrder = workOrders.find(wo => wo.id === workOrderNumberOrId) || undefined;
+      }
 
       if (!workOrder) {
         alert('Work order not found');
@@ -9575,8 +9613,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
 
       const invoiceNumber = invoice?.invoice_number || 'N/A';
       const successMessage = nextWorkOrder
-        ? `Work order ${workOrderNumber} completed${existingInvoice ? ' and matched to existing invoice' : ' and invoice created'}. Next work order ${nextWorkOrder.work_order_number || nextWorkOrder.id} is now active.`
-        : `Work order ${workOrderNumber} completed${existingInvoice ? ' and matched to existing invoice' : ' and invoice created'}!`;
+        ? `Work order ${workOrder.work_order_number || workOrder.id} completed${existingInvoice ? ' and matched to existing invoice' : ' and invoice created'}. Next work order ${nextWorkOrder.work_order_number || nextWorkOrder.id} is now active.`
+        : `Work order ${workOrder.work_order_number || workOrder.id} completed${existingInvoice ? ' and matched to existing invoice' : ' and invoice created'}!`;
       
       alert(successMessage);
     } catch (error) {
@@ -12119,7 +12157,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                 {/* Action Buttons */}
                                 <div className="space-y-2">
                                   <button 
-                                    onClick={() => handleCompleteAndBill(bayName, currentWorkOrder.work_order_number || currentWorkOrder.id)}
+                                    onClick={() => handleCompleteAndBill(bayName, currentWorkOrder.id)}
                                     className="w-full bg-green-600 text-white py-2 px-4 rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center space-x-2"
                                   >
                                     <FileText className="h-4 w-4" />
@@ -12264,7 +12302,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       <Search className="h-4 w-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
                       <input
                         type="text"
-                        placeholder="Search invoices by number, customer, phone, or notes..."
+                        placeholder="Search by customer name, phone, notes, invoice #, or work order..."
                         value={invoiceSearchQuery}
                         onChange={(e) => setInvoiceSearchQuery(e.target.value)}
                         className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 w-full md:w-64"
@@ -12502,7 +12540,11 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
 
                                         // Set up the edit modal
                                         setEditingInvoice(invoice);
-                                        
+                                        // Set card fee toggle immediately from invoice so modal shows correct state
+                                        const _s = invoice.subtotal || 0;
+                                        const _t = invoice.tax_amount || 0;
+                                        const _tot = invoice.total_amount || 0;
+                                        setApplyCardFee((invoice as any).apply_card_fee === true || (Number((invoice as any).card_fee_amount) || 0) > 0 || _tot > (_s + _t) * 1.001);
                                         // Format created_at date for the date input (YYYY-MM-DD)
                                         // Always ensure we have a valid date string - default to today
                                         let invoiceDate = getTodayDate();
@@ -12643,7 +12685,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                         const tax = invoice.tax_amount || 0;
                                         const total = invoice.total_amount || 0;
                                         const expectedTotal = subtotal + tax;
-                                        setApplyCardFee((invoice as any).apply_card_fee ?? (total > expectedTotal * 1.001));
+                                        const applyFromInvoice = (invoice as any).apply_card_fee;
+                                        const cardFeeAmt = (invoice as any).card_fee_amount;
+                                        const inferred = total > expectedTotal * 1.001;
+                                        setApplyCardFee(applyFromInvoice === true || (Number(cardFeeAmt) || 0) > 0 || inferred);
                                         setShowCreateInvoiceModal(true);
                                       } catch (error) {
                                         console.error('Error loading invoice for edit:', error);
@@ -12759,6 +12804,12 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
 
                                       // Set up the edit modal
                       setEditingInvoice(invoice);
+                      // Set card fee toggle immediately from invoice so modal shows correct state (before any more async work)
+                      const _sub = invoice.subtotal || 0;
+                      const _tax = invoice.tax_amount || 0;
+                      const _total = invoice.total_amount || 0;
+                      const _expected = _sub + _tax;
+                      setApplyCardFee((invoice as any).apply_card_fee === true || (Number((invoice as any).card_fee_amount) || 0) > 0 || _total > _expected * 1.001);
                       // Convert created_at to YYYY-MM-DD format for the date input
                       const invoiceDate = invoice.created_at 
                         ? new Date(invoice.created_at).toISOString().split('T')[0]
@@ -12866,13 +12917,15 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                         }
                                       }
                                       setInvoiceItemSearch({});
-                                      // Check if card fee was applied (if total > subtotal + tax, likely has card fee)
+                                      // Use invoice.apply_card_fee when present, else infer from total > subtotal+tax
                                       const subtotal = invoice.subtotal || 0;
                                       const tax = invoice.tax_amount || 0;
                                       const total = invoice.total_amount || 0;
                                       const expectedTotal = subtotal + tax;
-                                      // If total is more than expected, likely has card fee (2.5% of subtotal + tax)
-                                      setApplyCardFee(total > expectedTotal * 1.001); // Small tolerance for rounding
+                                      const applyFromInvoiceDesktop = (invoice as any).apply_card_fee;
+                                      const cardFeeAmtDesktop = (invoice as any).card_fee_amount;
+                                      const inferredDesktop = total > expectedTotal * 1.001;
+                                      setApplyCardFee(applyFromInvoiceDesktop === true || (Number(cardFeeAmtDesktop) || 0) > 0 || inferredDesktop);
                                       setShowCreateInvoiceModal(true);
                                     } catch (error) {
                                       console.error('Error loading invoice for edit:', error);
@@ -20412,14 +20465,14 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                             errorCode === 'PGRST116';
                         
                         if (isColumnError) {
-                          console.log('Column error detected, retrying without problematic columns');
-                          const { payment_terms, internal_notes, apply_card_fee, card_fee_amount, ...dataWithoutOptional } = updateData;
-                          const dataWithoutBoth = { ...dataWithoutOptional };
-                          if (payment_terms !== undefined) (dataWithoutBoth as any).payment_terms = payment_terms;
-                          if (internal_notes !== undefined) (dataWithoutBoth as any).internal_notes = internal_notes;
+                          console.log('Column error detected, retrying without payment_terms/internal_notes only (keep card fee)');
+                          const { payment_terms, internal_notes, ...dataWithoutOptional } = updateData;
+                          const dataRetry = { ...dataWithoutOptional };
+                          if (payment_terms !== undefined) (dataRetry as any).payment_terms = payment_terms;
+                          if (internal_notes !== undefined) (dataRetry as any).internal_notes = internal_notes;
                           const { error: retryError } = await supabase
                             .from('invoices')
-                            .update(dataWithoutBoth)
+                            .update(dataRetry)
                             .eq('id', editingInvoice.id);
                           invoiceError = retryError;
                         }
@@ -20479,6 +20532,37 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           await adjustInventoryForInvoice(editingInvoice.id, invoiceLineItems, 'subtract');
                         }
                       }
+
+                      // Optimistic update: merge saved invoice (incl. card fee) into list so Total/Balance Due update immediately
+                      const paidAmount = editingInvoice.paid_amount ?? 0;
+                      const newBalanceDue = Math.max(0, totalAmount + cardFeeAmount - paidAmount);
+                      lastOptimisticInvoiceRef.current = {
+                        id: editingInvoice.id,
+                        total_amount: totalAmount,
+                        apply_card_fee: applyCardFee,
+                        card_fee_amount: cardFeeAmount,
+                        balance_due: newBalanceDue
+                      };
+                      setInvoices((prev) =>
+                        prev.map((inv) => {
+                          if (inv.id !== editingInvoice.id) return inv;
+                          const updated: Invoice = {
+                            ...inv,
+                            total_amount: totalAmount,
+                            apply_card_fee: applyCardFee,
+                            card_fee_amount: cardFeeAmount,
+                            balance_due: newBalanceDue,
+                            subtotal,
+                            tax_amount: taxAmount,
+                            tax_rate: invoiceFormData.tax_rate ?? inv.tax_rate,
+                            due_date: invoiceFormData.due_date || undefined,
+                            notes: (invoiceFormData.notes ?? inv.notes) ?? undefined,
+                            created_at: updatedCreatedAt ?? inv.created_at,
+                            status: invoiceStatus
+                          };
+                          return updated;
+                        }) as Invoice[]
+                      );
 
                       showToast({ type: 'success', message: 'Invoice updated' });
                       fetchInvoices();
