@@ -23,16 +23,20 @@ SELECT
   i.created_at,
   i.updated_at,
   i.paid_at,
-  -- Use sum of invoice_payments when present; fall back to invoices.paid_amount for legacy data (payments recorded before invoice_payments table or missing rows)
+  COALESCE(i.apply_card_fee, false) AS apply_card_fee,
+  COALESCE(i.card_fee_amount, 0)::numeric(10,2) AS card_fee_amount,
+  -- Use sum of invoice_payments when present; fall back to invoices.paid_amount for legacy data
   (COALESCE(p.paid_sum, i.paid_amount, 0))::numeric(10,2) AS paid_amount,
-  GREATEST(COALESCE(i.total_amount, 0) - (COALESCE(p.paid_sum, i.paid_amount, 0)), 0)::numeric(10,2) AS balance_due,
+  -- balance_due = (total_amount + card_fee_amount) - paid_sum; card fee is applied once, never doubled
+  GREATEST(COALESCE(i.total_amount, 0) + COALESCE(i.card_fee_amount, 0) - (COALESCE(p.paid_sum, i.paid_amount, 0)), 0)::numeric(10,2) AS balance_due,
   CASE
     WHEN LOWER(TRIM(COALESCE(i.status, ''))) IN ('void', 'voided', 'cancelled', 'canceled') THEN COALESCE(i.status, 'cancelled')
     WHEN COALESCE(i.total_amount, 0) <= 0 THEN 'Draft'
-    WHEN (COALESCE(i.total_amount, 0) - (COALESCE(p.paid_sum, i.paid_amount, 0))) <= 0.01 THEN 'Paid'
+    WHEN (COALESCE(i.total_amount, 0) + COALESCE(i.card_fee_amount, 0) - (COALESCE(p.paid_sum, i.paid_amount, 0))) <= 0.01 THEN 'Paid'
     WHEN (COALESCE(p.paid_sum, i.paid_amount, 0)) <= 0.01 THEN 'Unpaid'
     ELSE 'Partial'
-  END AS computed_status
+  END AS computed_status,
+  COALESCE(NULLIF(REGEXP_REPLACE(COALESCE(i.invoice_number, ''), '[^0-9]', '', 'g'), '')::bigint, 0) AS invoice_number_numeric
 FROM public.invoices i
 LEFT JOIN (
   SELECT invoice_id, SUM(amount) AS paid_sum
@@ -41,13 +45,13 @@ LEFT JOIN (
 ) p ON p.invoice_id = i.id;
 
 -- Optional: include payment_terms if the column exists (run after add-payment-terms-column.sql)
+-- Uses same balance_due and card fee columns as main view (run add-invoice-card-fee-columns.sql first if needed).
 DO $$
 BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'invoices' AND column_name = 'payment_terms'
   ) THEN
-    -- Recreate view with payment_terms (drop and create with extra column)
     DROP VIEW IF EXISTS public.invoice_balances_v;
     EXECUTE '
       CREATE VIEW public.invoice_balances_v WITH (security_invoker = true) AS
@@ -55,15 +59,18 @@ BEGIN
         i.id, i.shop_id, i.customer_id, i.work_order_id, i.invoice_number, i.status,
         i.subtotal, i.tax_rate, i.tax_amount, i.total_amount, i.due_date, i.notes,
         i.created_at, i.updated_at, i.paid_at, i.payment_terms,
+        COALESCE(i.apply_card_fee, false) AS apply_card_fee,
+        COALESCE(i.card_fee_amount, 0)::numeric(10,2) AS card_fee_amount,
         (COALESCE(p.paid_sum, i.paid_amount, 0))::numeric(10,2) AS paid_amount,
-        GREATEST(COALESCE(i.total_amount, 0) - (COALESCE(p.paid_sum, i.paid_amount, 0)), 0)::numeric(10,2) AS balance_due,
+        GREATEST(COALESCE(i.total_amount, 0) + COALESCE(i.card_fee_amount, 0) - (COALESCE(p.paid_sum, i.paid_amount, 0)), 0)::numeric(10,2) AS balance_due,
         CASE
           WHEN LOWER(TRIM(COALESCE(i.status, ''''))) IN (''void'', ''voided'', ''cancelled'', ''canceled'') THEN COALESCE(i.status, ''cancelled'')
           WHEN COALESCE(i.total_amount, 0) <= 0 THEN ''Draft''
-          WHEN (COALESCE(i.total_amount, 0) - (COALESCE(p.paid_sum, i.paid_amount, 0))) <= 0.01 THEN ''Paid''
+          WHEN (COALESCE(i.total_amount, 0) + COALESCE(i.card_fee_amount, 0) - (COALESCE(p.paid_sum, i.paid_amount, 0))) <= 0.01 THEN ''Paid''
           WHEN (COALESCE(p.paid_sum, i.paid_amount, 0)) <= 0.01 THEN ''Unpaid''
           ELSE ''Partial''
-        END AS computed_status
+        END AS computed_status,
+        COALESCE(NULLIF(REGEXP_REPLACE(COALESCE(i.invoice_number, ''''), ''[^0-9]'', '''', ''g''), '''')::bigint, 0) AS invoice_number_numeric
       FROM public.invoices i
       LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid_sum FROM public.invoice_payments GROUP BY invoice_id) p ON p.invoice_id = i.id
     ';

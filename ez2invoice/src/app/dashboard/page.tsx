@@ -134,6 +134,7 @@ import {
   MoreVertical,
   Check,
   ChevronDown,
+  ChevronUp,
   ChevronRight,
   ArrowRight,
   RefreshCw,
@@ -1611,10 +1612,14 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
     due_date?: string;
     paid_amount?: number | null;
     paid_at?: string | null;
-    /** From invoice_balances_v: total - paid, >= 0 */
+    /** From invoice_balances_v: (total_amount + card_fee_amount) - paid, >= 0 */
     balance_due?: number | null;
     /** From invoice_balances_v: Paid | Partial | Unpaid | Draft | void/cancelled */
     computed_status?: string | null;
+    /** When true, card_fee_amount is applied once to the invoice (never doubled on payments). */
+    apply_card_fee?: boolean | null;
+    /** One-time 2.5% of (subtotal+tax) when apply_card_fee; 0 otherwise. */
+    card_fee_amount?: number | null;
     customer_id?: string;
     shop_id?: string;
     work_order_id?: string | null;
@@ -1688,6 +1693,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
   const [estimateStatusFilter, setEstimateStatusFilter] = useState('all');
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState('All Status');
   const [invoiceSearchQuery, setInvoiceSearchQuery] = useState('');
+  const [invoiceSortDir, setInvoiceSortDir] = useState<'asc' | 'desc'>('desc'); // Invoice ID column: desc = newest first (20, 19, 18...)
   const [selectedEstimate, setSelectedEstimate] = useState<Estimate | null>(null);
   const [showViewEstimateModal, setShowViewEstimateModal] = useState(false);
   const [estimateLineItems, setEstimateLineItems] = useState<any[]>([]);
@@ -1983,15 +1989,18 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
   useEffect(()=>{ fetchEstimates(); },[]);
 
   // Fetch invoices from Supabase (invoice_balances_v = single source of truth for paid_amount, balance_due, computed_status)
-  const fetchInvoices = async () => {
+  const fetchInvoices = async (overrideSortDir?: 'asc' | 'desc') => {
     setInvoicesLoading(true);
     try {
       const shopId = await getShopId();
+      const sortDir = overrideSortDir ?? invoiceSortDir;
+      const ascending = sortDir === 'asc';
       // Use view for balance consistency; fallback to invoices if view doesn't exist yet
       let query = supabase
         .from('invoice_balances_v')
         .select('*')
-        .order('created_at', { ascending: false });
+        .order('invoice_number_numeric', { ascending })
+        .order('created_at', { ascending });
 
       if (shopId) {
         if (isFounder) {
@@ -2007,12 +2016,16 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
         const code = (viewError as any)?.code || '';
         const msg = (viewError as any)?.message || '';
         const isViewMissing = code === '42P01' || code === 'PGRST116' || /relation "invoice_balances_v" does not exist/i.test(msg);
-        if (isViewMissing) {
+        const isColumnMissing = code === 'PGRST204' || /invoice_number_numeric|column.*does not exist|schema cache/i.test(msg || '');
+        const useFallback = isViewMissing || isColumnMissing;
+        if (useFallback) {
           // Fallback: fetch from invoices (pre-view behavior)
+          const fallbackAsc = sortDir === 'asc';
           let fallbackQuery = supabase
             .from('invoices')
             .select('*, customer:customers(id, first_name, last_name, email, phone, company)')
-            .order('created_at', { ascending: false });
+            .order('invoice_number', { ascending: fallbackAsc })
+            .order('created_at', { ascending: fallbackAsc });
           if (shopId) {
             if (isFounder) fallbackQuery = fallbackQuery.or(`shop_id.eq.${shopId},shop_id.is.null`);
             else fallbackQuery = fallbackQuery.eq('shop_id', shopId);
@@ -2139,14 +2152,17 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
 
     setMarkingInvoiceId(invoiceForPayment.id);
     try {
+      // balance_due = (total_amount + card_fee_amount) - paid; fee is never added again here
       const invoiceTotal = invoiceForPayment.total_amount || 0;
+      const cardFeeAmount = Number((invoiceForPayment as any).card_fee_amount) || 0;
+      const amountDue = invoiceTotal + cardFeeAmount;
       const alreadyPaid = invoiceForPayment.paid_amount || 0;
       const newPaidAmount = alreadyPaid + paymentAmount;
-      const remaining = invoiceTotal - newPaidAmount;
+      const remaining = amountDue - newPaidAmount;
 
-      // Determine status based on remaining amount
+      // Determine status based on remaining amount due (after this payment)
       let newStatus = invoiceForPayment.status;
-      if (remaining <= 0.01) { // Small tolerance for rounding
+      if (remaining <= 0.01) {
         newStatus = 'paid';
       } else if (newPaidAmount > 0) {
         newStatus = 'partial';
@@ -2167,63 +2183,30 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
         return;
       }
 
-      // Create payment record in invoice_payments table if it exists
+      // Insert payment row only; amount = what the customer paid (no extra fee added — fee is already in balance_due)
       try {
         const { data: userData } = await supabase.auth.getUser();
-        // Calculate card fee based on the remaining balance BEFORE this payment
-        // Use the OLD paid_amount (alreadyPaid) to calculate the remaining balance
-        const remainingBalance = invoiceTotal - alreadyPaid;
-        const cardFee = paymentFormData.method === 'card' ? remainingBalance * (cardProcessingFeePercentage / 100) : 0;
-        
-        // Normalize payment method for consistency (e.g., 'finance' -> 'financing')
         const normalizedMethod = paymentFormData.method === 'finance' ? 'financing' : paymentFormData.method;
         
-        // Try inserting with card_fee first, retry without it if column doesn't exist
-        let paymentInsertData = null;
-        let paymentInsertError = null;
-        
-        // First attempt: include card_fee
-        let insertPayload: any = {
+        const insertPayload: any = {
           invoice_id: invoiceForPayment.id,
-          amount: paymentAmount + cardFee, // Total payment amount including card fee
+          amount: paymentAmount,
           payment_method: normalizedMethod,
           notes: paymentFormData.notes || null,
           created_by: userData?.user?.id || null
         };
         
-        // Add card_fee if card payment and fee > 0
-        if (cardFee > 0) {
-          insertPayload.card_fee = cardFee;
-        }
-        
-        let { error: firstAttemptError, data: firstAttemptData } = await supabase
+        const { error: paymentInsertError } = await supabase
           .from('invoice_payments')
           .insert(insertPayload)
           .select();
         
-        // If error is about missing column (PGRST204), retry without card_fee
-        if (firstAttemptError && firstAttemptError.code === 'PGRST204' && 
-            (firstAttemptError.message?.includes('card_fee') || firstAttemptError.message?.includes('column'))) {
-          // Retry without card_fee column
-          const { card_fee, ...payloadWithoutCardFee } = insertPayload;
-          const { error: retryError, data: retryData } = await supabase
-            .from('invoice_payments')
-            .insert(payloadWithoutCardFee)
-            .select();
-          
-          paymentInsertError = retryError;
-          paymentInsertData = retryData;
-        } else {
-          paymentInsertError = firstAttemptError;
-          paymentInsertData = firstAttemptData;
-        }
-        
         if (paymentInsertError) {
-          // Check if error has meaningful content (not just an empty object)
-          const errorMessage = paymentInsertError.message || '';
-          const errorCode = paymentInsertError.code || '';
-          const errorDetails = paymentInsertError.details || '';
-          const errorHint = paymentInsertError.hint || '';
+          const err = paymentInsertError as { message?: string; code?: string; details?: string; hint?: string };
+          const errorMessage = err.message || '';
+          const errorCode = err.code || '';
+          const errorDetails = err.details || '';
+          const errorHint = err.hint || '';
           
           // Check if this is a table-not-found, missing column, or RLS error (expected in some cases)
           const isTableNotFound = errorCode === 'PGRST116' || 
@@ -2262,7 +2245,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
       showToast({ type: 'success', message: 'Payment recorded successfully' });
       await fetchInvoices();
       
-      // Refresh payment history if editing this invoice
+      // If edit modal is open for this invoice: refresh editingInvoice (Amount Paid / Balance Due) and payment history
       if (editingInvoice && editingInvoice.id === invoiceForPayment.id) {
         try {
           const { data: payments, error: paymentsError } = await supabase
@@ -2277,9 +2260,29 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
           } else {
             setInvoicePayments(payments || []);
           }
+          
+          // Refetch this invoice so Amount Paid and Balance Due update in the edit modal
+          const { data: updatedRow } = await supabase
+            .from('invoice_balances_v')
+            .select('*')
+            .eq('id', invoiceForPayment.id)
+            .maybeSingle();
+          if (updatedRow) {
+            const customer = (editingInvoice as any).customer;
+            setEditingInvoice({ ...updatedRow, customer } as Invoice);
+          } else {
+            const { data: invRow } = await supabase
+              .from('invoices')
+              .select('*')
+              .eq('id', invoiceForPayment.id)
+              .maybeSingle();
+            if (invRow) {
+              const customer = (editingInvoice as any).customer;
+              setEditingInvoice({ ...invRow, customer } as Invoice);
+            }
+          }
         } catch (err) {
-          console.log('Error fetching payments:', err);
-          setInvoicePayments([]);
+          console.log('Error refreshing edit modal after payment:', err);
         }
       }
       
@@ -12224,9 +12227,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-2xl font-bold text-gray-900">
-                    {formatCurrency(filteredInvoicesForList.reduce((sum, inv) => sum + (inv.total_amount || 0), 0))}
+                    {formatCurrency(filteredInvoicesForList.reduce((sum, inv) => sum + (inv.total_amount || 0) + (Number((inv as any).card_fee_amount) || 0), 0))}
                   </div>
-                  <div className="text-sm text-gray-600">Total</div>
+                  <div className="text-sm text-gray-600">Total (incl. card fee)</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-2xl font-bold text-green-700">
@@ -12336,7 +12339,22 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     <div className="min-w-0 overflow-x-auto">
                       {/* Table Header - Desktop Only (Total | Paid | Balance Due) */}
                       <div className="hidden md:grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4 min-w-0" style={{ gridTemplateColumns: 'minmax(130px, 1.3fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr) minmax(90px, 1fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
-                        <div className="min-w-0">Invoice ID</div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextDir = invoiceSortDir === 'desc' ? 'asc' : 'desc';
+                            setInvoiceSortDir(nextDir);
+                            fetchInvoices(nextDir);
+                          }}
+                          className="min-w-0 flex items-center gap-1 text-left hover:text-gray-900 focus:outline-none focus:ring-0"
+                        >
+                          Invoice ID
+                          {invoiceSortDir === 'desc' ? (
+                            <ChevronDown className="h-4 w-4 shrink-0" aria-hidden />
+                          ) : (
+                            <ChevronUp className="h-4 w-4 shrink-0" aria-hidden />
+                          )}
+                        </button>
                         <div className="min-w-0">Customer</div>
                         <div className="min-w-0">Work Order</div>
                         <div className="min-w-0 text-right">Total</div>
@@ -12367,7 +12385,12 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           
                           return filteredInvoicesForList.map((invoice) => {
                             const customerName = getInvoiceCustomerName(invoice);
-                            const totalAmount = invoice.total_amount || 0;
+                            const baseTotal = invoice.total_amount || 0;
+                            let cardFeeAmount = Number((invoice as any).card_fee_amount) || 0;
+                            if (cardFeeAmount <= 0 && ((invoice as any).apply_card_fee === true || (invoice.paid_amount || 0) > baseTotal)) {
+                              cardFeeAmount = Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100;
+                            }
+                            const totalAmount = baseTotal + cardFeeAmount;
                             const paidAmount = invoice.paid_amount || 0;
                             const balanceDue = invoice.balance_due != null ? Number(invoice.balance_due) : Math.max(0, totalAmount - paidAmount);
                             // Use computed_status from view when present, else derive
@@ -12398,7 +12421,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                   </div>
                                   <div className="text-right">
                                     <div className="text-xs text-gray-500 space-y-0.5 mb-1">
-                                      <div>Total {formatCurrency(invoice.total_amount ?? 0)} · Paid {formatCurrency(invoice.paid_amount ?? 0)} · Due {formatCurrency(balanceDue)}</div>
+                                      <div>Total {formatCurrency(totalAmount)} · Paid {formatCurrency(paidAmount)} · Due {formatCurrency(balanceDue)}</div>
                                     </div>
                                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColors[displayStatus as keyof typeof statusColors] || 'bg-gray-100 text-gray-800'}`}>
                                       {displayStatus ? displayStatus.charAt(0).toUpperCase() + displayStatus.slice(1) : 'Pending'}
@@ -12615,13 +12638,12 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                           }
                                         }
                                         setInvoiceItemSearch({});
-                                        // Check if card fee was applied (if total > subtotal + tax, likely has card fee)
+                                        // Use stored apply_card_fee when present; else infer from total > subtotal+tax (legacy)
                                         const subtotal = invoice.subtotal || 0;
                                         const tax = invoice.tax_amount || 0;
                                         const total = invoice.total_amount || 0;
                                         const expectedTotal = subtotal + tax;
-                                        // If total is more than expected, likely has card fee (2.5% of subtotal + tax)
-                                        setApplyCardFee(total > expectedTotal * 1.001); // Small tolerance for rounding
+                                        setApplyCardFee((invoice as any).apply_card_fee ?? (total > expectedTotal * 1.001));
                                         setShowCreateInvoiceModal(true);
                                       } catch (error) {
                                         console.error('Error loading invoice for edit:', error);
@@ -12655,10 +12677,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                   {getWorkOrderNumber(invoice.work_order_id)}
                                 </div>
                                 <div className="font-medium text-gray-900 min-w-0 whitespace-nowrap text-right">
-                                  {formatCurrency(invoice.total_amount ?? 0)}
+                                  {formatCurrency(totalAmount)}
                                 </div>
                                 <div className="font-medium text-green-700 min-w-0 whitespace-nowrap text-right">
-                                  {formatCurrency(invoice.paid_amount ?? 0)}
+                                  {formatCurrency(paidAmount)}
                                 </div>
                                 <div className="font-semibold text-gray-900 min-w-0 whitespace-nowrap text-right">
                                   {formatCurrency(balanceDue)}
@@ -12987,6 +13009,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                             {filteredOutstandingInvoices.map((invoice) => {
                               const bucket = getInvoiceAgingBucket(invoice);
                               const outstandingAmount = getInvoiceOutstandingAmount(invoice);
+                              const totalWithFee = (invoice.total_amount ?? 0) + (Number((invoice as any).card_fee_amount) || 0);
                               return (
                                 <tr key={invoice.id} className="hover:bg-gray-50">
                                   <td className="px-6 py-4 font-medium text-gray-900">
@@ -13012,7 +13035,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                       : 'No due date'}
                                   </td>
                                   <td className="px-6 py-4 text-right font-medium text-gray-900">
-                                    {formatCurrency(invoice.total_amount ?? 0)}
+                                    {formatCurrency(totalWithFee)}
                                   </td>
                                   <td className="px-6 py-4 text-right text-green-700">
                                     {formatCurrency(invoice.paid_amount ?? 0)}
@@ -19043,7 +19066,16 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
             </div>
 
             <div className="p-6">
-              {/* Invoice Summary */}
+              {/* Invoice Summary: total_amount = base only; balance_due = total + card_fee - paid */}
+              {(() => {
+                const baseTotal = (invoiceForPayment.total_amount ?? 0);
+                const cardFee = Number((invoiceForPayment as any).card_fee_amount) || 0;
+                const amountDue = baseTotal + cardFee;
+                const paid = invoiceForPayment.paid_amount ?? 0;
+                const balanceDue = invoiceForPayment.balance_due != null
+                  ? Math.max(0, Number(invoiceForPayment.balance_due))
+                  : Math.max(0, amountDue - paid);
+                return (
               <div className="bg-gray-50 rounded-lg p-4 mb-6">
                 <div className="space-y-2">
                   <div className="flex justify-between">
@@ -19054,51 +19086,34 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     <span className="text-gray-600">Tax (${(defaultTaxRate).toFixed(1)}%):</span>
                     <span className="font-medium">${(invoiceForPayment.tax_amount || 0).toFixed(2)}</span>
                   </div>
-                  {(() => {
-                    // Check if card fee was applied to this invoice
-                    // If total > subtotal + tax, then card fee was applied
-                    const subtotal = invoiceForPayment.subtotal || 0;
-                    const tax = invoiceForPayment.tax_amount || 0;
-                    const total = invoiceForPayment.total_amount || 0;
-                    const expectedTotalWithoutFee = subtotal + tax;
-                    const cardFeeWasApplied = total > expectedTotalWithoutFee * 1.001; // Small tolerance for rounding
-                    
-                    // Calculate balance due before card fee (same as edit invoice)
-                    const balanceDueBeforeFee = Math.max(0, expectedTotalWithoutFee - (invoiceForPayment.paid_amount || 0));
-                    
-                    // Calculate card processing fee (only if card fee was applied to invoice)
-                    // Use same calculation as edit invoice: balance due * percentage
-                    const cardProcessingFee = cardFeeWasApplied && balanceDueBeforeFee > 0
-                      ? balanceDueBeforeFee * (cardProcessingFeePercentage / 100)
-                      : 0;
-                    
-                    // Show card fee only if it was applied to the invoice
-                    if (cardFeeWasApplied && cardProcessingFee > 0) {
-                      return (
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Card Processing Fee ({cardProcessingFeePercentage}%):</span>
-                          <span className="font-medium text-orange-600">${cardProcessingFee.toFixed(2)}</span>
-                        </div>
-                      );
-                    }
-                    return null;
-                  })()}
+                  {cardFee > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Card Processing Fee ({cardProcessingFeePercentage}%):</span>
+                      <span className="font-medium text-orange-600">${cardFee.toFixed(2)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between border-t border-gray-300 pt-2">
-                    <span className="font-bold text-gray-900">Invoice Total:</span>
-                    <span className="font-bold text-gray-900">${(invoiceForPayment.total_amount || 0).toFixed(2)}</span>
+                    <span className="font-bold text-gray-900">Invoice Total (base):</span>
+                    <span className="font-bold text-gray-900">${baseTotal.toFixed(2)}</span>
                   </div>
+                  {cardFee > 0 && (
+                    <div className="flex justify-between">
+                      <span className="font-bold text-gray-900">Amount due (incl. fee):</span>
+                      <span className="font-bold text-gray-900">${amountDue.toFixed(2)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between">
                     <span className="text-gray-600">Already Paid:</span>
-                    <span className="font-medium">${(invoiceForPayment.paid_amount || 0).toFixed(2)}</span>
+                    <span className="font-medium">${paid.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between border-t border-gray-300 pt-2">
-                    <span className="font-bold text-gray-900">Remaining:</span>
-                    <span className="font-bold text-gray-900">
-                      ${((invoiceForPayment.total_amount || 0) - (invoiceForPayment.paid_amount || 0)).toFixed(2)}
-                    </span>
+                    <span className="font-bold text-gray-900">Balance Due:</span>
+                    <span className="font-bold text-gray-900">${balanceDue.toFixed(2)}</span>
                   </div>
                 </div>
               </div>
+                );
+              })()}
 
               {/* Payment Amount */}
               <div className="mb-6">
@@ -19108,8 +19123,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 <div className="flex space-x-2 mb-3">
                   <button
                     onClick={() => {
-                      const remaining = (invoiceForPayment.total_amount || 0) - (invoiceForPayment.paid_amount || 0);
-                      setPaymentFormData(prev => ({ ...prev, amount: remaining.toFixed(2) }));
+                      const balanceDue = invoiceForPayment.balance_due != null
+                        ? Math.max(0, Number(invoiceForPayment.balance_due))
+                        : Math.max(0, (invoiceForPayment.total_amount ?? 0) + (Number((invoiceForPayment as any).card_fee_amount) || 0) - (invoiceForPayment.paid_amount ?? 0));
+                      setPaymentFormData(prev => ({ ...prev, amount: balanceDue.toFixed(2) }));
                     }}
                     className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
                   >
@@ -19117,8 +19134,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   </button>
                   <button
                     onClick={() => {
-                      const remaining = (invoiceForPayment.total_amount || 0) - (invoiceForPayment.paid_amount || 0);
-                      setPaymentFormData(prev => ({ ...prev, amount: (remaining / 2).toFixed(2) }));
+                      const balanceDue = invoiceForPayment.balance_due != null
+                        ? Math.max(0, Number(invoiceForPayment.balance_due))
+                        : Math.max(0, (invoiceForPayment.total_amount ?? 0) + (Number((invoiceForPayment as any).card_fee_amount) || 0) - (invoiceForPayment.paid_amount ?? 0));
+                      setPaymentFormData(prev => ({ ...prev, amount: (balanceDue / 2).toFixed(2) }));
                     }}
                     className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
                   >
@@ -19920,16 +19939,27 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           ${(invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0) * (invoiceFormData.tax_rate || 0)).toFixed(2)}
                         </span>
                       </div>
-                      <div className="flex justify-between text-lg font-semibold border-t border-gray-300 pt-2">
-                        <span>Total:</span>
-                        <span>
-                          ${(() => {
-                            const subtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                            const tax = subtotal * (invoiceFormData.tax_rate || 0);
-                            return (subtotal + tax).toFixed(2);
-                          })()}
-                        </span>
-                      </div>
+                      {(() => {
+                        const subtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
+                        const tax = subtotal * (invoiceFormData.tax_rate || 0);
+                        const baseTotal = subtotal + tax;
+                        const cardFee = applyCardFee ? Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100 : 0;
+                        const totalWithFee = baseTotal + cardFee;
+                        return (
+                          <>
+                            {applyCardFee && cardFee > 0 && (
+                              <div className="flex justify-between">
+                                <span className="text-gray-600">Card Processing Fee ({cardProcessingFeePercentage}%):</span>
+                                <span className="font-medium text-orange-600">${cardFee.toFixed(2)}</span>
+                              </div>
+                            )}
+                            <div className="flex justify-between text-lg font-semibold border-t border-gray-300 pt-2">
+                              <span>Total{applyCardFee && cardFee > 0 ? ' (incl. card fee)' : ''}:</span>
+                              <span>${totalWithFee.toFixed(2)}</span>
+                            </div>
+                          </>
+                        );
+                      })()}
                     </div>
                   </div>
 
@@ -19994,25 +20024,23 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       type="button"
                       onClick={() => {
                         if (editingInvoice) {
-                          // Calculate current values from line items and form data
+                          // Base total only (subtotal + tax); card fee is separate so Record Payment modal shows it
                           const currentSubtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
                           const currentTax = currentSubtotal * (invoiceFormData.tax_rate || 0);
-                          const currentTotal = currentSubtotal + currentTax;
+                          const baseTotal = currentSubtotal + currentTax;
+                          const cardFeeAmount = applyCardFee ? Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100 : 0;
+                          const paid = editingInvoice.paid_amount ?? 0;
+                          const balanceDue = Math.max(0, baseTotal + cardFeeAmount - paid);
                           
-                          // Calculate balance due before card fee
-                          const balanceDueBeforeFee = Math.max(0, currentTotal - (editingInvoice.paid_amount || 0));
-                          const cardFeeOnBalance = applyCardFee && balanceDueBeforeFee > 0 
-                            ? balanceDueBeforeFee * (cardProcessingFeePercentage / 100) 
-                            : 0;
-                          const finalTotal = currentTotal + cardFeeOnBalance;
-                          
-                          // Create updated invoice object with current values
                           const updatedInvoice = {
                             ...editingInvoice,
                             subtotal: currentSubtotal,
                             tax_rate: invoiceFormData.tax_rate || 0,
                             tax_amount: currentTax,
-                            total_amount: finalTotal
+                            total_amount: baseTotal,
+                            apply_card_fee: applyCardFee,
+                            card_fee_amount: cardFeeAmount,
+                            balance_due: balanceDue
                           };
                           
                           setInvoiceForPayment(updatedInvoice);
@@ -20031,14 +20059,18 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     </button>
                   </div>
 
-                  {/* Payment History */}
+                  {/* Payment History - only for this invoice (invoicePayments is global for all invoices) */}
                   <div>
                     <h3 className="text-sm font-medium text-gray-700 mb-3">Payment History</h3>
-                    {loadingPayments ? (
-                      <p className="text-sm text-gray-500">Loading payment history...</p>
-                    ) : invoicePayments.length > 0 ? (
+                    {(() => {
+                      const paymentsForThisInvoice = editingInvoice?.id
+                        ? invoicePayments.filter((p: any) => p.invoice_id === editingInvoice.id)
+                        : [];
+                      return loadingPayments ? (
+                        <p className="text-sm text-gray-500">Loading payment history...</p>
+                      ) : paymentsForThisInvoice.length > 0 ? (
                       <div className="space-y-3">
-                        {invoicePayments.map((payment, index) => {
+                        {paymentsForThisInvoice.map((payment: any, index: number) => {
                           const paymentAmount = payment.amount || 0;
                           const rawPaymentMethod = payment.payment_method || 'unknown';
                           // Normalize payment method for display (handle both 'finance' and 'financing')
@@ -20049,9 +20081,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           // Determine payment type based on cumulative payments up to this point
                           const invoiceTotal = editingInvoice?.total_amount || 0;
                           // Calculate cumulative paid amount up to and including this payment
-                          const cumulativePaid = invoicePayments
+                          const cumulativePaid = paymentsForThisInvoice
                             .slice(0, index + 1)
-                            .reduce((sum, p) => sum + ((p.amount || 0) - (p.card_fee || 0)), 0);
+                            .reduce((sum: number, p: any) => sum + ((p.amount || 0) - (p.card_fee || 0)), 0);
                           const isFullPayment = cumulativePaid >= invoiceTotal - 0.01; // Account for rounding
                           const paymentType = isFullPayment ? 'Full payment' : 'Partial payment';
                           
@@ -20108,9 +20140,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         let paymentMethod = 'cash'; // Default fallback
                         if (hasCardFee) {
                           paymentMethod = 'card';
-                        } else if (invoicePayments.length > 0) {
+                        } else if (paymentsForThisInvoice.length > 0) {
                           // Use the most recent payment method
-                          const latestPayment = invoicePayments[0];
+                          const latestPayment = paymentsForThisInvoice[0];
                           const rawMethod = latestPayment.payment_method || 'cash';
                           paymentMethod = rawMethod === 'finance' ? 'financing' : rawMethod;
                         } else {
@@ -20162,7 +20194,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       })()
                     ) : (
                       <p className="text-sm text-gray-500">No payment history found.</p>
-                    )}
+                    );
+                    })()}
                   </div>
                 </div>
               )}
@@ -20308,13 +20341,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     const baseTotal = subtotal + taxAmount; // Total without card fee
                     
                     if (editingInvoice) {
-                      // For editing: calculate card fee based on balance due (if toggle is on)
-                      const balanceDueBeforeFee = Math.max(0, baseTotal - (editingInvoice.paid_amount || 0));
-                      const cardFeeOnBalance = applyCardFee && balanceDueBeforeFee > 0 
-                        ? balanceDueBeforeFee * (cardProcessingFeePercentage / 100) 
-                        : 0;
-                      // Total amount includes the card fee on balance due (if applied)
-                      const totalAmount = baseTotal + cardFeeOnBalance;
+                      // total_amount = base only (subtotal + tax). Card fee is stored separately and never doubled.
+                      const totalAmount = baseTotal;
+                      const cardFeeAmount = applyCardFee ? Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100 : 0;
                       
                       // Determine invoice status: 'unpaid' if total > 0 and not fully paid, otherwise keep current status or set to 'pending'
                       // If invoice is already paid, don't change status
@@ -20347,12 +20376,14 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         }
                       }
                       
-                      // Try to update with internal_notes first
+                      // Try to update with internal_notes first (include apply_card_fee and card_fee_amount when columns exist)
                       let updateData: any = {
                         subtotal: subtotal,
                         tax_rate: invoiceFormData.tax_rate || 0,
                         tax_amount: taxAmount,
                         total_amount: totalAmount,
+                        apply_card_fee: applyCardFee,
+                        card_fee_amount: cardFeeAmount,
                         status: invoiceStatus,
                         payment_terms: invoiceFormData.payment_terms || 'Due on receipt',
                         due_date: invoiceFormData.due_date || null,
@@ -20382,16 +20413,14 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         
                         if (isColumnError) {
                           console.log('Column error detected, retrying without problematic columns');
-                          // Create a copy without payment_terms and internal_notes
-                          const { payment_terms, ...dataWithoutTerms } = updateData;
-                          const { internal_notes, ...dataWithoutBoth } = dataWithoutTerms;
-                          
-                          // Try update without both columns
+                          const { payment_terms, internal_notes, apply_card_fee, card_fee_amount, ...dataWithoutOptional } = updateData;
+                          const dataWithoutBoth = { ...dataWithoutOptional };
+                          if (payment_terms !== undefined) (dataWithoutBoth as any).payment_terms = payment_terms;
+                          if (internal_notes !== undefined) (dataWithoutBoth as any).internal_notes = internal_notes;
                           const { error: retryError } = await supabase
                             .from('invoices')
                             .update(dataWithoutBoth)
                             .eq('id', editingInvoice.id);
-                          
                           invoiceError = retryError;
                         }
                       }
@@ -20485,9 +20514,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       // Invoice number will be auto-generated by database trigger
                       // No need to generate it client-side
 
-                      // For creating: calculate card fee based on total (if toggle is on)
-                      const cardFee = applyCardFee ? (subtotal + taxAmount) * (cardProcessingFeePercentage / 100) : 0;
-                      const totalAmount = baseTotal + cardFee;
+                      // total_amount = base only. Card fee stored separately so it is never doubled when recording payments.
+                      const totalAmount = baseTotal;
+                      const cardFeeAmount = applyCardFee ? Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100 : 0;
 
                       // Determine invoice status: 'unpaid' if total > 0, otherwise 'pending'
                       const invoiceStatus = totalAmount > 0 ? 'unpaid' : 'pending';
@@ -20511,6 +20540,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         tax_rate: invoiceFormData.tax_rate || 0,
                         tax_amount: taxAmount,
                         total_amount: totalAmount,
+                        apply_card_fee: applyCardFee,
+                        card_fee_amount: cardFeeAmount,
                         payment_terms: invoiceFormData.payment_terms || 'Due on receipt',
                         due_date: invoiceFormData.due_date || null,
                         notes: invoiceFormData.notes || null,
@@ -20539,11 +20570,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         
                         if (isColumnError) {
                           console.log('Column error detected, retrying without problematic columns');
-                          // Create a copy without payment_terms and internal_notes
-                          const { payment_terms, ...dataWithoutTerms } = insertData;
-                          const { internal_notes, ...dataWithoutBoth } = dataWithoutTerms;
-                          
-                          // Try insert without both columns first
+                          const { payment_terms, internal_notes, apply_card_fee, card_fee_amount, ...baseInsert } = insertData;
+                          const dataWithoutBoth = { ...baseInsert };
+                          if (payment_terms !== undefined) (dataWithoutBoth as any).payment_terms = payment_terms;
+                          if (internal_notes !== undefined) (dataWithoutBoth as any).internal_notes = internal_notes;
                           let retryData = dataWithoutBoth;
                           const { data: retryInvoice, error: retryError } = await supabase
                             .from('invoices')
