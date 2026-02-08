@@ -231,8 +231,8 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   // Helper function to get work order number from work_order_id
   const getWorkOrderNumber = (workOrderId: string | null | undefined): string => {
     if (!workOrderId) return '—';
-    const workOrder = workOrders.find(wo => wo.id === workOrderId);
-    return workOrder?.work_order_number || `WO-${workOrderId.slice(0, 8)}`;
+    const workOrder = workOrders.find(wo => String(wo.id) === String(workOrderId));
+    return workOrder?.work_order_number || `WO-${String(workOrderId).slice(0, 8)}`;
   };
 
   // Invoice Settings - Default Tax Rate and Card Processing Fee (must be declared before invoiceFormData)
@@ -314,87 +314,76 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
 
   // Adjust inventory quantities based on invoice line items (parts only)
   // direction: 'subtract' for sales (default), 'add' for returns/reversals
-  const adjustInventoryForInvoice = async (invoiceId: string, lineItems: InvoiceLineItem[], direction: 'subtract' | 'add' = 'subtract') => {
+  // skipRefresh: when true, caller will refresh inventory once (e.g. after update flow) to avoid double fetch
+  const adjustInventoryForInvoice = async (invoiceId: string, lineItems: InvoiceLineItem[], direction: 'subtract' | 'add' = 'subtract', skipRefresh = false) => {
     try {
-      // Only adjust for part line items that have a reference_id and positive quantity
       const partItems = lineItems.filter(
         (item) => item.item_type === 'part' && item.reference_id && item.quantity && item.quantity > 0
-      );
+      ) as { reference_id: string; quantity: number }[];
 
       if (!partItems.length) return;
 
-      const { data: userData } = await supabase.auth.getUser();
+      const partIds = [...new Set(partItems.map((p) => p.reference_id as string))];
+      const [userResult, partsResult] = await Promise.all([
+        supabase.auth.getUser(),
+        supabase.from('parts').select('id, quantity_in_stock').in('id', partIds)
+      ]);
+      const userData = userResult.data;
+      const partsData = partsResult.data || [];
+      const partsById = Object.fromEntries(partsData.map((p: any) => [p.id, p]));
 
-      for (const item of partItems) {
-        const partId = item.reference_id as string;
-        const quantityChange = Number(item.quantity) || 0;
-        if (!partId || !quantityChange) continue;
+      const createdBy = userData?.user?.email || 'System';
+      const expectedNotesBase = `Invoice ${invoiceId}${direction === 'add' ? ' (reversal)' : ''}`;
 
-        // Fetch current quantity for this part
-        const { data: part, error: partError } = await supabase
-          .from('parts')
-          .select('id, quantity_in_stock')
-          .eq('id', partId)
-          .single();
-
-        if (partError || !part) {
-          console.warn('Could not fetch part for inventory adjustment:', partError || partId);
-          continue;
-        }
-
-        const quantityBefore = part.quantity_in_stock || 0;
-        // Add or subtract based on direction
-        const quantityAfter = direction === 'add' 
-          ? quantityBefore + quantityChange 
-          : quantityBefore - quantityChange;
-
-        // Update inventory quantity
-        const { error: updateError } = await supabase
-          .from('parts')
-          .update({ quantity_in_stock: quantityAfter })
-          .eq('id', partId);
-
-        if (updateError) {
-          console.error('Error updating inventory quantity for part', partId, updateError);
-          continue;
-        }
-
-        // Check if history record already exists to prevent duplicates
-        // Check for any record with same part_id and invoice ID in notes (regardless of quantity_change)
-        const expectedNotes = `Invoice ${invoiceId}${direction === 'add' ? ' (reversal)' : ''}`;
-        const expectedQuantityChange = direction === 'add' ? quantityChange : -quantityChange;
-        
-        const { data: existingHistory } = await supabase
-          .from('inventory_history')
-          .select('id')
-          .eq('part_id', partId)
-          .eq('notes', expectedNotes)
-          .eq('reason', 'invoice')
-          .limit(1);
-
-        // Only insert if no duplicate exists
-        if (!existingHistory || existingHistory.length === 0) {
-          try {
-            await supabase.from('inventory_history').insert({
-              part_id: partId,
-              activity_type: direction === 'add' ? 'return' : 'sale',
-              quantity_change: expectedQuantityChange,
-              quantity_before: quantityBefore,
-              quantity_after: quantityAfter,
-              reason: 'invoice',
-              notes: expectedNotes,
-              created_by: userData?.user?.email || 'System',
-            });
-          } catch (historyError) {
-            console.error('Error recording inventory history for part', partId, historyError);
+      await Promise.all(
+        partItems.map(async (item) => {
+          const partId = item.reference_id as string;
+          const quantityChange = Number(item.quantity) || 0;
+          if (!partId || !quantityChange) return;
+          const part = partsById[partId];
+          if (!part) {
+            console.warn('Could not find part for inventory adjustment:', partId);
+            return;
           }
-        } else {
-          console.log('Skipping duplicate inventory history record for part', partId, 'invoice', invoiceId);
-        }
-      }
+          const quantityBefore = part.quantity_in_stock || 0;
+          const quantityAfter = direction === 'add' ? quantityBefore + quantityChange : quantityBefore - quantityChange;
 
-      // Refresh inventory list so UI stays in sync
-      await fetchInventory();
+          const { error: updateError } = await supabase.from('parts').update({ quantity_in_stock: quantityAfter }).eq('id', partId);
+          if (updateError) {
+            console.error('Error updating inventory quantity for part', partId, updateError);
+            return;
+          }
+
+          const expectedNotes = expectedNotesBase;
+          const expectedQuantityChange = direction === 'add' ? quantityChange : -quantityChange;
+          const { data: existingHistory } = await supabase
+            .from('inventory_history')
+            .select('id')
+            .eq('part_id', partId)
+            .eq('notes', expectedNotes)
+            .eq('reason', 'invoice')
+            .limit(1);
+
+          if (!existingHistory || existingHistory.length === 0) {
+            try {
+              await supabase.from('inventory_history').insert({
+                part_id: partId,
+                activity_type: direction === 'add' ? 'return' : 'sale',
+                quantity_change: expectedQuantityChange,
+                quantity_before: quantityBefore,
+                quantity_after: quantityAfter,
+                reason: 'invoice',
+                notes: expectedNotes,
+                created_by: createdBy,
+              });
+            } catch (historyError) {
+              console.error('Error recording inventory history for part', partId, historyError);
+            }
+          }
+        })
+      );
+
+      if (!skipRefresh) await fetchInventory();
     } catch (err) {
       console.error('Unexpected error adjusting inventory for invoice:', err);
     }
@@ -1701,6 +1690,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
   const [estimateLineItems, setEstimateLineItems] = useState<any[]>([]);
   const [estimateToDelete, setEstimateToDelete] = useState<Estimate | null>(null);
   const [invoiceToDelete, setInvoiceToDelete] = useState<Invoice | null>(null);
+  const [invoiceSaveInProgress, setInvoiceSaveInProgress] = useState(false); // prevents double submit on Update/Create Invoice
   const [dotInspectionToDelete, setDotInspectionToDelete] = useState<DOTInspection | null>(null);
   const [employeeToDelete, setEmployeeToDelete] = useState<Employee | null>(null);
 
@@ -3648,9 +3638,11 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
       });
       
       const transformedWorkOrders: WorkOrder[] = sortedData.map((wo: any, index: number) => {
-        // Generate sequential work order number (1, 2, 3, etc.)
+        // Use DB work_order_number when it's short (e.g. "Work Order 6"); if long (WO-timestamp) use sequential
         const sequentialNumber = index + 1;
-        const workOrderNumber = `Work Order ${sequentialNumber}`;
+        const dbNumber = wo.work_order_number && String(wo.work_order_number).trim();
+        const isLongFormat = dbNumber && /^WO-\d{10,}$/.test(dbNumber);
+        const workOrderNumber = (dbNumber && !isLongFormat) ? dbNumber : `Work Order ${sequentialNumber}`;
         
         // Extract service title and description from the description field
         // Format is usually "Service Title - Description" or just "Service Title"
@@ -7347,8 +7339,17 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
         selectedBayIsAvailable = bay?.is_available || false;
       }
 
-      // Generate work order number
-      const workOrderNumber = `WO-${Date.now()}`;
+      // Generate sequential work order number (e.g. "Work Order 1", "Work Order 2") instead of long WO-timestamp
+      let countQuery = supabase.from('work_orders').select('id', { count: 'exact', head: true });
+      if (shopId) {
+        if (isFounder) countQuery = countQuery.or(`shop_id.eq.${shopId},shop_id.is.null`);
+        else countQuery = countQuery.eq('shop_id', shopId);
+      } else if (isFounder) {
+        countQuery = countQuery.is('shop_id', null);
+      }
+      const { count: workOrderCount } = await countQuery;
+      const nextNum = (workOrderCount ?? 0) + 1;
+      const workOrderNumber = `Work Order ${nextNum}`;
 
       // Calculate estimated hours
       const estimatedHours = formData.hours + (formData.minutes / 60);
@@ -12394,7 +12395,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   ) : (
                     <div className="min-w-0 overflow-x-auto">
                       {/* Table Header - Desktop Only (Total | Paid | Balance Due) */}
-                      <div className="hidden md:grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4 min-w-0" style={{ gridTemplateColumns: 'minmax(130px, 1.3fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr) minmax(90px, 1fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
+                      <div className="hidden md:grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4 min-w-0" style={{ gridTemplateColumns: 'minmax(160px, 1.4fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr) minmax(90px, 1fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
                         <button
                           type="button"
                           onClick={() => {
@@ -12418,7 +12419,6 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         <div className="min-w-0 text-right">Balance Due</div>
                         <div className="min-w-0">Status</div>
                         <div className="min-w-0">Date</div>
-                        <div className="min-w-0">Due Date</div>
                         <div className="min-w-0">Actions</div>
                       </div>
                       
@@ -12490,9 +12490,6 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                   </div>
                                   <div>
                                     <span className="text-gray-500">Date:</span> {formatDateInTimezone(invoice.created_at)}
-                                  </div>
-                                  <div className="col-span-2">
-                                    <span className="text-gray-500">Due Date:</span> {formatDateOnly(invoice.due_date)}
                                   </div>
                                 </div>
                                 <div className="flex items-center justify-end space-x-2 pt-2 border-t border-gray-100">
@@ -12729,8 +12726,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                               </div>
 
                               {/* Desktop Table View (Total | Paid | Balance Due) */}
-                              <div className="hidden md:grid gap-4 items-center py-3 border-b border-gray-100 hover:bg-gray-50 min-w-0" style={{ gridTemplateColumns: 'minmax(130px, 1.3fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr) minmax(90px, 1fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
-                                <div className="font-medium text-gray-900 min-w-0 truncate">
+                              <div className="hidden md:grid gap-4 items-center py-3 border-b border-gray-100 hover:bg-gray-50 min-w-0" style={{ gridTemplateColumns: 'minmax(160px, 1.4fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr) minmax(90px, 1fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
+                                <div className="font-medium text-gray-900 min-w-0 whitespace-nowrap" title={formatInvoiceNumber(invoice.invoice_number)}>
                                   {formatInvoiceNumber(invoice.invoice_number)}
                                 </div>
                                 <div className="text-gray-700 min-w-0">
@@ -12755,9 +12752,6 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                 </div>
                                 <div className="text-sm text-gray-600 min-w-0 whitespace-nowrap">
                                   {formatDateInTimezone((invoice as any).invoice_date || invoice.created_at)}
-                                </div>
-                                <div className="text-sm text-gray-600 min-w-0 whitespace-nowrap">
-                                  {formatDateOnly(invoice.due_date)}
                                 </div>
                                 <div className="flex items-center justify-end space-x-2 min-w-0 flex-shrink-0 flex-wrap gap-1">
                                 <button
@@ -20394,6 +20388,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 Cancel
               </button>
               <button
+                disabled={invoiceSaveInProgress}
                 onClick={async () => {
                   if (!invoiceFormData.customer_id && !editingInvoice) {
                     alert('Please select a customer');
@@ -20405,6 +20400,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     return;
                   }
 
+                  setInvoiceSaveInProgress(true);
                   try {
                     // Calculate totals
                     const subtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
@@ -20459,25 +20455,34 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         payment_terms: invoiceFormData.payment_terms || 'Due on receipt',
                         due_date: invoiceFormData.due_date || null,
                         notes: invoiceFormData.notes || null,
-                        created_at: updatedCreatedAt
+                        created_at: updatedCreatedAt,
+                        customer_id: invoiceFormData.customer_id || null,
+                        work_order_id: invoiceFormData.work_order_id || null
                       };
 
-                      // Try to include internal_notes if the column exists
-                      // If it fails, we'll retry without it
-                      let { error: invoiceError } = await supabase
-                        .from('invoices')
-                        .update({
-                          ...updateData,
-                          internal_notes: invoiceFormData.internal_notes || null
-                        })
-                        .eq('id', editingInvoice.id);
+                      // Run invoice update and fetch old line items in parallel to reduce latency
+                      const [updateResult, oldLineItemsResult] = await Promise.all([
+                        supabase
+                          .from('invoices')
+                          .update({
+                            ...updateData,
+                            internal_notes: invoiceFormData.internal_notes || null
+                          })
+                          .eq('id', editingInvoice.id),
+                        supabase
+                          .from('invoice_line_items')
+                          .select('*')
+                          .eq('invoice_id', editingInvoice.id)
+                      ]);
+                      let invoiceError = updateResult.error;
+                      const oldLineItems = oldLineItemsResult.data;
 
                       // If error is about column not existing, retry without problematic columns
                       if (invoiceError) {
                         const errorMessage = invoiceError.message || '';
                         const errorCode = invoiceError.code || '';
                         const isColumnError = errorMessage.includes('column') || 
-                                            errorMessage.includes('payment_terms') || 
+                                            errorMessage.includes('payment_terms') ||
                                             errorMessage.includes('internal_notes') ||
                                             errorCode === '42703' ||
                                             errorCode === 'PGRST116';
@@ -20502,32 +20507,12 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         return;
                       }
 
-                      // Fetch old line items before deleting (to reverse inventory adjustments)
-                      const { data: oldLineItems } = await supabase
-                        .from('invoice_line_items')
-                        .select('*')
-                        .eq('invoice_id', editingInvoice.id);
-
-                      // Reverse inventory adjustments for old line items (add quantities back)
-                      if (oldLineItems && oldLineItems.length > 0) {
-                        const oldItems: InvoiceLineItem[] = oldLineItems.map((item: any) => ({
-                          item_type: item.item_type as 'labor' | 'part',
-                          reference_id: item.reference_id,
-                          description: item.description || '',
-                          quantity: item.quantity || 0,
-                          unit_price: item.unit_price || 0,
-                          total_price: item.total_price || 0
-                        }));
-                        await adjustInventoryForInvoice(editingInvoice.id, oldItems, 'add');
-                      }
-
-                      // Delete existing line items and create new ones
+                      // Delete existing line items and create new ones (keep this fast for <1s UX)
                       await supabase
                         .from('invoice_line_items')
                         .delete()
                         .eq('invoice_id', editingInvoice.id);
 
-                      // Create new line items
                       if (invoiceLineItems.length > 0) {
                         const lineItemsPayload = invoiceLineItems.map(item => ({
                           invoice_id: editingInvoice.id,
@@ -20545,11 +20530,31 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
 
                         if (lineItemsError) {
                           console.warn('Could not update invoice line items:', lineItemsError);
-                        } else {
-                          // Successfully created new line items - adjust inventory for any parts used
-                          await adjustInventoryForInvoice(editingInvoice.id, invoiceLineItems, 'subtract');
                         }
                       }
+
+                      // Run inventory adjustments in background so modal closes in <1s
+                      const oldItemsForInventory: InvoiceLineItem[] = (oldLineItems || []).map((item: any) => ({
+                        item_type: item.item_type as 'labor' | 'part',
+                        reference_id: item.reference_id,
+                        description: item.description || '',
+                        quantity: item.quantity || 0,
+                        unit_price: item.unit_price || 0,
+                        total_price: item.total_price || 0
+                      }));
+                      void (async () => {
+                        try {
+                          if (oldItemsForInventory.length > 0) {
+                            await adjustInventoryForInvoice(editingInvoice.id, oldItemsForInventory, 'add', true);
+                          }
+                          if (invoiceLineItems.length > 0) {
+                            await adjustInventoryForInvoice(editingInvoice.id, invoiceLineItems, 'subtract', true);
+                          }
+                          fetchInventory();
+                        } catch (e) {
+                          console.error('Background inventory sync after invoice update:', e);
+                        }
+                      })();
 
                       // Optimistic update: merge saved invoice (incl. card fee) into list so Total/Balance Due update immediately
                       const paidAmount = editingInvoice.paid_amount ?? 0;
@@ -20576,16 +20581,18 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                             due_date: invoiceFormData.due_date || undefined,
                             notes: (invoiceFormData.notes ?? inv.notes) ?? undefined,
                             created_at: updatedCreatedAt ?? inv.created_at,
-                            status: invoiceStatus
+                            status: invoiceStatus,
+                            customer_id: invoiceFormData.customer_id || undefined,
+                            work_order_id: invoiceFormData.work_order_id || null
                           };
                           return updated;
                         }) as Invoice[]
                       );
 
                       showToast({ type: 'success', message: 'Invoice updated' });
-                      fetchInvoices();
-                      
-                      // Close modal and reset form
+                      void fetchInvoices(); // refresh list in background; UI already updated optimistically
+
+                      // Close modal and reset form immediately for <1s feel
                       setShowCreateInvoiceModal(false);
                       setEditingInvoice(null);
                       setInvoiceFormData({
@@ -20752,11 +20759,13 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 } catch (err) {
                     console.error('Error saving invoice:', err);
                     alert('Unexpected error saving invoice. Please try again.');
+                  } finally {
+                    setInvoiceSaveInProgress(false);
                   }
                 }}
-                className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
+                className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors disabled:opacity-70 disabled:cursor-not-allowed"
               >
-                {editingInvoice ? 'Update Invoice' : 'Create Invoice'}
+                {invoiceSaveInProgress ? (editingInvoice ? 'Updating...' : 'Creating...') : (editingInvoice ? 'Update Invoice' : 'Create Invoice')}
               </button>
             </div>
           </div>
