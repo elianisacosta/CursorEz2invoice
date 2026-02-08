@@ -310,7 +310,16 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     quantity: number;
     unit_price: number;
     total_price: number;
+    /** If false, this line is excluded from tax (e.g. labor when client pays cash). Default true. */
+    taxable?: boolean;
+    /** Client-only id for React key and dedupe; not sent to DB. */
+    lineId?: string;
   }
+
+  const newLineId = () => `line-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+  const getTaxableSubtotal = (items: InvoiceLineItem[]) =>
+    items.reduce((sum, item) => sum + (item.taxable !== false ? (item.total_price || 0) : 0), 0);
 
   // Adjust inventory quantities based on invoice line items (parts only)
   // direction: 'subtract' for sales (default), 'add' for returns/reversals
@@ -565,7 +574,7 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   };
 
   const [invoiceLineItems, setInvoiceLineItems] = useState<InvoiceLineItem[]>([
-    { item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 }
+    { item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }
   ]);
   const [invoiceItemSearch, setInvoiceItemSearch] = useState<{ [key: number]: string }>({});
   const [applyCardFee, setApplyCardFee] = useState(false);
@@ -1599,6 +1608,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
     tax_rate?: number;
     tax_amount?: number;
     created_at?: string;
+    updated_at?: string | null;
     due_date?: string;
     paid_amount?: number | null;
     paid_at?: string | null;
@@ -12645,7 +12655,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                               description: item.description || '',
                                               quantity: Number(item.quantity) || 1,
                                               unit_price: Number(item.unit_price) || 0,
-                                              total_price: Number(item.total_price) || 0
+                                              total_price: Number(item.total_price) || 0,
+                                              taxable: (item as any).taxable !== false
                                             };
                                             console.log('Mapped item:', mapped);
                                             return mapped;
@@ -12668,7 +12679,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                               description: 'Service', // User can edit this
                                               quantity: 1,
                                               unit_price: subtotal,
-                                              total_price: subtotal
+                                              total_price: subtotal,
+                                              taxable: true
                                             }]);
                                           } else if (total > 0) {
                                             // If no subtotal but there's a total, try to reverse calculate
@@ -12681,7 +12693,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                               description: 'Service', // User can edit this
                                               quantity: 1,
                                               unit_price: calculatedSubtotal,
-                                              total_price: calculatedSubtotal
+                                              total_price: calculatedSubtotal,
+                                              taxable: true
                                             }]);
                                             // Also update the form data to match
                                             setInvoiceFormData(prev => ({
@@ -12691,7 +12704,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                           } else {
                                             console.log('Invoice has no subtotal or total, creating empty line item');
                                             // Start with empty line items so user can add
-                                            setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 }]);
+                                            setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
                                           }
                                         }
                                         setInvoiceItemSearch({});
@@ -12879,7 +12892,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                             description: item.description || '',
                                             quantity: Number(item.quantity) || 1,
                                             unit_price: Number(item.unit_price) || 0,
-                                            total_price: Number(item.total_price) || 0
+                                            total_price: Number(item.total_price) || 0,
+                                            taxable: (item as any).taxable !== false
                                           };
                                           console.log('Mapped item:', mapped);
                                           return mapped;
@@ -12902,7 +12916,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                             description: 'Service', // User can edit this
                                             quantity: 1,
                                             unit_price: subtotal,
-                                            total_price: subtotal
+                                            total_price: subtotal,
+                                            taxable: true
                                           }]);
                                         } else if (total > 0) {
                                           // If no subtotal but there's a total, try to reverse calculate
@@ -12915,7 +12930,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                             description: 'Service', // User can edit this
                                             quantity: 1,
                                             unit_price: calculatedSubtotal,
-                                            total_price: calculatedSubtotal
+                                            total_price: calculatedSubtotal,
+                                            taxable: true
                                           }]);
                                           // Also update the form data to match
                                           setInvoiceFormData(prev => ({
@@ -12925,7 +12941,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                         } else {
                                           console.log('Invoice has no subtotal or total, creating empty line item');
                                           // Start with empty line items so user can add
-                                          setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 }]);
+                                          setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
                                         }
                                       }
                                       setInvoiceItemSearch({});
@@ -19288,10 +19304,32 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
         </div>
       )}
 
-      {/* Create/Edit Invoice Modal */}
+      {/* Create/Edit Invoice - right-side panel (drawer) */}
       {showCreateInvoiceModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50">
+          <div
+            className="absolute inset-0 bg-black/50"
+            aria-hidden
+            onClick={() => {
+              setShowCreateInvoiceModal(false);
+              setEditingInvoice(null);
+              setInvoiceFormData({
+                customer_id: '',
+                work_order_id: '',
+                payment_terms: 'Due on receipt',
+                due_date: getTodayDate(),
+                invoice_date: getTodayDate(),
+                tax_rate: defaultTaxRate / 100,
+                notes: '',
+                internal_notes: ''
+              });
+              setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
+              setInvoiceItemSearch({});
+              setInvoicePayments([]);
+              setInvoiceCustomerDiscounts([]);
+            }}
+          />
+          <div className="absolute inset-y-0 right-0 w-full max-w-6xl bg-white shadow-2xl overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
                 <div>
@@ -19302,29 +19340,41 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     {editingInvoice ? 'Add labors and parts to this invoice.' : 'Create a detailed invoice with line items for your customer.'}
                   </p>
                 </div>
-                <button
-                  onClick={() => {
-                    setShowCreateInvoiceModal(false);
-                    setEditingInvoice(null);
-                    setInvoiceFormData({
-                      customer_id: '',
-                      work_order_id: '',
-                      payment_terms: 'Due on receipt',
-                      due_date: getTodayDate(),
-                      invoice_date: getTodayDate(),
-                      tax_rate: defaultTaxRate / 100,
-                      notes: '',
-                      internal_notes: ''
-                    });
-                    setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 }]);
-                    setInvoiceItemSearch({});
-                    setInvoicePayments([]);
-                    setInvoiceCustomerDiscounts([]);
-                  }}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <X className="h-6 w-6" />
-                </button>
+                <div className="flex items-center gap-2">
+                  {editingInvoice && (
+                    <button
+                      type="button"
+                      onClick={() => handlePrintInvoice(editingInvoice)}
+                      className="p-2 text-gray-500 hover:text-blue-600 hover:bg-gray-100 rounded-lg transition-colors"
+                      title="Print invoice"
+                    >
+                      <Printer className="h-5 w-5" />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setShowCreateInvoiceModal(false);
+                      setEditingInvoice(null);
+                      setInvoiceFormData({
+                        customer_id: '',
+                        work_order_id: '',
+                        payment_terms: 'Due on receipt',
+                        due_date: getTodayDate(),
+                        invoice_date: getTodayDate(),
+                        tax_rate: defaultTaxRate / 100,
+                        notes: '',
+                        internal_notes: ''
+                      });
+                      setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
+                      setInvoiceItemSearch({});
+                      setInvoicePayments([]);
+                      setInvoiceCustomerDiscounts([]);
+                    }}
+                    className="text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="h-6 w-6" />
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -19685,7 +19735,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-lg font-semibold text-gray-900">Line Items</h3>
                   <button
-                    onClick={() => setInvoiceLineItems(prev => [...prev, { item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 }])}
+                    onClick={() => setInvoiceLineItems(prev => [...prev, { item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }])}
                     className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2"
                   >
                     <Plus className="h-4 w-4" />
@@ -19693,9 +19743,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   </button>
                 </div>
 
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <div className="grid grid-cols-6 gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4">
+                <div className="bg-gray-50 rounded-lg p-4 min-w-0 overflow-x-auto">
+                  <div className="grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4" style={{ gridTemplateColumns: 'minmax(72px, auto) minmax(56px, auto) minmax(180px, 1.5fr) minmax(220px, 2fr) minmax(64px, auto) minmax(80px, auto) minmax(80px, auto)' }}>
                     <div>Type</div>
+                    <div title="Include in tax (uncheck e.g. for labor when client pays cash)">Tax</div>
                     <div>Select Item</div>
                     <div>Description</div>
                     <div>Qty</div>
@@ -19725,7 +19776,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       });
                       
                       return (
-                        <div key={idx} className="grid grid-cols-6 gap-4 items-center">
+                        <div key={idx} className="grid gap-4 items-center min-w-0" style={{ gridTemplateColumns: 'minmax(72px, auto) minmax(56px, auto) minmax(180px, 1.5fr) minmax(220px, 2fr) minmax(64px, auto) minmax(80px, auto) minmax(80px, auto)' }}>
                           <select
                             value={item.item_type}
                             onChange={(e) => {
@@ -19738,7 +19789,15 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                             <option value="labor">Labor</option>
                             <option value="part">Part</option>
                           </select>
-                          <div className="relative">
+                          <label className="flex items-center justify-center gap-1 cursor-pointer" title="Include in tax (uncheck for labor when client pays cash)">
+                            <input
+                              type="checkbox"
+                              checked={item.taxable !== false}
+                              onChange={(e) => setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, taxable: e.target.checked } : p))}
+                              className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                            />
+                          </label>
+                          <div className="relative min-w-0">
                             <input
                               type="text"
                               placeholder={`Choose ${item.item_type === 'labor' ? 'labor item' : 'part'}`}
@@ -19751,7 +19810,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                 }
                                 setInvoiceItemSearch(prev => ({ ...prev, [idx]: newValue }));
                               }}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                              className="w-full min-w-0 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                             />
                             {searchTerm && !item.reference_id && (
                               <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
@@ -19894,7 +19953,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                             placeholder="Description"
                             value={item.description}
                             onChange={(e) => setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, description: e.target.value } : p))}
-                            className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                            className="w-full min-w-0 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                           />
                           <input
                             type="number"
@@ -20001,12 +20060,12 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       <div className="flex justify-between">
                         <span className="text-gray-600">Tax ({((invoiceFormData.tax_rate || 0) * 100).toFixed(1)}%):</span>
                         <span className="font-medium text-gray-900">
-                          ${(invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0) * (invoiceFormData.tax_rate || 0)).toFixed(2)}
+                          ${(getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0)).toFixed(2)}
                         </span>
                       </div>
                       {(() => {
                         const subtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                        const tax = subtotal * (invoiceFormData.tax_rate || 0);
+                        const tax = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
                         const baseTotal = subtotal + tax;
                         const cardFee = applyCardFee ? Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100 : 0;
                         const totalWithFee = baseTotal + cardFee;
@@ -20039,9 +20098,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         </span>
                       </div>
                       {(() => {
-                        // Calculate current total from line items (subtotal + tax, no card fee)
+                        // Calculate current total from line items (subtotal + tax on taxable items only, no card fee)
                         const currentSubtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                        const currentTax = currentSubtotal * (invoiceFormData.tax_rate || 0);
+                        const currentTax = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
                         const currentTotal = currentSubtotal + currentTax;
                         
                         // Calculate balance due (what's left to pay) before card fee
@@ -20089,9 +20148,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       type="button"
                       onClick={() => {
                         if (editingInvoice) {
-                          // Base total only (subtotal + tax); card fee is separate so Record Payment modal shows it
+                          // Base total only (subtotal + tax on taxable items); card fee is separate so Record Payment modal shows it
                           const currentSubtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                          const currentTax = currentSubtotal * (invoiceFormData.tax_rate || 0);
+                          const currentTax = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
                           const baseTotal = currentSubtotal + currentTax;
                           const cardFeeAmount = applyCardFee ? Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100 : 0;
                           const paid = editingInvoice.paid_amount ?? 0;
@@ -20279,7 +20338,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     <div className="flex justify-between">
                       <span className="text-gray-600">Tax ({((invoiceFormData.tax_rate || 0) * 100).toFixed(1)}%):</span>
                       <span className="font-medium">
-                        ${(invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0) * (invoiceFormData.tax_rate || 0)).toFixed(2)}
+                        ${(getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0)).toFixed(2)}
                       </span>
                     </div>
                     {(() => {
@@ -20287,7 +20346,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       // For new invoices: calculate on (subtotal + tax)
                       // For editing invoices: calculate on balance due (subtotal + tax - paid_amount)
                       const subtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                      const tax = subtotal * (invoiceFormData.tax_rate || 0);
+                      const tax = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
                       const baseTotal = subtotal + tax;
                       
                       if (editingInvoice && applyCardFee) {
@@ -20324,7 +20383,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       <span>
                         ${(() => {
                           const subtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                          const tax = subtotal * (invoiceFormData.tax_rate || 0);
+                          const tax = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
                           const cardFee = applyCardFee ? (subtotal + tax) * (cardProcessingFeePercentage / 100) : 0;
                           return (subtotal + tax + cardFee).toFixed(2);
                         })()}
@@ -20378,7 +20437,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     notes: '',
                     internal_notes: ''
                   });
-                  setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 }]);
+                  setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
                   setInvoiceItemSearch({});
                   setApplyCardFee(false);
                   setInvoicePayments([]);
@@ -20402,9 +20461,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
 
                   setInvoiceSaveInProgress(true);
                   try {
-                    // Calculate totals
+                    // Calculate totals (tax only on line items with taxable checked)
                     const subtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                    const taxAmount = subtotal * (invoiceFormData.tax_rate || 0);
+                    const taxAmount = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
                     const baseTotal = subtotal + taxAmount; // Total without card fee
                     
                     if (editingInvoice) {
@@ -20444,6 +20503,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       }
                       
                       // Try to update with internal_notes first (include apply_card_fee and card_fee_amount when columns exist)
+                      const useOptimisticLock = Boolean(editingInvoice.updated_at);
                       let updateData: any = {
                         subtotal: subtotal,
                         tax_rate: invoiceFormData.tax_rate || 0,
@@ -20459,16 +20519,28 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         customer_id: invoiceFormData.customer_id || null,
                         work_order_id: invoiceFormData.work_order_id || null
                       };
+                      if (useOptimisticLock) {
+                        updateData.updated_at = new Date().toISOString();
+                      }
 
                       // Run invoice update and fetch old line items in parallel to reduce latency
+                      const updatePayload = {
+                        ...updateData,
+                        internal_notes: invoiceFormData.internal_notes || null
+                      };
+                      const updatePromise = useOptimisticLock
+                        ? supabase
+                            .from('invoices')
+                            .update(updatePayload)
+                            .eq('id', editingInvoice.id)
+                            .eq('updated_at', editingInvoice.updated_at!)
+                            .select('id')
+                        : supabase
+                            .from('invoices')
+                            .update(updatePayload)
+                            .eq('id', editingInvoice.id);
                       const [updateResult, oldLineItemsResult] = await Promise.all([
-                        supabase
-                          .from('invoices')
-                          .update({
-                            ...updateData,
-                            internal_notes: invoiceFormData.internal_notes || null
-                          })
-                          .eq('id', editingInvoice.id),
+                        updatePromise,
                         supabase
                           .from('invoice_line_items')
                           .select('*')
@@ -20476,6 +20548,33 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       ]);
                       let invoiceError = updateResult.error;
                       const oldLineItems = oldLineItemsResult.data;
+
+                      // Optimistic lock: another device updated this invoice
+                      if (useOptimisticLock && !invoiceError) {
+                        const updatedRows = (updateResult as any).data;
+                        if (!updatedRows || (Array.isArray(updatedRows) && updatedRows.length === 0)) {
+                          const { data: refetchedInv } = await supabase.from('invoices').select('*').eq('id', editingInvoice.id).single();
+                          const { data: refetchedLines } = await supabase.from('invoice_line_items').select('*').eq('invoice_id', editingInvoice.id);
+                          setEditingInvoice(refetchedInv ? { ...refetchedInv, customer: editingInvoice.customer } : null);
+                          if (refetchedLines && refetchedLines.length) {
+                            setInvoiceLineItems(refetchedLines.map((row: any) => ({
+                              id: row.id,
+                              item_type: row.item_type,
+                              reference_id: row.reference_id ?? undefined,
+                              description: row.description || '',
+                              quantity: row.quantity ?? 1,
+                              unit_price: row.unit_price ?? 0,
+                              total_price: row.total_price ?? 0,
+                              taxable: row.taxable !== false
+                            })));
+                          } else {
+                            setInvoiceLineItems([]);
+                          }
+                          setInvoiceSaveInProgress(false);
+                          alert('This invoice was updated from another device. The form has been refreshed with the latest data. Please review and save again if needed.');
+                          return;
+                        }
+                      }
 
                       // If error is about column not existing, retry without problematic columns
                       if (invoiceError) {
@@ -20493,10 +20592,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           const dataRetry = { ...dataWithoutOptional };
                           if (payment_terms !== undefined) (dataRetry as any).payment_terms = payment_terms;
                           if (internal_notes !== undefined) (dataRetry as any).internal_notes = internal_notes;
-                          const { error: retryError } = await supabase
-                            .from('invoices')
-                            .update(dataRetry)
-                            .eq('id', editingInvoice.id);
+                          let retryQuery = supabase.from('invoices').update(dataRetry).eq('id', editingInvoice.id);
+                          if (useOptimisticLock) retryQuery = retryQuery.eq('updated_at', editingInvoice.updated_at!).select('id');
+                          const { error: retryError } = await retryQuery;
                           invoiceError = retryError;
                         }
                       }
@@ -20504,6 +20602,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       if (invoiceError) {
                         console.error('Error updating invoice:', invoiceError);
                         alert('Failed to update invoice. Please try again.');
+                        setInvoiceSaveInProgress(false);
                         return;
                       }
 
@@ -20514,6 +20613,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         .eq('invoice_id', editingInvoice.id);
 
                       if (invoiceLineItems.length > 0) {
+                        // Build payload from current state only (no duplicate entries; one row per line item)
                         const lineItemsPayload = invoiceLineItems.map(item => ({
                           invoice_id: editingInvoice.id,
                           item_type: item.item_type,
@@ -20521,7 +20621,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           description: item.description,
                           quantity: item.quantity,
                           unit_price: item.unit_price,
-                          total_price: item.total_price
+                          total_price: item.total_price,
+                          taxable: item.taxable !== false
                         }));
 
                         const { error: lineItemsError } = await supabase
@@ -20529,7 +20630,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           .insert(lineItemsPayload);
 
                         if (lineItemsError) {
-                          console.warn('Could not update invoice line items:', lineItemsError);
+                          console.error('Could not save invoice line items:', lineItemsError);
+                          alert(`Failed to save line items. Please try Update again.\n\n${lineItemsError.message || ''}`);
+                          setInvoiceSaveInProgress(false);
+                          return;
                         }
                       }
 
@@ -20605,7 +20709,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         notes: '',
                         internal_notes: ''
                       });
-                      setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 }]);
+                      setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
                       setInvoiceItemSearch({});
                       setApplyCardFee(false);
                       setInvoicePayments([]);
@@ -20719,7 +20823,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           description: item.description,
                           quantity: item.quantity,
                           unit_price: item.unit_price,
-                          total_price: item.total_price
+                          total_price: item.total_price,
+                          taxable: item.taxable !== false
                         }));
 
                         const { error: lineItemsError } = await supabase
@@ -20727,7 +20832,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           .insert(lineItemsPayload);
 
                         if (lineItemsError) {
-                          // Log but don't fail - line items might not exist as a table
+                          // Log but don't fail - line items table or taxable column may be missing
                           console.warn('Could not create invoice line items:', lineItemsError);
                         } else {
                           // Successfully created line items - adjust inventory for any parts used
@@ -20751,7 +20856,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         notes: '',
                         internal_notes: ''
                       });
-                      setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 }]);
+                      setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
                       setInvoiceItemSearch({});
                       setApplyCardFee(false);
                       setInvoicePayments([]);
