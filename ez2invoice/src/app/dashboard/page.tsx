@@ -20528,25 +20528,16 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         ...updateData,
                         internal_notes: invoiceFormData.internal_notes || null
                       };
-                      const updatePromise = useOptimisticLock
-                        ? supabase
-                            .from('invoices')
-                            .update(updatePayload)
-                            .eq('id', editingInvoice.id)
-                            .eq('updated_at', editingInvoice.updated_at!)
-                            .select('id')
-                        : supabase
-                            .from('invoices')
-                            .update(updatePayload)
-                            .eq('id', editingInvoice.id);
                       const [updateResult, oldLineItemsResult] = await Promise.all([
-                        updatePromise,
+                        useOptimisticLock
+                          ? supabase.from('invoices').update(updatePayload).eq('id', editingInvoice.id).eq('updated_at', editingInvoice.updated_at!).select('id')
+                          : supabase.from('invoices').update(updatePayload).eq('id', editingInvoice.id),
                         supabase
                           .from('invoice_line_items')
                           .select('*')
                           .eq('invoice_id', editingInvoice.id)
                       ]);
-                      let invoiceError = updateResult.error;
+                      let invoiceError = (updateResult as { error?: { message?: string; code?: string } | null }).error;
                       const oldLineItems = oldLineItemsResult.data;
 
                       // Optimistic lock: another device updated this invoice
@@ -20592,10 +20583,13 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           const dataRetry = { ...dataWithoutOptional };
                           if (payment_terms !== undefined) (dataRetry as any).payment_terms = payment_terms;
                           if (internal_notes !== undefined) (dataRetry as any).internal_notes = internal_notes;
-                          let retryQuery = supabase.from('invoices').update(dataRetry).eq('id', editingInvoice.id);
-                          if (useOptimisticLock) retryQuery = retryQuery.eq('updated_at', editingInvoice.updated_at!).select('id');
-                          const { error: retryError } = await retryQuery;
-                          invoiceError = retryError;
+                          if (useOptimisticLock) {
+                            const res = await supabase.from('invoices').update(dataRetry).eq('id', editingInvoice.id).eq('updated_at', editingInvoice.updated_at!).select('id');
+                            invoiceError = res.error;
+                          } else {
+                            const res = await supabase.from('invoices').update(dataRetry).eq('id', editingInvoice.id);
+                            invoiceError = res.error;
+                          }
                         }
                       }
 
