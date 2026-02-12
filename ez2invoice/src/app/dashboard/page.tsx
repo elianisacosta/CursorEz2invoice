@@ -1624,6 +1624,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
     shop_id?: string;
     work_order_id?: string | null;
     notes?: string | null;
+    internal_notes?: string | null;
     customer?: {
       id: string;
       first_name: string | null;
@@ -2466,11 +2467,18 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
       const taxAmount = invoice.tax_amount || 0;
       const total = invoice.total_amount || 0;
       const paidAmount = invoice.paid_amount || 0;
-      const balanceDue = total - paidAmount;
+
+      // Calculate total card fees from payments (fallback to invoice.card_fee_amount when needed)
+      const totalCardFeesFromPayments = payments.reduce((sum, p) => sum + (Number(p.card_fee) || 0), 0);
+      const invoiceCardFeeAmount = (invoice as any).card_fee_amount || 0;
+      const effectiveCardFees = totalCardFeesFromPayments > 0 ? totalCardFeesFromPayments : invoiceCardFeeAmount;
+
+      // Use total + card fees when comparing against Amount Paid so Balance Due matches what the customer actually paid
+      const grandTotal = total + effectiveCardFees;
+      const balanceDue = grandTotal - paidAmount;
       const isPaid = balanceDue <= 0.01; // Account for rounding
 
-      // Calculate total card fees
-      const totalCardFees = payments.reduce((sum, p) => sum + (Number(p.card_fee) || 0), 0);
+      const totalCardFees = effectiveCardFees;
 
       // Fetch item display for print: for parts Item=part_number, Description=parts.description; for labor Item=service_name, Description=description
       const lineItemsWithNames = lineItems && lineItems.length > 0
@@ -2709,27 +2717,27 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               .summary-section {
                 display: grid;
                 grid-template-columns: 1fr 1fr;
-                gap: 40px;
-                margin-top: 30px;
+                gap: 24px;
+                margin-top: 16px;
               }
               .totals {
                 text-align: right;
               }
               .total-row {
-                margin-bottom: 8px;
+                margin-bottom: 4px;
                 font-size: 14px;
                 color: #1f2937;
               }
               .total-row.total {
                 font-size: 20px;
                 font-weight: 700;
-                margin-top: 12px;
-                padding-top: 12px;
+                margin-top: 8px;
+                padding-top: 8px;
                 border-top: 2px solid #e5e7eb;
                 color: #1f2937;
               }
               .payments-section {
-                margin-top: 30px;
+                margin-top: 16px;
               }
               .payments-title {
                 font-weight: 700;
@@ -2740,7 +2748,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 letter-spacing: 0.5px;
               }
               .payment-row {
-                margin-bottom: 8px;
+                margin-bottom: 4px;
                 font-size: 14px;
                 color: #1f2937;
               }
@@ -2749,7 +2757,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 color: #374151;
               }
               .terms-section {
-                margin-top: 50px;
+                margin-top: 24px;
                 font-size: 14px;
               }
               .terms-title {
@@ -2843,39 +2851,19 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     <div>${invoice.notes}</div>
                   </div>
                 ` : ''}
-                <div class="terms-title">TERMS:</div>
-                <div>${(() => {
-                  // Use invoice's payment_terms if available, otherwise use global invoiceTerms setting
-                  const invoicePaymentTerms = (invoice as any).payment_terms;
-                  if (invoicePaymentTerms) {
-                    // Format payment terms for display
-                    if (invoicePaymentTerms === 'Due on receipt') {
-                      return 'Payment due upon receipt';
-                    } else if (invoicePaymentTerms.startsWith('Net ')) {
-                      return `Payment due within ${invoicePaymentTerms.replace('Net ', '')} days`;
-                    } else {
-                      return invoicePaymentTerms;
-                    }
-                  }
-                  // Fallback to global invoiceTerms setting
-                  return invoiceTerms || 'Payment due within 30 days';
-                })()}</div>
               </div>
               <div class="totals">
                 <div class="total-row">Subtotal: $${subtotal.toFixed(2)}</div>
                 <div class="total-row">Tax (${(taxRate * 100).toFixed(0)}%): $${taxAmount.toFixed(2)}</div>
-                <div class="total-row total">Total: $${total.toFixed(2)}</div>
+                ${totalCardFees > 0 ? `
+                  <div class="total-row">Card Processing Fee (${cardProcessingFeePercentage}%): $${totalCardFees.toFixed(2)}</div>
+                ` : ''}
+                <div class="total-row total">Total (incl. card fee): $${grandTotal.toFixed(2)}</div>
                 ${isPaid ? `
                   <div class="payments-section">
-                    <div class="payments-title">PAYMENTS:</div>
                     <div class="payment-row">
                       <span class="payment-label">Amount Paid:</span> -$${paidAmount.toFixed(2)}
                     </div>
-                    ${totalCardFees > 0 ? `
-                      <div class="payment-row">
-                        <span class="payment-label">Card Processing Fee (${cardProcessingFeePercentage}%):</span> $${totalCardFees.toFixed(2)}
-                      </div>
-                    ` : ''}
                     <div class="payment-row" style="font-weight: 700; margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb;">
                       <span class="payment-label">Balance Due:</span> $${balanceDue.toFixed(2)}
                     </div>
@@ -2887,6 +2875,13 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 ` : ''}
               </div>
             </div>
+
+            ${invoiceTerms && invoiceTerms.trim().length > 0 ? `
+              <div class="terms-section">
+                <div class="terms-title">TERMS AND CONDITIONS</div>
+                <div>${invoiceTerms}</div>
+              </div>
+            ` : ''}
 
             <div class="footer">
               Thank you for your business!
@@ -12602,6 +12597,40 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                         }
                                         
                                         // Always set invoice_date to ensure it's never empty
+                                        // Refresh internal_notes from the invoices table so it truly persists between edits
+                                        let effectiveNotes = (invoice as any).notes || '';
+                                        let effectiveInternalNotes = (invoice as any).internal_notes || '';
+                                        try {
+                                          const { data: fullInvoice, error: fullInvoiceError } = await supabase
+                                            .from('invoices')
+                                            .select('notes, internal_notes, payment_terms, due_date')
+                                            .eq('id', invoice.id)
+                                            .single();
+                                          if (!fullInvoiceError && fullInvoice) {
+                                            effectiveNotes = (fullInvoice as any).notes ?? effectiveNotes;
+                                            effectiveInternalNotes = (fullInvoice as any).internal_notes ?? effectiveInternalNotes;
+                                            // #region agent log
+                                            fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:openEdit',message:'Full invoice fetch for edit',data:{fullInvoiceError:fullInvoiceError?.message,dbInternalNotes:(fullInvoice as any).internal_notes,effectiveInternalNotes},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
+                                            // #endregion
+                                            // Prefer payment_terms / due_date from the authoritative row when present
+                                            if ((fullInvoice as any).payment_terms) {
+                                              (invoice as any).payment_terms = (fullInvoice as any).payment_terms;
+                                            }
+                                            if ((fullInvoice as any).due_date) {
+                                              (invoice as any).due_date = (fullInvoice as any).due_date;
+                                            }
+                                          } else if (fullInvoiceError) {
+                                            // #region agent log
+                                            fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'page.tsx:openEditError',message:'Full invoice fetch error',data:{fullInvoiceError:fullInvoiceError?.message,code:fullInvoiceError?.code},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
+                                            // #endregion
+                                          }
+                                        } catch (e) {
+                                          console.warn('Could not refresh full invoice for internal_notes; using fallback from list row.', e);
+                                          // #region agent log
+                                          fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:openEditCatch',message:'Full invoice fetch threw',data:{err:String(e),effectiveInternalNotes},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
+                                          // #endregion
+                                        }
+
                                         setInvoiceFormData({
                                           customer_id: invoice.customer_id || '',
                                           work_order_id: invoice.work_order_id || '',
@@ -12609,8 +12638,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                           due_date: invoice.due_date || getTodayDate(),
                                           invoice_date: invoiceDate, // Always has a value (today or parsed date)
                                           tax_rate: defaultTaxRate / 100, // Always use tax rate from settings
-                                          notes: (invoice as any).notes || '',
-                                          internal_notes: (invoice as any).internal_notes || ''
+                                          notes: effectiveNotes,
+                                          internal_notes: effectiveInternalNotes
                                         });
                                         
                                         // Fetch fleet discounts for this customer
@@ -12827,6 +12856,27 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                         setLoadingPayments(false);
                                       }
 
+                                      // Refresh notes and internal_notes from invoices table (invoice_balances_v does not include internal_notes)
+                                      let effectiveNotes = (invoice as any).notes || '';
+                                      let effectiveInternalNotes = (invoice as any).internal_notes || '';
+                                      let effectivePaymentTerms = (invoice as any).payment_terms || 'Due on receipt';
+                                      let effectiveDueDate = invoice.due_date || getTodayDate();
+                                      try {
+                                        const { data: fullInvoice, error: fullInvoiceError } = await supabase
+                                          .from('invoices')
+                                          .select('notes, internal_notes, payment_terms, due_date')
+                                          .eq('id', invoice.id)
+                                          .single();
+                                        if (!fullInvoiceError && fullInvoice) {
+                                          effectiveNotes = (fullInvoice as any).notes ?? effectiveNotes;
+                                          effectiveInternalNotes = (fullInvoice as any).internal_notes ?? effectiveInternalNotes;
+                                          if ((fullInvoice as any).payment_terms) effectivePaymentTerms = (fullInvoice as any).payment_terms;
+                                          if ((fullInvoice as any).due_date) effectiveDueDate = (fullInvoice as any).due_date;
+                                        }
+                                      } catch (e) {
+                                        console.warn('Could not refresh full invoice for internal_notes; using fallback from list row.', e);
+                                      }
+
                                       // Set up the edit modal
                       setEditingInvoice(invoice);
                       // Set card fee toggle immediately from invoice so modal shows correct state (before any more async work)
@@ -12842,12 +12892,12 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       setInvoiceFormData({
                         customer_id: invoice.customer_id || '',
                         work_order_id: invoice.work_order_id || '',
-                        payment_terms: (invoice as any).payment_terms || 'Due on receipt',
+                        payment_terms: effectivePaymentTerms,
                         invoice_date: invoiceDate,
-                        due_date: invoice.due_date || getTodayDate(),
+                        due_date: effectiveDueDate,
                         tax_rate: defaultTaxRate / 100, // Always use tax rate from settings
-                        notes: (invoice as any).notes || '',
-                        internal_notes: (invoice as any).internal_notes || ''
+                        notes: effectiveNotes,
+                        internal_notes: effectiveInternalNotes
                       });
                                       
                                       // Fetch fleet discounts for this customer
@@ -20528,6 +20578,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         ...updateData,
                         internal_notes: invoiceFormData.internal_notes || null
                       };
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:updatePayload',message:'Invoice update payload and form internal_notes',data:{formInternalNotes:invoiceFormData.internal_notes,payloadInternalNotes:updatePayload.internal_notes,updateDataHasInternalNotes:'internal_notes' in updateData},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+                      // #endregion
                       const [updateResult, oldLineItemsResult] = await Promise.all([
                         useOptimisticLock
                           ? supabase.from('invoices').update(updatePayload).eq('id', editingInvoice.id).eq('updated_at', editingInvoice.updated_at!).select('id')
@@ -20539,6 +20592,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       ]);
                       let invoiceError = (updateResult as { error?: { message?: string; code?: string } | null }).error;
                       const oldLineItems = oldLineItemsResult.data;
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:afterUpdate',message:'First update result',data:{hasError:!!invoiceError,errorMessage:invoiceError?.message,errorCode:invoiceError?.code},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+                      // #endregion
 
                       // Optimistic lock: another device updated this invoice
                       if (useOptimisticLock && !invoiceError) {
@@ -20579,10 +20635,14 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         
                         if (isColumnError) {
                           console.log('Column error detected, retrying without payment_terms/internal_notes only (keep card fee)');
-                          const { payment_terms, internal_notes, ...dataWithoutOptional } = updateData;
+                          const { payment_terms, ...dataWithoutOptional } = updateData;
                           const dataRetry = { ...dataWithoutOptional };
                           if (payment_terms !== undefined) (dataRetry as any).payment_terms = payment_terms;
-                          if (internal_notes !== undefined) (dataRetry as any).internal_notes = internal_notes;
+                          // updateData does not include internal_notes; always use form value so retry persists it
+                          (dataRetry as any).internal_notes = invoiceFormData.internal_notes || null;
+                          // #region agent log
+                          fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:retryPayload',message:'Retry payload internal_notes',data:{formInternalNotes:invoiceFormData.internal_notes,dataRetryInternalNotes:(dataRetry as any).internal_notes},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+                          // #endregion
                           if (useOptimisticLock) {
                             const res = await supabase.from('invoices').update(dataRetry).eq('id', editingInvoice.id).eq('updated_at', editingInvoice.updated_at!).select('id');
                             invoiceError = res.error;
@@ -20599,6 +20659,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         setInvoiceSaveInProgress(false);
                         return;
                       }
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:updateSuccess',message:'Invoice update succeeded',data:{savedInternalNotes:updatePayload.internal_notes},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+                      // #endregion
 
                       // Delete existing line items and create new ones (keep this fast for <1s UX)
                       await supabase
