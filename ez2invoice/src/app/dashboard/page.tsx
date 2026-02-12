@@ -811,9 +811,6 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     }
     
     // Fetch data when tabs are active
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:420',message:'useEffect activeTab changed',data:{activeTab},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
     if (activeTab === 'vendors') {
       fetchVendors();
     } else if (activeTab === 'bills') {
@@ -1779,43 +1776,21 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
 
   // Fetch vendors
   const fetchVendors = async () => {
-    // #region agent log
-    const fetchStart = performance.now();
-    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1349',message:'fetchVendors entry',data:{cachedShopId:!!cachedShopId},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     try {
       let shopId = cachedShopId;
-      // #region agent log
-      const getShopIdStart = performance.now();
-      // #endregion
       if (!shopId) {
         shopId = await getShopId();
         if (shopId) setCachedShopId(shopId);
       }
-      // #region agent log
-      const getShopIdEnd = performance.now();
-      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1358',message:'getShopId completed',data:{shopId:shopId||null,duration:getShopIdEnd-getShopIdStart,wasCached:!!cachedShopId},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       if (!shopId) return;
       
-      // #region agent log
-      const queryStart = performance.now();
-      // #endregion
       const { data, error } = await supabase
         .from('vendors')
         .select('*')
         .eq('shop_id', shopId)
         .order('name');
-      // #region agent log
-      const queryEnd = performance.now();
-      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1370',message:'Supabase query completed',data:{hasData:!!data,dataLength:data?.length||0,hasError:!!error,duration:queryEnd-queryStart},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
       if (error) throw error;
       setVendors(data || []);
-      // #region agent log
-      const fetchEnd = performance.now();
-      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1374',message:'fetchVendors completed',data:{totalDuration:fetchEnd-fetchStart},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
     } catch (error) {
       console.error('Error fetching vendors:', error);
     }
@@ -1823,28 +1798,14 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
 
   // Fetch bills
   const fetchBills = async () => {
-    // #region agent log
-    const fetchStart = performance.now();
-    fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1399',message:'fetchBills entry',data:{cachedShopId:!!cachedShopId},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     try {
       let shopId = cachedShopId;
-      // #region agent log
-      const getShopIdStart = performance.now();
-      // #endregion
       if (!shopId) {
         shopId = await getShopId();
         if (shopId) setCachedShopId(shopId);
       }
-      // #region agent log
-      const getShopIdEnd = performance.now();
-      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1410',message:'getShopId completed',data:{shopId:shopId||null,duration:getShopIdEnd-getShopIdStart,wasCached:!!cachedShopId},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       if (!shopId) return;
       
-      // #region agent log
-      const queryStart = performance.now();
-      // #endregion
       const { data, error } = await supabase
         .from('vendor_bills')
         .select(`
@@ -1854,16 +1815,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
         `)
         .eq('shop_id', shopId)
         .order('created_at', { ascending: false });
-      // #region agent log
-      const queryEnd = performance.now();
-      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1426',message:'Supabase query completed',data:{hasData:!!data,dataLength:data?.length||0,hasError:!!error,duration:queryEnd-queryStart},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
       if (error) throw error;
       setBills(data || []);
-      // #region agent log
-      const fetchEnd = performance.now();
-      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:1395',message:'fetchBills completed',data:{totalDuration:fetchEnd-fetchStart},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
     } catch (error) {
       console.error('Error fetching bills:', error);
     }
@@ -12609,9 +12562,6 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                           if (!fullInvoiceError && fullInvoice) {
                                             effectiveNotes = (fullInvoice as any).notes ?? effectiveNotes;
                                             effectiveInternalNotes = (fullInvoice as any).internal_notes ?? effectiveInternalNotes;
-                                            // #region agent log
-                                            fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:openEdit',message:'Full invoice fetch for edit',data:{fullInvoiceError:fullInvoiceError?.message,dbInternalNotes:(fullInvoice as any).internal_notes,effectiveInternalNotes},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-                                            // #endregion
                                             // Prefer payment_terms / due_date from the authoritative row when present
                                             if ((fullInvoice as any).payment_terms) {
                                               (invoice as any).payment_terms = (fullInvoice as any).payment_terms;
@@ -12620,15 +12570,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                               (invoice as any).due_date = (fullInvoice as any).due_date;
                                             }
                                           } else if (fullInvoiceError) {
-                                            // #region agent log
-                                            fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'page.tsx:openEditError',message:'Full invoice fetch error',data:{fullInvoiceError:fullInvoiceError?.message,code:fullInvoiceError?.code},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-                                            // #endregion
+                                            // Full invoice fetch had error; using fallback from list row
                                           }
                                         } catch (e) {
                                           console.warn('Could not refresh full invoice for internal_notes; using fallback from list row.', e);
-                                          // #region agent log
-                                          fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:openEditCatch',message:'Full invoice fetch threw',data:{err:String(e),effectiveInternalNotes},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-                                          // #endregion
                                         }
 
                                         setInvoiceFormData({
@@ -20578,9 +20523,6 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         ...updateData,
                         internal_notes: invoiceFormData.internal_notes || null
                       };
-                      // #region agent log
-                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:updatePayload',message:'Invoice update payload and form internal_notes',data:{formInternalNotes:invoiceFormData.internal_notes,payloadInternalNotes:updatePayload.internal_notes,updateDataHasInternalNotes:'internal_notes' in updateData},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-                      // #endregion
                       const [updateResult, oldLineItemsResult] = await Promise.all([
                         useOptimisticLock
                           ? supabase.from('invoices').update(updatePayload).eq('id', editingInvoice.id).eq('updated_at', editingInvoice.updated_at!).select('id')
@@ -20592,9 +20534,6 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       ]);
                       let invoiceError = (updateResult as { error?: { message?: string; code?: string } | null }).error;
                       const oldLineItems = oldLineItemsResult.data;
-                      // #region agent log
-                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:afterUpdate',message:'First update result',data:{hasError:!!invoiceError,errorMessage:invoiceError?.message,errorCode:invoiceError?.code},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-                      // #endregion
 
                       // Optimistic lock: another device updated this invoice
                       if (useOptimisticLock && !invoiceError) {
@@ -20640,9 +20579,6 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           if (payment_terms !== undefined) (dataRetry as any).payment_terms = payment_terms;
                           // updateData does not include internal_notes; always use form value so retry persists it
                           (dataRetry as any).internal_notes = invoiceFormData.internal_notes || null;
-                          // #region agent log
-                          fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:retryPayload',message:'Retry payload internal_notes',data:{formInternalNotes:invoiceFormData.internal_notes,dataRetryInternalNotes:(dataRetry as any).internal_notes},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-                          // #endregion
                           if (useOptimisticLock) {
                             const res = await supabase.from('invoices').update(dataRetry).eq('id', editingInvoice.id).eq('updated_at', editingInvoice.updated_at!).select('id');
                             invoiceError = res.error;
@@ -20659,9 +20595,6 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                         setInvoiceSaveInProgress(false);
                         return;
                       }
-                      // #region agent log
-                      fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard/page.tsx:updateSuccess',message:'Invoice update succeeded',data:{savedInternalNotes:updatePayload.internal_notes},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-                      // #endregion
 
                       // Delete existing line items and create new ones (keep this fast for <1s UX)
                       await supabase
