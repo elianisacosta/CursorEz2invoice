@@ -2727,8 +2727,28 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 color: #9ca3af;
                 font-size: 14px;
               }
-              .signature-section {
+              .auth-block {
                 margin-top: 80px;
+                margin-bottom: 12px;
+                text-align: left;
+                font-size: 9px;
+                line-height: 1.4;
+                color: #374151;
+              }
+              .auth-heading {
+                font-weight: 700;
+                font-size: 9px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 6px;
+                color: #1f2937;
+              }
+              .auth-body {
+                font-size: 9px;
+                font-weight: 400;
+              }
+              .signature-section {
+                margin-top: 0;
                 display: grid;
                 grid-template-columns: 1fr 1fr;
                 gap: 40px;
@@ -2841,6 +2861,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
             </div>
 
             ${isPaid ? `
+              <div class="auth-block">
+                <div class="auth-heading">Customer Authorization & Acceptance</div>
+                <div class="auth-body">By signing, I authorize this purchase and approve the total amount. I confirm receipt/completion of the parts/services and agree to the Terms & Conditions.</div>
+              </div>
               <div class="signature-section">
                 <div>
                   <div class="signature-line">Customer Signature</div>
