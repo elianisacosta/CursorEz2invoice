@@ -126,7 +126,7 @@ export default function EstimateViewPage() {
         .update({
           status: 'accepted',
           updated_at: new Date().toISOString(),
-          // approved_at: new Date().toISOString(), // Uncomment after running migration SQL
+          approved_at: new Date().toISOString(),
         })
         .eq('id', estimate.id);
 

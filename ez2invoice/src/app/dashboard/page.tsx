@@ -1448,6 +1448,8 @@ const [creatingLaborFromInvoice, setCreatingLaborFromInvoice] = useState(false);
 const [creatingLaborForLineItem, setCreatingLaborForLineItem] = useState<number | null>(null);
 const [estimateCustomerSearch, setEstimateCustomerSearch] = useState('');
 const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState(false);
+const [creatingCustomerFromEstimate, setCreatingCustomerFromEstimate] = useState(false);
+const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useState(false);
 
   // Function to reset form data when opening new work order modal
   const resetWorkOrderForm = () => {
@@ -3140,11 +3142,11 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
         </div>
 
         <div style="margin-top: 30px; padding: 20px; background-color: #f0fdf4; border: 2px solid #22c55e; border-radius: 8px; text-align: center;">
-          <h2 style="color: #15803d; margin: 0 0 15px 0; font-size: 20px;">Review & Accept Your Estimate</h2>
-          <p style="color: #166534; margin: 0 0 20px 0;">Click the button below to view and accept this estimate online:</p>
+          <h2 style="color: #15803d; margin: 0 0 15px 0; font-size: 20px;">Review, Approve or Reject Your Estimate</h2>
+          <p style="color: #166534; margin: 0 0 20px 0;">Click the button below to view this estimate online and approve or reject it:</p>
           <a href="${acceptUrl}" 
              style="display: inline-block; background-color: #22c55e; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px;">
-            View & Accept Estimate
+            View Estimate & Approve or Reject
           </a>
           <p style="color: #166534; margin: 15px 0 0 0; font-size: 12px;">Or copy and paste this link into your browser:</p>
           <p style="color: #166534; margin: 5px 0 0 0; font-size: 11px; word-break: break-all;">${acceptUrl}</p>
@@ -3292,7 +3294,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
 
   // Function to send estimate to customer
   const handleSendEstimate = async (estimate: Estimate) => {
-    if (!confirm(`Send estimate ${estimate.estimate_number || estimate.id.slice(0, 8)} to customer?`)) {
+    const isResend = estimate.status === 'sent';
+    if (!confirm(isResend 
+      ? `Resend estimate ${estimate.estimate_number || estimate.id.slice(0, 8)} to customer?`
+      : `Send estimate ${estimate.estimate_number || estimate.id.slice(0, 8)} to customer?`)) {
       return;
     }
 
@@ -3343,7 +3348,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
         // Email was sent but status update failed - still show success
       }
       
-      alert('Estimate sent to customer successfully!');
+      alert(isResend ? 'Estimate resent to customer successfully!' : 'Estimate sent to customer successfully!');
       fetchEstimates();
     } catch (e: any) {
       console.error('Error sending estimate:', e);
@@ -6955,6 +6960,29 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
       return matchesSearch && matchesStatus;
     });
   }, [invoices, invoiceSearchQuery, invoiceStatusFilter, customers]);
+
+  // Customer stats from invoices and work orders (for Customers tab)
+  const { customerStatsMap, totalRevenue, totalVisits } = useMemo(() => {
+    const map: Record<string, { visits: number; totalSpent: number; lastVisit: string | null }> = {};
+    let revenue = 0;
+    let visits = 0;
+    for (const c of customers) {
+      const customerInvoices = invoices.filter((inv: any) => inv.customer_id === c.id);
+      const customerWorkOrders = workOrders.filter((wo: any) => wo.customer_id === c.id);
+      const totalSpent = customerInvoices.reduce((sum: number, inv: any) => sum + (inv.total_amount || 0), 0);
+      const visitCount = Math.max(customerInvoices.length, customerWorkOrders.length);
+      const allDates = [
+        ...customerInvoices.map((inv: any) => inv.created_at),
+        ...customerWorkOrders.map((wo: any) => wo.completed_at || wo.created_at)
+      ].filter(Boolean);
+      const lastVisitDate = allDates.sort((a: any, b: any) => new Date(b).getTime() - new Date(a).getTime())[0];
+      const lastVisit = lastVisitDate ? formatDateInTimezone(lastVisitDate) : null;
+      map[c.id] = { visits: visitCount, totalSpent, lastVisit };
+      revenue += totalSpent;
+      visits += visitCount;
+    }
+    return { customerStatsMap: map, totalRevenue: revenue, totalVisits: visits };
+  }, [customers, invoices, workOrders]);
 
   const navigationItems = [
     { id: 'overview', name: 'Overview', icon: LayoutDashboard },
@@ -10951,11 +10979,11 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                   >
                                     <Printer className="h-4 w-4" />
                                   </button>
-                                  {e.status === 'draft' && (
+                                  {(e.status === 'draft' || e.status === 'sent') && (
                                     <button 
                                       onClick={() => handleSendEstimate(e)}
                                       className="p-1.5 text-gray-400 hover:text-blue-600 flex-shrink-0"
-                                      title="Send to customer"
+                                      title={e.status === 'draft' ? 'Send to customer' : 'Resend to customer'}
                                     >
                                       <Send className="h-4 w-4" />
                                     </button>
@@ -11271,11 +11299,11 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   <div className="text-sm text-gray-600">Total Customers</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                  <div className="text-2xl font-bold text-gray-900">$0</div>
+                  <div className="text-2xl font-bold text-gray-900">{formatCurrency(totalRevenue)}</div>
                   <div className="text-sm text-gray-600">Total Revenue</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                  <div className="text-2xl font-bold text-gray-900">0</div>
+                  <div className="text-2xl font-bold text-gray-900">{totalVisits}</div>
                   <div className="text-sm text-gray-600">Visits</div>
                 </div>
               </div>
@@ -11318,9 +11346,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                             <div className="truncate">{c.email || '—'}</div>
                             <div className="text-gray-500 truncate">{formatPhoneNumber(c.phone)}</div>
                           </div>
-                          <div className="min-w-0 whitespace-nowrap">0</div>
-                          <div className="min-w-0 whitespace-nowrap">$0</div>
-                          <div className="min-w-0 whitespace-nowrap">—</div>
+                          <div className="min-w-0 whitespace-nowrap">{customerStatsMap[c.id]?.visits ?? 0}</div>
+                          <div className="min-w-0 whitespace-nowrap">{formatCurrency(customerStatsMap[c.id]?.totalSpent ?? 0)}</div>
+                          <div className="min-w-0 whitespace-nowrap">{customerStatsMap[c.id]?.lastVisit ?? '—'}</div>
                           <div className="text-right min-w-0 flex-shrink-0">
                             <div className="inline-flex items-center gap-1 flex-wrap justify-end">
                               {c.is_fleet ? (
@@ -12423,6 +12451,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           
                           return filteredInvoicesForList.map((invoice) => {
                             const customerName = getInvoiceCustomerName(invoice);
+                            const customerPhone = invoice.customer?.phone || '';
                             const baseTotal = invoice.total_amount || 0;
                             let cardFeeAmount = Number((invoice as any).card_fee_amount) || 0;
                             if (cardFeeAmount <= 0 && ((invoice as any).apply_card_fee === true || (invoice.paid_amount || 0) > baseTotal)) {
@@ -12455,7 +12484,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                     <div className="font-medium text-gray-900 text-sm mb-1">
                                       {formatInvoiceNumber(invoice.invoice_number)}
                                     </div>
-                                    <div className="text-sm text-gray-600 font-medium">{customerName}</div>
+                                    <div className="text-sm text-gray-600 font-medium">
+                                      <div>{customerName}</div>
+                                      {customerPhone && <div className="text-xs text-gray-500">{customerPhone}</div>}
+                                    </div>
                                   </div>
                                   <div className="text-right">
                                     <div className="text-xs text-gray-500 space-y-0.5 mb-1">
@@ -12743,6 +12775,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                                 </div>
                                 <div className="text-gray-700 min-w-0">
                                   <div className="font-medium truncate">{customerName}</div>
+                                  {customerPhone && <div className="text-xs text-gray-500 truncate">{customerPhone}</div>}
                                 </div>
                                 <div className="text-sm text-gray-600 min-w-0 truncate">
                                   {getWorkOrderNumber(invoice.work_order_id)}
@@ -19762,7 +19795,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   </button>
                 </div>
 
-                <div className="bg-gray-50 rounded-lg p-4 min-w-0 overflow-x-auto">
+                <div className="bg-gray-50 rounded-lg p-4 min-w-0 overflow-visible">
                   <div className="grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4" style={{ gridTemplateColumns: 'minmax(72px, auto) minmax(56px, auto) minmax(180px, 1.5fr) minmax(220px, 2fr) minmax(64px, auto) minmax(80px, auto) minmax(80px, auto)' }}>
                     <div>Type</div>
                     <div title="Include in tax (uncheck e.g. for labor when client pays cash)">Tax</div>
@@ -19816,7 +19849,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                               className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                             />
                           </label>
-                          <div className="relative min-w-0">
+                          <div className="relative min-w-0" style={{ zIndex: (searchTerm && !item.reference_id) ? 1000 : 'auto' }}>
                             <input
                               type="text"
                               placeholder={`Choose ${item.item_type === 'labor' ? 'labor item' : 'part'}`}
@@ -19832,7 +19865,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                               className="w-full min-w-0 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                             />
                             {searchTerm && !item.reference_id && (
-                              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                              <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-xl max-h-48 overflow-y-auto">
                                 {(item.item_type === 'labor' ? filteredLaborItems : filteredParts).map((option) => (
                                   <div
                                     key={option.id}
@@ -20933,14 +20966,36 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       placeholder="Search by name or phone number..."
                       className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                     />
-                    {showCustomerDropdown && customers.length > 0 && (
+                    {showCustomerDropdown && (customers.length > 0 || customerSearchQuery.trim().length > 0) && (
                       <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
                         {(() => {
                           // Filter customers by name (individual or company) or phone number
                           const searchLower = customerSearchQuery.toLowerCase().trim();
                           
-                          // If no search query, show all customers
+                          // If no search query, show all customers (or Create New if no customers)
                           if (!searchLower) {
+                            if (customers.length === 0) {
+                              return (
+                                <div className="px-4 py-3">
+                                  <div className="text-sm text-gray-500 mb-3">No customers yet</div>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setShowCustomerDropdown(false);
+                                      setCreatingCustomerFromWorkOrder(true);
+                                      setCustomerForm(prev => ({ ...prev, name: '', phone: '' }));
+                                      setShowAddCustomerModal(true);
+                                    }}
+                                    className="w-full px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
+                                  >
+                                    <UserPlus className="h-4 w-4" />
+                                    Create New Customer
+                                  </button>
+                                </div>
+                              );
+                            }
                             return customers.map((customer) => {
                               const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
                               const customerName = customer.company || individualName || 'Unknown';
@@ -21063,9 +21118,32 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           });
                           
                           if (filteredCustomers.length === 0) {
+                            const searchQuery = customerSearchQuery.trim();
+                            const normalizePhoneForCreate = (p: string) => String(p || '').replace(/\D/g, '');
+                            const isPhoneNumber = normalizePhoneForCreate(searchQuery).length >= 7;
+                            
                             return (
-                              <div className="px-4 py-3 text-sm text-gray-500">
-                                No customers found
+                              <div className="px-4 py-3">
+                                <div className="text-sm text-gray-500 mb-3">No customers found</div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setShowCustomerDropdown(false);
+                                    setCreatingCustomerFromWorkOrder(true);
+                                    if (isPhoneNumber) {
+                                      setCustomerForm(prev => ({ ...prev, phone: searchQuery }));
+                                    } else {
+                                      setCustomerForm(prev => ({ ...prev, name: searchQuery }));
+                                    }
+                                    setShowAddCustomerModal(true);
+                                  }}
+                                  className="w-full px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
+                                >
+                                  <UserPlus className="h-4 w-4" />
+                                  Create New Customer
+                                </button>
                               </div>
                             );
                           }
@@ -22374,23 +22452,23 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
 
       {/* Add Labor Item Modal */}
       {showAddLaborModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4">
-            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
-              <h2 className="text-xl font-bold text-gray-900">Add Labor Item</h2>
+        <div className="fixed inset-0 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 overflow-y-auto p-2 sm:p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[90dvh] flex flex-col min-w-0 my-auto">
+            <div className="p-4 sm:p-6 border-b border-gray-200 flex items-center justify-between flex-shrink-0">
+              <h2 className="text-lg sm:text-xl font-bold text-gray-900 truncate pr-2">Add Labor Item</h2>
               <button onClick={() => {
                 setShowAddLaborModal(false);
                 setLaborCategorySearch('');
                 setShowLaborCategoryDropdown(false);
                 setCreatingLaborFromInvoice(false);
                 setCreatingLaborForLineItem(null);
-              }} className="text-gray-400 hover:text-gray-600"><X className="h-6 w-6"/></button>
+              }} className="text-gray-400 hover:text-gray-600 p-1 -m-1 touch-manipulation"><X className="h-6 w-6"/></button>
             </div>
-            <div className="p-6 space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 overflow-y-auto flex-1 min-h-0">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Service Name *</label>
-                  <input value={laborForm.service_name} onChange={(e)=>setLaborForm(prev=>({...prev,service_name:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" placeholder="Oil Change" />
+                  <input value={laborForm.service_name} onChange={(e)=>setLaborForm(prev=>({...prev,service_name:e.target.value}))} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" placeholder="Oil Change" />
                 </div>
                 <div className="relative">
                   <label className="block text-sm font-medium text-gray-700 mb-2">Category</label>
@@ -22423,7 +22501,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           }
                         }, 200);
                       }}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
+                      className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" 
                       placeholder="Search or create category..." 
                     />
                     {showLaborCategoryDropdown && (
@@ -22512,34 +22590,34 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Description</label>
-                <textarea value={laborForm.description} onChange={(e)=>setLaborForm(prev=>({...prev,description:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" placeholder="Description of the service..." rows={3} />
+                <textarea value={laborForm.description} onChange={(e)=>setLaborForm(prev=>({...prev,description:e.target.value}))} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" placeholder="Description of the service..." rows={3} />
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Rate Type</label>
-                  <select value={laborForm.rate_type} onChange={(e)=>setLaborForm(prev=>({...prev,rate_type:e.target.value as 'fixed'|'hourly'}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
+                  <select value={laborForm.rate_type} onChange={(e)=>setLaborForm(prev=>({...prev,rate_type:e.target.value as 'fixed'|'hourly'}))} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation">
                     <option value="fixed">Fixed Rate</option>
                     <option value="hourly">Hourly Rate</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Rate ($)</label>
-                  <input type="number" value={laborForm.rate} onChange={(e)=>setLaborForm(prev=>({...prev,rate:Number(e.target.value)}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                  <input type="number" value={laborForm.rate} onChange={(e)=>setLaborForm(prev=>({...prev,rate:Number(e.target.value)}))} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Est. Hours (Optional)</label>
-                  <input type="number" value={laborForm.est_hours} onChange={(e)=>setLaborForm(prev=>({...prev,est_hours:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                  <input type="number" value={laborForm.est_hours} onChange={(e)=>setLaborForm(prev=>({...prev,est_hours:e.target.value}))} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" />
                 </div>
               </div>
             </div>
-            <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
+            <div className="p-4 sm:p-6 border-t border-gray-200 flex flex-col-reverse sm:flex-row justify-end gap-3 flex-shrink-0">
               <button onClick={() => {
                 setShowAddLaborModal(false);
                 setLaborCategorySearch('');
                 setShowLaborCategoryDropdown(false);
                 setCreatingLaborFromInvoice(false);
                 setCreatingLaborForLineItem(null);
-              }} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
+              }} className="px-4 py-3 sm:py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 touch-manipulation min-h-[44px] sm:min-h-0">Cancel</button>
               <button onClick={async ()=>{
                 if(!laborForm.service_name.trim()){ console.warn('Service name is required'); return; }
                 const shopId = await getShopId();
@@ -22647,7 +22725,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   setCreatingLaborForLineItem(null);
                   fetchLaborItems();
                 }
-              }} className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600">Create Labor Item</button>
+              }} className="px-4 py-3 sm:py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 touch-manipulation min-h-[44px] sm:min-h-0">Create Labor Item</button>
             </div>
           </div>
         </div>
@@ -22655,7 +22733,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
 
       {/* Add Inventory Item Modal */}
       {showAddInventoryModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50" onClick={(e) => {
+        <div className="fixed inset-0 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 overflow-y-auto p-2 sm:p-4" onClick={(e) => {
           if (e.target === e.currentTarget) {
             setShowAddInventoryModal(false);
             setCreatingPartFromInvoice(false);
@@ -22670,9 +22748,9 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
             setShowPartNumberDropdown(false);
           }
         }}>
-          <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
-              <h2 className="text-xl font-bold text-gray-900">{editingInventoryItem ? 'Edit Inventory Item' : 'Add Inventory Item'}</h2>
+          <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[90dvh] flex flex-col min-w-0 my-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="p-4 sm:p-6 border-b border-gray-200 flex items-center justify-between flex-shrink-0">
+              <h2 className="text-lg sm:text-xl font-bold text-gray-900 truncate pr-2">{editingInventoryItem ? 'Edit Inventory Item' : 'Add Inventory Item'}</h2>
               <button onClick={()=>{
                 setShowAddInventoryModal(false);
                 setCreatingPartFromInvoice(false);
@@ -22685,10 +22763,10 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 setPartNumberSearch('');
                 setPartNumberSuggestions([]);
                 setShowPartNumberDropdown(false);
-              }} className="text-gray-400 hover:text-gray-600"><X className="h-6 w-6"/></button>
+              }} className="text-gray-400 hover:text-gray-600 p-1 -m-1 touch-manipulation"><X className="h-6 w-6"/></button>
             </div>
-            <div className="p-6 space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 overflow-y-auto flex-1 min-h-0">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="relative">
                   <label className="block text-sm font-medium text-gray-700 mb-2">Part Name *</label>
                   <input 
@@ -22710,7 +22788,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       // Delay closing to allow clicking on suggestions
                       setTimeout(() => setShowPartNameDropdown(false), 200);
                     }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" 
                     placeholder="Brake Pad Set"
                     autoFocus
                   />
@@ -22760,7 +22838,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       // Delay closing to allow clicking on suggestions
                       setTimeout(() => setShowPartNumberDropdown(false), 200);
                     }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" 
                     placeholder="BP-12345" 
                   />
                   {showPartNumberDropdown && partNumberSuggestions.length > 0 && (
@@ -22791,14 +22869,14 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   )}
                 </div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Category</label>
                   <input 
                     type="text"
                     value={inventoryForm.category} 
                     onChange={(e)=>setInventoryForm(prev=>({...prev,category:e.target.value}))} 
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" 
                     placeholder="Brakes, Engine, etc." 
                   />
                 </div>
@@ -22808,7 +22886,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     type="text"
                     value={inventoryForm.supplier} 
                     onChange={(e)=>setInventoryForm(prev=>({...prev,supplier:e.target.value}))} 
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" 
                     placeholder="Supplier name" 
                   />
                 </div>
@@ -22818,12 +22896,12 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 <textarea 
                   value={inventoryForm.description} 
                   onChange={(e)=>setInventoryForm(prev=>({...prev,description:e.target.value}))} 
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" 
                   placeholder="Description of the part..." 
                   rows={3} 
                 />
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Cost ($) *</label>
                   <input 
@@ -22832,7 +22910,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     value={inventoryForm.cost === 0 ? '' : inventoryForm.cost} 
                     onChange={(e)=>setInventoryForm(prev=>({...prev,cost:e.target.value === '' ? 0 : Number(e.target.value)||0}))} 
                     onFocus={(e)=>e.target.select()}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" 
                     placeholder="0.00" 
                   />
                 </div>
@@ -22844,12 +22922,12 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     value={inventoryForm.unit_price === 0 ? '' : inventoryForm.unit_price} 
                     onChange={(e)=>setInventoryForm(prev=>({...prev,unit_price:e.target.value === '' ? 0 : Number(e.target.value)||0}))} 
                     onFocus={(e)=>e.target.select()}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" 
                     placeholder="0.00" 
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Quantity in Stock</label>
                   <input 
@@ -22857,7 +22935,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     value={inventoryForm.quantity === 0 ? '' : inventoryForm.quantity} 
                     onChange={(e)=>setInventoryForm(prev=>({...prev,quantity:e.target.value === '' ? 0 : Number(e.target.value)||0}))} 
                     onFocus={(e)=>e.target.select()}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" 
                     placeholder="0" 
                   />
                 </div>
@@ -22868,13 +22946,13 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     value={inventoryForm.min_stock === 0 ? '' : inventoryForm.min_stock} 
                     onChange={(e)=>setInventoryForm(prev=>({...prev,min_stock:e.target.value === '' ? 0 : Number(e.target.value)||0}))} 
                     onFocus={(e)=>e.target.select()}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" 
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" 
                     placeholder="0" 
                   />
                 </div>
               </div>
             </div>
-            <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
+            <div className="p-4 sm:p-6 border-t border-gray-200 flex flex-col-reverse sm:flex-row justify-end gap-3 flex-shrink-0">
               <button 
                 onClick={()=>{
                   setShowAddInventoryModal(false);
@@ -22887,7 +22965,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                   setPartNumberSuggestions([]);
                   setShowPartNumberDropdown(false);
                 }} 
-                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                className="px-4 py-3 sm:py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 touch-manipulation min-h-[44px] sm:min-h-0"
               >
                 Cancel
               </button>
@@ -23022,7 +23100,7 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     }
                   }
                 }} 
-                className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600"
+                className="px-4 py-3 sm:py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 touch-manipulation min-h-[44px] sm:min-h-0"
               >
                 {editingInventoryItem ? 'Update Inventory Item' : 'Add Inventory Item'}
               </button>
@@ -23415,14 +23493,36 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                       placeholder="Search by name or phone number..."
                       className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                     />
-                    {showEstimateCustomerDropdown && customers.length > 0 && (
+                    {showEstimateCustomerDropdown && (customers.length > 0 || estimateCustomerSearch.trim().length > 0) && (
                       <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
                         {(() => {
                           // Filter customers by name (individual or company) or phone number
                           const searchLower = estimateCustomerSearch.toLowerCase().trim();
                           
-                          // If no search query, show all customers
+                          // If no search query, show all customers (or Create New if no customers)
                           if (!searchLower) {
+                            if (customers.length === 0) {
+                              return (
+                                <div className="px-4 py-3">
+                                  <div className="text-sm text-gray-500 mb-3">No customers yet</div>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setShowEstimateCustomerDropdown(false);
+                                      setCreatingCustomerFromEstimate(true);
+                                      setCustomerForm(prev => ({ ...prev, name: '', phone: '' }));
+                                      setShowAddCustomerModal(true);
+                                    }}
+                                    className="w-full px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
+                                  >
+                                    <UserPlus className="h-4 w-4" />
+                                    Create New Customer
+                                  </button>
+                                </div>
+                              );
+                            }
                             return customers.map((customer) => {
                               const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
                               const customerName = customer.company || individualName || 'Unknown';
@@ -23487,9 +23587,32 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                           });
                           
                           if (filteredCustomers.length === 0) {
+                            const searchQuery = estimateCustomerSearch.trim();
+                            const normalizePhoneForCreate = (p: string) => String(p || '').replace(/\D/g, '');
+                            const isPhoneNumber = normalizePhoneForCreate(searchQuery).length >= 7;
+                            
                             return (
-                              <div className="px-4 py-3 text-sm text-gray-500">
-                                No customers found
+                              <div className="px-4 py-3">
+                                <div className="text-sm text-gray-500 mb-3">No customers found</div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setShowEstimateCustomerDropdown(false);
+                                    setCreatingCustomerFromEstimate(true);
+                                    if (isPhoneNumber) {
+                                      setCustomerForm(prev => ({ ...prev, phone: searchQuery }));
+                                    } else {
+                                      setCustomerForm(prev => ({ ...prev, name: searchQuery }));
+                                    }
+                                    setShowAddCustomerModal(true);
+                                  }}
+                                  className="w-full px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
+                                >
+                                  <UserPlus className="h-4 w-4" />
+                                  Create New Customer
+                                </button>
                               </div>
                             );
                           }
@@ -23985,18 +24108,20 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                 <Printer className="h-4 w-4" />
                 <span>Print</span>
               </button>
-              {selectedEstimate.status === 'draft' && (
+              {(selectedEstimate.status === 'draft' || selectedEstimate.status === 'sent') && (
                 <button
                   onClick={() => {
                     handleSendEstimate(selectedEstimate);
-                    setShowViewEstimateModal(false);
-                    setSelectedEstimate(null);
-                    setEstimateLineItems([]);
+                    if (selectedEstimate.status === 'draft') {
+                      setShowViewEstimateModal(false);
+                      setSelectedEstimate(null);
+                      setEstimateLineItems([]);
+                    }
                   }}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center space-x-2"
                 >
                   <Send className="h-4 w-4" />
-                  <span>Send to Customer</span>
+                  <span>{selectedEstimate.status === 'draft' ? 'Send to Customer' : 'Resend to Customer'}</span>
                 </button>
               )}
               <button
@@ -24462,6 +24587,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               <button onClick={() => {
                 setShowAddCustomerModal(false);
                 setCreatingCustomerFromInvoice(false);
+                setCreatingCustomerFromEstimate(false);
+                setCreatingCustomerFromWorkOrder(false);
                 setCustomerForm({ name: '', email: '', phone: '', address: '', city: '', state: '', zip_code: '', is_fleet: false, company: '', fleet_name: '', enable_fleet_discounts: false });
                 setCustomerNotes([]);
                 setAddCustomerFleetTrucks([]);
@@ -24843,6 +24970,8 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
               <button onClick={()=>{
                 setShowAddCustomerModal(false);
                 setCreatingCustomerFromInvoice(false);
+                setCreatingCustomerFromEstimate(false);
+                setCreatingCustomerFromWorkOrder(false);
                 setCustomerForm({ name: '', email: '', phone: '', address: '', city: '', state: '', zip_code: '', is_fleet: false, company: '', fleet_name: '', enable_fleet_discounts: false });
                 setCustomerNotes([]);
                 setAddCustomerFleetTrucks([]);
@@ -25060,6 +25189,51 @@ const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState
                     }
                   } else {
                     setInvoiceCustomerDiscounts([]);
+                  }
+                }
+                
+                // If created from estimate modal, auto-select the new customer
+                if (creatingCustomerFromEstimate && newCustomer) {
+                  setCreatingCustomerFromEstimate(false);
+                  const individualName = [newCustomer.first_name, newCustomer.last_name].filter(Boolean).join(' ');
+                  const displayName = newCustomer.is_fleet 
+                    ? newCustomer.company || individualName || 'Unknown'
+                    : individualName || newCustomer.company || 'Unknown';
+                  
+                  setEstimateCustomerId(newCustomer.id);
+                  setEstimateCustomerSearch(displayName);
+                }
+                
+                // If created from work order modal, auto-select the new customer
+                if (creatingCustomerFromWorkOrder && newCustomer) {
+                  setCreatingCustomerFromWorkOrder(false);
+                  const individualName = [newCustomer.first_name, newCustomer.last_name].filter(Boolean).join(' ');
+                  const displayName = newCustomer.is_fleet 
+                    ? newCustomer.company || individualName || 'Unknown'
+                    : individualName || newCustomer.company || 'Unknown';
+                  const customerName = newCustomer.company || individualName || 'Unknown';
+                  
+                  setFormData(prev => ({ ...prev, customer: customerName, customerId: newCustomer.id }));
+                  setCustomerSearchQuery(displayName);
+                  setSelectedCustomerNotes([]);
+                  setSelectedCustomerFleetTrucks([]);
+                  setSelectedFleetTruck('');
+                  if (newCustomer.is_fleet) {
+                    try {
+                      const shopId = await getShopId();
+                      if (shopId) {
+                        const { data: fleetTrucks } = await supabase
+                          .from('fleet_trucks')
+                          .select('*')
+                          .eq('customer_id', newCustomer.id)
+                          .eq('shop_id', shopId)
+                          .order('created_at', { ascending: false });
+                        setSelectedCustomerFleetTrucks(fleetTrucks || []);
+                      }
+                    } catch (err) {
+                      console.error('Error fetching fleet trucks:', err);
+                      setSelectedCustomerFleetTrucks([]);
+                    }
                   }
                 }
               }} className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600">Create Customer</button>
