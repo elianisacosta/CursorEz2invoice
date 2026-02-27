@@ -41,12 +41,11 @@ function LoginForm() {
       } else if (data.user) {
         setSuccess('Login successful! Redirecting...');
         
-        // Check if this is a founder email
+        const redirectTo = searchParams.get('redirect');
         const founderEmails = ['acostaelianis@yahoo.com', 'founder@ez2invoice.com', 'admin@ez2invoice.com'];
         if (founderEmails.includes(email.toLowerCase())) {
-          // Redirect founder to dashboard
           setTimeout(() => {
-            window.location.href = '/dashboard';
+            window.location.href = (redirectTo && redirectTo.startsWith('/')) ? redirectTo : '/dashboard';
           }, 1000);
         } else {
           // Check if user has an active subscription
@@ -174,16 +173,13 @@ function LoginForm() {
             fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'login/page.tsx:127',message:'Final subscription check before redirect',data:{hasSubscription,willRedirectTo:hasSubscription?'dashboard':'pricing'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
             // #endregion
 
-            if (hasSubscription) {
-              // User has an active subscription, redirect to dashboard
-              setTimeout(() => {
-                window.location.href = '/dashboard';
-              }, 1000);
+            const redirectTo = searchParams.get('redirect');
+            if (redirectTo && redirectTo.startsWith('/')) {
+              setTimeout(() => { window.location.href = redirectTo; }, 1000);
+            } else if (hasSubscription) {
+              setTimeout(() => { window.location.href = '/dashboard'; }, 1000);
             } else {
-              // User doesn't have a subscription, redirect to pricing
-              setTimeout(() => {
-                window.location.href = '/pricing';
-              }, 1000);
+              setTimeout(() => { window.location.href = '/pricing'; }, 1000);
             }
           } catch (err) {
             console.error('Error checking subscription status:', err);

@@ -159,6 +159,7 @@ import {
   Image as ImageIcon
 } from 'lucide-react';
 import { useFounder, subscriptionTiers } from '@/contexts/FounderContext';
+import { useShop } from '@/contexts/ShopContext';
 import AppHeader from '@/components/AppHeader';
 import { useToast } from '@/components/ui/useToast';
 import ConfirmDeleteDialog from '@/components/ui/ConfirmDeleteDialog';
@@ -166,6 +167,7 @@ import AnnualVehicleInspectionForm from '@/components/AnnualVehicleInspectionFor
 
 export default function Dashboard() {
   const { isFounder, subscriptionBypass, simulatedTier, currentTier, canAccessFeature, getBayLimit, setSubscriptionBypass, setSimulatedTier } = useFounder();
+  const { currentShopId: contextShopId, shops, setCurrentShopId, isLoading: shopLoading } = useShop();
   const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState('overview');
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -643,6 +645,13 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   const [selectedBayForWaitlist, setSelectedBayForWaitlist] = useState<string | null>(null);
   const [newBayName, setNewBayName] = useState('');
   const [settingsSubTab, setSettingsSubTab] = useState('profile');
+  const [teamSubTab, setTeamSubTab] = useState<'users' | 'roles'>('users');
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [teamMembersLoading, setTeamMembersLoading] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('technician');
+  const [inviteSending, setInviteSending] = useState(false);
   
   // Shop information state for Organization settings
   const [shopInfo, setShopInfo] = useState({
@@ -1944,7 +1953,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       setEstimatesLoading(false);
     }
   };
-  useEffect(()=>{ fetchEstimates(); },[]);
+  useEffect(()=>{ fetchEstimates(); }, [contextShopId]);
 
   // Fetch invoices from Supabase (invoice_balances_v = single source of truth for paid_amount, balance_due, computed_status)
   const fetchInvoices = async (overrideSortDir?: 'asc' | 'desc') => {
@@ -2065,7 +2074,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     }
   };
   
-  useEffect(() => { fetchInvoices(); }, []);
+  useEffect(() => { fetchInvoices(); }, [contextShopId]);
   
   // Fetch invoice line items and payments for analytics
   useEffect(() => {
@@ -3371,6 +3380,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         }
         return null;
       }
+
+      // Multi-shop: use current shop from context if set (team members use this)
+      if (contextShopId) {
+        return contextShopId;
+      }
       
       const authUserId = userData.user.id;
       const userEmail = userData.user.email;
@@ -4034,7 +4048,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         setWeekSettings(JSON.parse(savedWeekSettings));
       }
     }
-  }, []);
+  }, [contextShopId]);
 
   // Refetch bays when workOrders changes to update work order numbers
   useEffect(() => {
@@ -4230,7 +4244,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   // Fetch employees from Supabase
   useEffect(() => {
     fetchEmployees();
-  }, []);
+  }, [contextShopId]);
 
   // Fetch labor items
   const fetchLaborItems = async () => {
@@ -4303,7 +4317,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
   useEffect(() => {
     fetchLaborItems();
-  }, []);
+  }, [contextShopId]);
 
   // Fetch inventory (parts)
   const fetchInventory = async () => {
@@ -5665,7 +5679,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
   useEffect(() => {
     fetchInventory();
-  }, []);
+  }, [contextShopId]);
 
   // Redirect from DOT inspections if not accessible
   useEffect(() => {
@@ -5795,6 +5809,35 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     };
     loadUserProfile();
   }, [activeTab, settingsSubTab]);
+
+  // Fetch team members when User Permissions tab is active
+  const fetchTeamMembers = async () => {
+    const shopId = await getShopId();
+    if (!shopId) return;
+    setTeamMembersLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/team/members?shopId=${shopId}`, {
+        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTeamMembers(data.members || []);
+      } else {
+        setTeamMembers([]);
+      }
+    } catch {
+      setTeamMembers([]);
+    } finally {
+      setTeamMembersLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'user-permissions' && contextShopId) {
+      fetchTeamMembers();
+    }
+  }, [activeTab, contextShopId]);
 
   // Clear user profile on auth state change (logout)
   useEffect(() => {
@@ -5963,7 +6006,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
   useEffect(() => {
     fetchCustomers();
-  }, []);
+  }, [contextShopId]);
 
   // Check for duplicate phone number
   const checkDuplicatePhone = async (phone: string) => {
@@ -14044,11 +14087,199 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           {/* User Permissions Tab Content */}
           {activeTab === 'user-permissions' && (
             <div className="space-y-8">
-              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
-                <Shield className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-                <h3 className="text-2xl font-semibold text-gray-900 mb-2">Coming Soon</h3>
-                <p className="text-gray-600 mb-1">User Permissions is coming soon in the Enterprise plan.</p>
-                <p className="text-sm text-gray-500">This feature will allow you to manage user roles and permissions for your team.</p>
+              {/* Shop selector for multi-shop users */}
+              {shops.length > 1 && (
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Current Shop</label>
+                  <select
+                    value={contextShopId || ''}
+                    onChange={(e) => setCurrentShopId(e.target.value || null)}
+                    className="w-full max-w-md px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                  >
+                    {shops.map((s) => (
+                      <option key={s.id} value={s.id}>{s.shop_name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="border-b border-gray-200">
+                <nav className="-mb-px flex space-x-8">
+                  <button
+                    onClick={() => setTeamSubTab('users')}
+                    className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                      teamSubTab === 'users' ? 'border-primary-500 text-primary-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    Users
+                  </button>
+                  <button
+                    onClick={() => setTeamSubTab('roles')}
+                    className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                      teamSubTab === 'roles' ? 'border-primary-500 text-primary-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    Roles
+                  </button>
+                </nav>
+              </div>
+
+              {teamSubTab === 'users' && (
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+                  <div className="p-6 border-b border-gray-200 flex justify-between items-center">
+                    <h3 className="text-lg font-semibold text-gray-900">Team Members</h3>
+                    <button
+                      onClick={() => { setShowInviteModal(true); setInviteEmail(''); setInviteRole('technician'); }}
+                      className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center gap-2"
+                    >
+                      <UserPlus className="h-4 w-4" />
+                      Invite User
+                    </button>
+                  </div>
+                  <div className="p-6">
+                    {teamMembersLoading ? (
+                      <p className="text-gray-500">Loading...</p>
+                    ) : teamMembers.length === 0 ? (
+                      <p className="text-gray-500">No team members yet. Invite users to get started.</p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-gray-200">
+                            {teamMembers.map((m: any) => (
+                              <tr key={m.id || m.user_id}>
+                                <td className="px-4 py-3">
+                                  <div className="font-medium text-gray-900">{m.email || '—'}</div>
+                                  {(m.first_name || m.last_name) && (
+                                    <div className="text-sm text-gray-500">{[m.first_name, m.last_name].filter(Boolean).join(' ')}</div>
+                                  )}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span className="px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                                    {m.role?.name || (m.isOwner ? 'Owner' : '—')}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                    m.status === 'active' ? 'bg-green-100 text-green-800' :
+                                    m.status === 'pending' ? 'bg-amber-100 text-amber-800' :
+                                    'bg-gray-100 text-gray-800'
+                                  }`}>
+                                    {m.isOwner ? 'Owner' : (m.status || '—')}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {teamSubTab === 'roles' && (
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">System Roles</h3>
+                  <p className="text-sm text-gray-600 mb-6">Pre-defined roles with different permission levels. Assign roles when inviting users.</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {['Owner', 'Admin', 'Manager', 'Technician', 'Cashier'].map((name) => (
+                      <div key={name} className="border border-gray-200 rounded-lg p-4">
+                        <div className="font-medium text-gray-900">{name}</div>
+                        <div className="text-sm text-gray-500 mt-1">
+                          {name === 'Owner' && 'Full access, can transfer ownership'}
+                          {name === 'Admin' && 'Full access except team management'}
+                          {name === 'Manager' && 'Manage work orders, customers, inventory, reports'}
+                          {name === 'Technician' && 'Work orders, customers, inventory'}
+                          {name === 'Cashier' && 'Invoices, customers, view work orders'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Invite User Modal */}
+          {showInviteModal && (
+            <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+              <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Invite Team Member</h3>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Email *</label>
+                    <input
+                      type="email"
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                      placeholder="colleague@example.com"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Role</label>
+                    <select
+                      value={inviteRole}
+                      onChange={(e) => setInviteRole(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                    >
+                      <option value="admin">Admin</option>
+                      <option value="manager">Manager</option>
+                      <option value="technician">Technician</option>
+                      <option value="cashier">Cashier</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    onClick={() => setShowInviteModal(false)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    disabled={!inviteEmail.trim() || inviteSending}
+                    onClick={async () => {
+                      const shopId = await getShopId();
+                      if (!shopId) return;
+                      setInviteSending(true);
+                      try {
+                        const { data: { session } } = await supabase.auth.getSession();
+                        const res = await fetch('/api/team/invite', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+                          body: JSON.stringify({ shopId, email: inviteEmail.trim(), roleSlug: inviteRole }),
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                          showToast({ type: 'success', message: `Invite sent to ${inviteEmail}. Share the link with them.` });
+                          setShowInviteModal(false);
+                          fetchTeamMembers();
+                          if (data.invite?.acceptUrl) {
+                            await navigator.clipboard.writeText(data.invite.acceptUrl);
+                            showToast({ type: 'success', message: 'Invite link copied to clipboard.' });
+                          }
+                        } else {
+                          showToast({ type: 'error', message: data.error || 'Failed to send invite' });
+                        }
+                      } catch (e: any) {
+                        showToast({ type: 'error', message: e.message || 'Failed to send invite' });
+                      } finally {
+                        setInviteSending(false);
+                      }
+                    }}
+                    className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 disabled:opacity-50"
+                  >
+                    {inviteSending ? 'Sending...' : 'Send Invite'}
+                  </button>
+                </div>
               </div>
             </div>
           )}
