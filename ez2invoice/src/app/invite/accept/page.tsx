@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { CheckCircle, XCircle, Loader2 } from 'lucide-react';
 
-export default function InviteAcceptPage() {
+function InviteAcceptContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const token = searchParams.get('token');
@@ -115,5 +115,17 @@ export default function InviteAcceptPage() {
         <p className="text-sm text-gray-500">Redirecting to dashboard...</p>
       </div>
     </div>
+  );
+}
+
+export default function InviteAcceptPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <Loader2 className="h-12 w-12 animate-spin text-primary-500" />
+      </div>
+    }>
+      <InviteAcceptContent />
+    </Suspense>
   );
 }
