@@ -47,6 +47,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'This invite has expired' }, { status: 400 });
     }
 
+    // Ensure the logged-in user is the one the invite was sent to (prevent wrong person accepting)
+    const inviteEmail = (invite.email || '').toString().toLowerCase().trim();
+    const userEmail = (user.email || '').toLowerCase().trim();
+    if (inviteEmail && userEmail && inviteEmail !== userEmail) {
+      return NextResponse.json(
+        {
+          error: 'wrong_user',
+          inviteEmail,
+          userEmail,
+          message: `This invite was sent to ${invite.email}. You're logged in as ${user.email}. Please sign out and open this link again to accept the invite.`,
+        },
+        { status: 403 }
+      );
+    }
+
     const { error: membershipError } = await supabaseAdmin
       .from('shop_memberships')
       .upsert({
