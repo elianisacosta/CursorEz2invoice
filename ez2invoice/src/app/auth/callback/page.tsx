@@ -197,16 +197,15 @@ function AuthCallbackContent() {
             return;
           }
         } else {
-          // No priceId found - this shouldn't happen if user selected a plan
-          console.warn('No priceId found after successful auth. Redirecting to dashboard.');
-          // Clear any stale localStorage
+          // No priceId - redirect to `next` (e.g. /invite/accept?token=xxx) or dashboard
           if (typeof window !== 'undefined') {
             localStorage.removeItem('pending_priceId');
             localStorage.removeItem('pending_planName');
           }
-          // Redirect to dashboard
+          const nextPath = searchParams.get('next');
+          const safeNext = nextPath && nextPath.startsWith('/') && !nextPath.startsWith('//') ? nextPath : '/dashboard';
           setStatus('redirecting');
-          router.push('/dashboard');
+          router.push(safeNext);
         }
       } catch (error: any) {
         console.error('Unexpected error in auth callback:', error);

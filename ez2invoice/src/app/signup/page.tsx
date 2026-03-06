@@ -43,14 +43,21 @@ function SignUpForm() {
       // Handle both 'priceId' and 'priceld' (typo in URL)
       const priceId = searchParams.get('priceId') || searchParams.get('priceld');
       const planName = searchParams.get('planName') ?? undefined;
+      const redirectParam = searchParams.get('redirect');
 
-      // Build redirect URL - include priceId if present (for both founders and regular users)
-      // Founders can still purchase plans, they just get dashboard access without payment
-      // Use NEXT_PUBLIC_SITE_URL for production, fallback to window.location.origin for development
+      // Build redirect URL for confirmation email
+      // - priceId: Stripe checkout flow
+      // - redirect: invite flow (e.g. /invite/accept?token=xxx)
+      // - else: dashboard
       const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
-      const redirectTo = priceId
-        ? `${baseUrl}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
-        : `${baseUrl}/auth/callback?next=/dashboard`;
+      let redirectTo: string;
+      if (priceId) {
+        redirectTo = `${baseUrl}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`;
+      } else if (redirectParam && redirectParam.startsWith('/') && !redirectParam.startsWith('//')) {
+        redirectTo = `${baseUrl}/auth/callback?next=${encodeURIComponent(redirectParam)}`;
+      } else {
+        redirectTo = `${baseUrl}/auth/callback?next=/dashboard`;
+      }
       
       // Store priceId and planName in localStorage so callback can retrieve them
       // (Supabase might not preserve query params in redirect)
