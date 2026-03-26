@@ -19680,19 +19680,16 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         setShowInvoiceCustomerDropdown(true);
                       }}
                       onFocus={() => {
-                        if (!editingInvoice) {
-                          setShowInvoiceCustomerDropdown(true);
-                        }
+                        setShowInvoiceCustomerDropdown(true);
                       }}
                       onBlur={() => {
                         // Delay hiding dropdown to allow clicks
                         setTimeout(() => setShowInvoiceCustomerDropdown(false), 200);
                       }}
                       placeholder="Search by name or phone number..."
-                      disabled={!!editingInvoice}
-                      className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                     />
-                    {showInvoiceCustomerDropdown && !editingInvoice && customers.length > 0 && (
+                    {showInvoiceCustomerDropdown && customers.length > 0 && (
                       <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
                         {(() => {
                           // Filter customers by name (individual or company) or phone number
@@ -19711,7 +19708,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 <div
                                   key={customer.id}
                                   onClick={async () => {
-                                    setInvoiceFormData(prev => ({ ...prev, customer_id: customer.id }));
+                                    setInvoiceFormData(prev => ({
+                                      ...prev,
+                                      customer_id: customer.id,
+                                      // Avoid mismatching an existing work order to a different customer
+                                      work_order_id: ''
+                                    }));
                                     setInvoiceCustomerSearch(displayName);
                                     setShowInvoiceCustomerDropdown(false);
                       
@@ -19843,7 +19845,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               <div
                                 key={customer.id}
                                 onClick={async () => {
-                                  setInvoiceFormData(prev => ({ ...prev, customer_id: customer.id }));
+                                  setInvoiceFormData(prev => ({
+                                    ...prev,
+                                    customer_id: customer.id,
+                                    // Avoid mismatching an existing work order to a different customer
+                                    work_order_id: ''
+                                  }));
                                   setInvoiceCustomerSearch(displayName);
                                   setShowInvoiceCustomerDropdown(false);
                                   
