@@ -20981,23 +20981,28 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       showToast({ type: 'success', message: 'Invoice updated' });
                       void fetchInvoices(); // refresh list in background; UI already updated optimistically
 
-                      // Close modal and reset form immediately for <1s feel
-                      setShowCreateInvoiceModal(false);
-                      setEditingInvoice(null);
-                      setInvoiceFormData({
-                        customer_id: '',
-                        work_order_id: '',
-                        payment_terms: 'Due on receipt',
-                        due_date: getTodayDate(),
-                        invoice_date: getTodayDate(),
-                        tax_rate: defaultTaxRate / 100,
-                        notes: '',
-                        internal_notes: ''
+                      // Keep drawer open so user can print the updated invoice immediately
+                      setEditingInvoice((prev) => {
+                        if (!prev) return prev;
+                        return {
+                          ...prev,
+                          subtotal,
+                          tax_rate: invoiceFormData.tax_rate ?? prev.tax_rate,
+                          tax_amount: taxAmount,
+                          total_amount: totalAmount,
+                          apply_card_fee: applyCardFee,
+                          card_fee_amount: cardFeeAmount,
+                          status: invoiceStatus,
+                          payment_terms: invoiceFormData.payment_terms || (prev as any).payment_terms,
+                          due_date: invoiceFormData.due_date || prev.due_date,
+                          notes: invoiceFormData.notes ?? (prev as any).notes,
+                          internal_notes: invoiceFormData.internal_notes ?? (prev as any).internal_notes,
+                          created_at: updatedCreatedAt ?? prev.created_at,
+                          customer_id: invoiceFormData.customer_id || prev.customer_id,
+                          work_order_id: invoiceFormData.work_order_id || null,
+                          updated_at: useOptimisticLock ? updateData.updated_at : (prev as any).updated_at
+                        } as any;
                       });
-                      setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
-                      setInvoiceItemSearch({});
-                      setApplyCardFee(false);
-                      setInvoicePayments([]);
                     } else {
                       // Create new invoice
                       // Get shop_id using helper function (creates shop if needed)
