@@ -266,17 +266,9 @@ function SignUpForm() {
                           const redirectTo = priceId
                             ? `${baseUrl}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
                             : `${baseUrl}/auth/callback?next=/dashboard`;
-                          
-                          // #region agent log
-                          fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'signup/page.tsx:263',message:'Calling resendConfirmation from error section',data:{email,redirectTo,priceId,planName},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                          // #endregion
-                          
+
                           const { error: resendError } = await resendConfirmation(email, redirectTo);
-                          
-                          // #region agent log
-                          fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'signup/page.tsx:268',message:'resendConfirmation completed from error section',data:{hasError:!!resendError,errorMessage:resendError?.message,errorCode:resendError?.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                          // #endregion
-                          
+
                           if (resendError) {
                             console.error('Resend confirmation error:', resendError);
                             setError(`Failed to resend email: ${resendError.message || 'Unknown error'}. Please check your email address and try again.`);
@@ -312,17 +304,9 @@ function SignUpForm() {
                         const redirectTo = priceId
                           ? `${baseUrl}/auth/callback?priceId=${encodeURIComponent(priceId)}${planName ? `&planName=${encodeURIComponent(planName)}` : ''}`
                           : `${baseUrl}/auth/callback?next=/dashboard`;
-                        
-                        // #region agent log
-                        fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'signup/page.tsx:300',message:'Calling resendConfirmation from success section',data:{email,redirectTo,priceId,planName},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-                        // #endregion
-                        
+
                         const { data: resendData, error: resendError } = await resendConfirmation(email, redirectTo);
-                        
-                        // #region agent log
-                        fetch('http://127.0.0.1:7242/ingest/b771a6b0-2dff-41a4-add2-f5fd7dea5edd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'signup/page.tsx:305',message:'resendConfirmation completed from success section',data:{hasError:!!resendError,errorMessage:resendError?.message,errorCode:resendError?.status,hasData:!!resendData},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-                        // #endregion
-                        
+
                         if (resendError) {
                           console.error('Resend confirmation error:', resendError);
                           // Provide more helpful error messages
