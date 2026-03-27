@@ -207,3 +207,24 @@ BEGIN
     CREATE POLICY "labor_items_delete" ON public.labor_items FOR DELETE USING (user_has_shop_access(auth.uid(), shop_id));
   END IF;
 END $$;
+
+-- ============================================
+-- invoice_payments (via invoice shop)
+-- ============================================
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'invoice_payments') THEN
+    DROP POLICY IF EXISTS invoice_payments_select ON public.invoice_payments;
+    DROP POLICY IF EXISTS invoice_payments_insert ON public.invoice_payments;
+    DROP POLICY IF EXISTS invoice_payments_update ON public.invoice_payments;
+    DROP POLICY IF EXISTS invoice_payments_delete ON public.invoice_payments;
+    CREATE POLICY invoice_payments_select ON public.invoice_payments FOR SELECT
+      USING (EXISTS (SELECT 1 FROM public.invoices i WHERE i.id = invoice_payments.invoice_id AND user_has_shop_access(auth.uid(), i.shop_id)));
+    CREATE POLICY invoice_payments_insert ON public.invoice_payments FOR INSERT
+      WITH CHECK (EXISTS (SELECT 1 FROM public.invoices i WHERE i.id = invoice_payments.invoice_id AND user_has_shop_access(auth.uid(), i.shop_id)));
+    CREATE POLICY invoice_payments_update ON public.invoice_payments FOR UPDATE
+      USING (EXISTS (SELECT 1 FROM public.invoices i WHERE i.id = invoice_payments.invoice_id AND user_has_shop_access(auth.uid(), i.shop_id)));
+    CREATE POLICY invoice_payments_delete ON public.invoice_payments FOR DELETE
+      USING (EXISTS (SELECT 1 FROM public.invoices i WHERE i.id = invoice_payments.invoice_id AND user_has_shop_access(auth.uid(), i.shop_id)));
+  END IF;
+END $$;

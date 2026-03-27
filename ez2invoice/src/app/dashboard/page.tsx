@@ -1649,6 +1649,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const [accountsReceivableFilter, setAccountsReceivableFilter] = useState<'all' | AgingBucket>('all');
   const [accountsReceivableSearch, setAccountsReceivableSearch] = useState('');
   const [markingInvoiceId, setMarkingInvoiceId] = useState<string | null>(null);
+  const [deletingPaymentId, setDeletingPaymentId] = useState<string | null>(null);
   const [showRecordPaymentModal, setShowRecordPaymentModal] = useState(false);
   const [invoiceForPayment, setInvoiceForPayment] = useState<Invoice | null>(null);
   const [paymentFormData, setPaymentFormData] = useState({
@@ -2285,6 +2286,160 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       alert('Unexpected error when recording payment.');
     } finally {
       setMarkingInvoiceId(null);
+    }
+  };
+
+  /** Remove one payment row and sync invoices.paid_amount + status with remaining invoice_payments. */
+  const handleDeleteInvoicePayment = async (invoiceId: string, payment: { id: string; amount?: number }) => {
+    if (!payment?.id || !invoiceId) return;
+    const ok = confirm(
+      'Delete this payment? You can record it again with the correct amount or method.'
+    );
+    if (!ok) return;
+
+    setDeletingPaymentId(payment.id);
+    try {
+      const { error: delErr } = await supabase.from('invoice_payments').delete().eq('id', payment.id);
+      if (delErr) {
+        console.error('Error deleting payment:', delErr);
+        alert(`Could not delete payment: ${delErr.message || 'Unknown error'}`);
+        return;
+      }
+
+      const { data: restRows } = await supabase
+        .from('invoice_payments')
+        .select('amount')
+        .eq('invoice_id', invoiceId);
+      const newPaid = (restRows || []).reduce((s, r: any) => s + (Number(r.amount) || 0), 0);
+
+      const { data: invRow, error: invErr } = await supabase
+        .from('invoices')
+        .select('total_amount, card_fee_amount, paid_at')
+        .eq('id', invoiceId)
+        .maybeSingle();
+
+      if (invErr || !invRow) {
+        console.error('Error loading invoice after payment delete:', invErr);
+        showToast({ type: 'success', message: 'Payment removed' });
+        await fetchInvoices();
+        setInvoicePayments((prev) => prev.filter((p: any) => p.id !== payment.id));
+        return;
+      }
+
+      const invoiceTotal = Number((invRow as any).total_amount) || 0;
+      const cardFeeAmount = Number((invRow as any).card_fee_amount) || 0;
+      const amountDue = invoiceTotal + cardFeeAmount;
+      const remaining = amountDue - newPaid;
+
+      let newStatus: string;
+      if (remaining <= 0.01) {
+        newStatus = 'paid';
+      } else if (newPaid > 0.01) {
+        newStatus = 'partial';
+      } else {
+        newStatus = amountDue > 0.01 ? 'unpaid' : 'pending';
+      }
+
+      const { error: updErr } = await supabase
+        .from('invoices')
+        .update({
+          paid_amount: newPaid,
+          status: newStatus,
+          paid_at: newStatus === 'paid' ? new Date().toISOString() : null,
+        })
+        .eq('id', invoiceId);
+
+      if (updErr) {
+        console.error('Error updating invoice after payment delete:', updErr);
+        alert('Payment was removed but updating the invoice failed. Please refresh and check totals.');
+      }
+
+      setInvoicePayments((prev) => prev.filter((p: any) => p.id !== payment.id));
+      showToast({ type: 'success', message: 'Payment deleted' });
+      await fetchInvoices();
+
+      if (editingInvoice && editingInvoice.id === invoiceId) {
+        try {
+          const { data: updatedRow } = await supabase
+            .from('invoice_balances_v')
+            .select('*')
+            .eq('id', invoiceId)
+            .maybeSingle();
+          if (updatedRow) {
+            const customer = (editingInvoice as any).customer;
+            setEditingInvoice({ ...updatedRow, customer } as Invoice);
+          } else {
+            const { data: invOnly } = await supabase.from('invoices').select('*').eq('id', invoiceId).maybeSingle();
+            if (invOnly) {
+              const customer = (editingInvoice as any).customer;
+              setEditingInvoice({ ...invOnly, customer } as Invoice);
+            }
+          }
+        } catch (e) {
+          console.log('Error refreshing edit modal after payment delete:', e);
+        }
+      }
+    } catch (e) {
+      console.error('handleDeleteInvoicePayment:', e);
+      alert('Unexpected error deleting payment.');
+    } finally {
+      setDeletingPaymentId(null);
+    }
+  };
+
+  /** Legacy: paid_amount set on invoice without invoice_payments rows — clear so user can re-record. */
+  const handleClearLegacyInvoicePayment = async (invoiceId: string) => {
+    if (!invoiceId) return;
+    const ok = confirm(
+      'Remove the recorded payment from this invoice? You can use Record Payment to add the correct amount.'
+    );
+    if (!ok) return;
+
+    setDeletingPaymentId('legacy');
+    try {
+      const { data: invRow } = await supabase
+        .from('invoices')
+        .select('total_amount, card_fee_amount')
+        .eq('id', invoiceId)
+        .maybeSingle();
+      const invoiceTotal = Number((invRow as any)?.total_amount) || 0;
+      const cardFeeAmount = Number((invRow as any)?.card_fee_amount) || 0;
+      const amountDue = invoiceTotal + cardFeeAmount;
+
+      const { error } = await supabase
+        .from('invoices')
+        .update({
+          paid_amount: 0,
+          status: amountDue > 0.01 ? 'unpaid' : 'pending',
+          paid_at: null,
+        })
+        .eq('id', invoiceId);
+
+      if (error) {
+        console.error('Error clearing invoice payment:', error);
+        alert(`Could not clear payment: ${error.message || 'Unknown error'}`);
+        return;
+      }
+
+      showToast({ type: 'success', message: 'Invoice payment cleared' });
+      await fetchInvoices();
+
+      if (editingInvoice && editingInvoice.id === invoiceId) {
+        const { data: updatedRow } = await supabase
+          .from('invoice_balances_v')
+          .select('*')
+          .eq('id', invoiceId)
+          .maybeSingle();
+        if (updatedRow) {
+          const customer = (editingInvoice as any).customer;
+          setEditingInvoice({ ...updatedRow, customer } as Invoice);
+        }
+      }
+    } catch (e) {
+      console.error('handleClearLegacyInvoicePayment:', e);
+      alert('Unexpected error.');
+    } finally {
+      setDeletingPaymentId(null);
     }
   };
 
@@ -20480,11 +20635,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       const paymentsForThisInvoice = editingInvoice?.id
                         ? invoicePayments.filter((p: any) => p.invoice_id === editingInvoice.id)
                         : [];
+                      const paymentsSortedOldestFirst = [...paymentsForThisInvoice].sort(
+                        (a: any, b: any) =>
+                          new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+                      );
                       return loadingPayments ? (
                         <p className="text-sm text-gray-500">Loading payment history...</p>
                       ) : paymentsForThisInvoice.length > 0 ? (
                       <div className="space-y-3">
-                        {paymentsForThisInvoice.map((payment: any, index: number) => {
+                        {paymentsSortedOldestFirst.map((payment: any, index: number) => {
                           const paymentAmount = payment.amount || 0;
                           const rawPaymentMethod = payment.payment_method || 'unknown';
                           // Normalize payment method for display (handle both 'finance' and 'financing')
@@ -20495,7 +20654,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           // Determine payment type based on cumulative payments up to this point
                           const invoiceTotal = editingInvoice?.total_amount || 0;
                           // Calculate cumulative paid amount up to and including this payment
-                          const cumulativePaid = paymentsForThisInvoice
+                          const cumulativePaid = paymentsSortedOldestFirst
                             .slice(0, index + 1)
                             .reduce((sum: number, p: any) => sum + ((p.amount || 0) - (p.card_fee || 0)), 0);
                           const isFullPayment = cumulativePaid >= invoiceTotal - 0.01; // Account for rounding
@@ -20511,8 +20670,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                                paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1);
                           
                           return (
-                            <div key={payment.id} className="bg-gray-50 rounded-lg p-3 flex items-center justify-between">
-                              <div className="flex items-center gap-3 flex-1">
+                            <div key={payment.id} className="bg-gray-50 rounded-lg p-3 flex items-center justify-between gap-2 min-w-0">
+                              <div className="flex items-center gap-3 flex-1 min-w-0 flex-wrap">
                                 <span className="text-sm text-gray-600">
                                   {formatDateInTimezone(payment.created_at)}
                                 </span>
@@ -20523,7 +20682,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   {paymentType}
                                 </span>
                               </div>
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-shrink-0">
                                 <span className="text-sm font-semibold text-gray-900">
                                   ${baseAmount.toFixed(2)}
                                 </span>
@@ -20531,6 +20690,18 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   <span className="text-sm text-orange-600">
                                     + ${cardFee.toFixed(2)} fee
                                   </span>
+                                )}
+                                {payment.id && editingInvoice?.id && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteInvoicePayment(editingInvoice.id, payment)}
+                                    disabled={deletingPaymentId === payment.id}
+                                    className="p-2 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50 touch-manipulation"
+                                    title="Delete this payment"
+                                    aria-label="Delete this payment"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
                                 )}
                               </div>
                             </div>
@@ -20579,8 +20750,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         
                         return (
                           <div className="space-y-3">
-                            <div className="bg-gray-50 rounded-lg p-3 flex items-center justify-between">
-                              <div className="flex items-center gap-3 flex-1">
+                            <div className="bg-gray-50 rounded-lg p-3 flex items-center justify-between gap-2 min-w-0">
+                              <div className="flex items-center gap-3 flex-1 min-w-0 flex-wrap">
                                 <span className="text-sm text-gray-600">
                                   {editingInvoice.paid_at ? formatDateInTimezone(editingInvoice.paid_at) : 'Payment recorded'}
                                 </span>
@@ -20591,7 +20762,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   {paidAmount >= invoiceTotal - 0.01 ? 'Full payment' : 'Partial payment'}
                                 </span>
                               </div>
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-shrink-0">
                                 <span className="text-sm font-semibold text-gray-900">
                                   ${baseAmount.toFixed(2)}
                                 </span>
@@ -20600,9 +20771,19 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     + ${cardFee.toFixed(2)} fee
                                   </span>
                                 )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleClearLegacyInvoicePayment(editingInvoice.id)}
+                                  disabled={deletingPaymentId === 'legacy'}
+                                  className="p-2 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50 touch-manipulation"
+                                  title="Clear recorded payment"
+                                  aria-label="Clear recorded payment"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
                               </div>
                             </div>
-                            <p className="text-xs text-gray-500 italic">Payment details from invoice record</p>
+                            <p className="text-xs text-gray-500 italic">Payment details from invoice record only — delete clears the amount so you can re-enter.</p>
                           </div>
                         );
                       })()
