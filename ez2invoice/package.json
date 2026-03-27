@@ -10,10 +10,8 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "-": "^0.0.1",
     "@supabase/supabase-js": "^2.76.1",
     "critters": "^0.0.23",
-    "D": "^1.0.0",
     "lucide-react": "^0.546.0",
     "next": "^16.0.7",
     "react": "19.2.0",
