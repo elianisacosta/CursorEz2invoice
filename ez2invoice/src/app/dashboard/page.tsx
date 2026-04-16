@@ -2128,6 +2128,75 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     setShowRecordPaymentModal(true);
   };
 
+  const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
+
+  /** Sum of gross amounts charged (what customer paid), from invoice_payments. */
+  const getGrossPaidForInvoice = (invoiceId: string | undefined) => {
+    if (!invoiceId) return 0;
+    const rows = invoicePayments.filter((p: any) => p.invoice_id === invoiceId);
+    if (rows.length === 0) return 0;
+    return round2(rows.reduce((s, p: any) => s + (Number(p.amount) || 0), 0));
+  };
+
+  /** Sum of card_fee portions already allocated to payment rows. */
+  const getAllocatedCardFeesForInvoice = (invoiceId: string | undefined) => {
+    if (!invoiceId) return 0;
+    return round2(
+      invoicePayments
+        .filter((p: any) => p.invoice_id === invoiceId)
+        .reduce((s, p: any) => s + (Number(p.card_fee) || 0), 0)
+    );
+  };
+
+  /**
+   * Base paid toward invoice (sum of base portions on payment rows). No rows → use invoices.paid_amount (base).
+   * If `card_fee` is missing on a row but the method is card and the invoice has a card fee, treat `amount` as gross
+   * and split with the shop rate (same as insert path) so validation matches Balance Due / Pay Half.
+   */
+  const getBasePaidForInvoice = (
+    invoiceId: string | undefined,
+    fallbackPaidFromInvoice: number,
+    inv?: Invoice | { apply_card_fee?: boolean | null; card_fee_amount?: number | null }
+  ) => {
+    if (!invoiceId) return round2(fallbackPaidFromInvoice);
+    const rows = invoicePayments.filter((p: any) => p.invoice_id === invoiceId);
+    if (rows.length === 0) return round2(fallbackPaidFromInvoice);
+    const feeOn =
+      (inv as any)?.apply_card_fee === true || (Number((inv as any)?.card_fee_amount) || 0) > 0;
+    const rate = (cardProcessingFeePercentage || 0) / 100;
+    return round2(
+      rows.reduce((s, p: any) => {
+        const amt = Number(p.amount) || 0;
+        const cf = Number(p.card_fee) || 0;
+        if (cf > 0) return s + (amt - cf);
+        const raw = p.payment_method || '';
+        const method = raw === 'finance' ? 'financing' : raw;
+        if (feeOn && method === 'card' && rate > 0) {
+          return s + round2(amt / (1 + rate));
+        }
+        return s + amt;
+      }, 0)
+    );
+  };
+
+  /**
+   * Balance due = invoice total (base + full invoice card fee) minus gross paid so far.
+   * This matches "two equal card payments" (each half of total incl. fee) when both are card.
+   */
+  const getBalanceDueFromPayments = (inv: Invoice) => {
+    const baseTotal = Number(inv.total_amount) || 0;
+    const fullCardFee = Number((inv as any).card_fee_amount) || 0;
+    const feeOn = (inv as any).apply_card_fee === true || fullCardFee > 0;
+    const totalInclFee = round2(baseTotal + (feeOn ? fullCardFee : 0));
+    const gross = getGrossPaidForInvoice(inv.id);
+    if (gross > 0) return Math.max(0, round2(totalInclFee - gross));
+    if (inv.balance_due != null && !Number.isNaN(Number(inv.balance_due))) {
+      return Math.max(0, Number(inv.balance_due));
+    }
+    const paidBase = Number(inv.paid_amount) || 0;
+    return Math.max(0, round2(totalInclFee - paidBase));
+  };
+
   const handleRecordPayment = async () => {
     if (!invoiceForPayment?.id) return;
     
@@ -2139,94 +2208,112 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
     setMarkingInvoiceId(invoiceForPayment.id);
     try {
-      // balance_due = (total_amount + card_fee_amount) - paid; fee is never added again here
-      const invoiceTotal = invoiceForPayment.total_amount || 0;
-      const cardFeeAmount = Number((invoiceForPayment as any).card_fee_amount) || 0;
-      const amountDue = invoiceTotal + cardFeeAmount;
-      const alreadyPaid = invoiceForPayment.paid_amount || 0;
-      const newPaidAmount = alreadyPaid + paymentAmount;
-      const remaining = amountDue - newPaidAmount;
+      const normalizedMethod = paymentFormData.method === 'finance' ? 'financing' : paymentFormData.method;
+      const invoiceBaseTotal = Number(invoiceForPayment.total_amount) || 0;
+      const alreadyPaidBase = getBasePaidForInvoice(
+        invoiceForPayment.id,
+        Number(invoiceForPayment.paid_amount) || 0,
+        invoiceForPayment
+      );
+      const baseRemainingBefore = Math.max(0, invoiceBaseTotal - alreadyPaidBase);
+      const cardFeeRate = (cardProcessingFeePercentage || 0) / 100;
+      const feeEnabledOnInvoice = (invoiceForPayment as any).apply_card_fee === true || (Number((invoiceForPayment as any).card_fee_amount) || 0) > 0;
+      const isCardPayment = normalizedMethod === 'card' && feeEnabledOnInvoice;
 
-      // Determine status based on remaining amount due (after this payment)
+      // For card transactions, user-entered payment amount is gross (base + fee).
+      // Convert gross -> base so invoices.paid_amount always tracks base paid only.
+      let paymentBasePortion = paymentAmount;
+      let paymentCardFeePortion = 0;
+      if (isCardPayment && cardFeeRate > 0) {
+        paymentBasePortion = round2(paymentAmount / (1 + cardFeeRate));
+        paymentCardFeePortion = round2(paymentAmount - paymentBasePortion);
+      }
+
+      if (paymentBasePortion <= 0) {
+        alert('Please enter a valid payment amount.');
+        return;
+      }
+
+      if (paymentBasePortion > baseRemainingBefore + 0.01) {
+        const maxAllowed = isCardPayment && cardFeeRate > 0
+          ? round2(baseRemainingBefore * (1 + cardFeeRate))
+          : round2(baseRemainingBefore);
+        alert(`Payment exceeds remaining balance. Maximum allowed is $${maxAllowed.toFixed(2)} for this payment method.`);
+        return;
+      }
+
+      const newPaidAmount = round2(alreadyPaidBase + paymentBasePortion);
+      const remainingBase = Math.max(0, invoiceBaseTotal - newPaidAmount);
+
+      // Determine status based on remaining base amount (fees are per transaction only)
       let newStatus = invoiceForPayment.status;
-      if (remaining <= 0.01) {
+      if (remainingBase <= 0.01) {
         newStatus = 'paid';
       } else if (newPaidAmount > 0) {
         newStatus = 'partial';
       }
 
-      const { error } = await supabase
+      const { data: userData } = await supabase.auth.getUser();
+      const insertPayload: Record<string, unknown> = {
+        invoice_id: invoiceForPayment.id,
+        amount: paymentAmount,
+        payment_method: normalizedMethod,
+        notes: paymentFormData.notes || null,
+        created_by: userData?.user?.id || null,
+      };
+      const insertWithFee = { ...insertPayload, card_fee: paymentCardFeePortion };
+
+      let insertRes = await supabase
+        .from('invoice_payments')
+        .insert(insertWithFee)
+        .select('id')
+        .single();
+
+      if (insertRes.error) {
+        const msg = String((insertRes.error as { message?: string }).message || '');
+        const code = String((insertRes.error as { code?: string }).code || '');
+        const isMissingColumn =
+          code === 'PGRST204' ||
+          code === '42703' ||
+          msg.toLowerCase().includes('card_fee') ||
+          msg.includes('schema cache');
+        if (isMissingColumn && paymentCardFeePortion !== 0) {
+          insertRes = await supabase.from('invoice_payments').insert(insertPayload).select('id').single();
+        }
+      }
+
+      if (insertRes.error) {
+        const msg = String((insertRes.error as { message?: string }).message || '');
+        const code = String((insertRes.error as { code?: string }).code || '');
+        const isTableMissing =
+          code === 'PGRST116' || (msg.includes('relation') && msg.includes('does not exist'));
+        console.error('invoice_payments insert failed:', insertRes.error);
+        alert(
+          isTableMissing
+            ? 'Payment history could not be saved. Please run database migrations or contact support.'
+            : `Could not save payment: ${msg || 'Unknown error'}. The invoice was not updated.`
+        );
+        return;
+      }
+
+      const insertedId = (insertRes.data as { id?: string } | null)?.id;
+
+      const { error: invErr } = await supabase
         .from('invoices')
         .update({
           status: newStatus,
           paid_amount: newPaidAmount,
-          paid_at: newStatus === 'paid' ? new Date().toISOString() : invoiceForPayment.paid_at
+          paid_at: newStatus === 'paid' ? new Date().toISOString() : invoiceForPayment.paid_at,
         })
         .eq('id', invoiceForPayment.id);
 
-      if (error) {
-        console.error('Error recording payment:', error);
-        alert('Unable to record payment. Please try again.');
-        return;
-      }
-
-      // Insert payment row only; amount = what the customer paid (no extra fee added — fee is already in balance_due)
-      try {
-        const { data: userData } = await supabase.auth.getUser();
-        const normalizedMethod = paymentFormData.method === 'finance' ? 'financing' : paymentFormData.method;
-        
-        const insertPayload: any = {
-          invoice_id: invoiceForPayment.id,
-          amount: paymentAmount,
-          payment_method: normalizedMethod,
-          notes: paymentFormData.notes || null,
-          created_by: userData?.user?.id || null
-        };
-        
-        const { error: paymentInsertError } = await supabase
-          .from('invoice_payments')
-          .insert(insertPayload)
-          .select();
-        
-        if (paymentInsertError) {
-          const err = paymentInsertError as { message?: string; code?: string; details?: string; hint?: string };
-          const errorMessage = err.message || '';
-          const errorCode = err.code || '';
-          const errorDetails = err.details || '';
-          const errorHint = err.hint || '';
-          
-          // Check if this is a table-not-found, missing column, or RLS error (expected in some cases)
-          const isTableNotFound = errorCode === 'PGRST116' || 
-                                 errorMessage.includes('relation') || 
-                                 errorMessage.includes('table') ||
-                                 errorMessage.includes('does not exist');
-          const isMissingColumn = errorCode === 'PGRST204' || 
-                                 errorMessage.includes('column') ||
-                                 errorMessage.includes('Could not find');
-          const isRLSError = errorCode === '42501' || 
-                            errorMessage.includes('row-level security') ||
-                            errorMessage.includes('RLS');
-          
-          // Only log if there's actual error information and it's not an expected error
-          const hasErrorInfo = errorMessage || errorCode || errorDetails || errorHint;
-          const isEmptyError = !hasErrorInfo && 
-                              (typeof paymentInsertError === 'object' && 
-                               Object.keys(paymentInsertError).length === 0);
-          
-          if (!isEmptyError && !isTableNotFound && !isMissingColumn && !isRLSError && hasErrorInfo) {
-            console.error('Error creating payment record:', {
-              message: errorMessage || 'Unknown error',
-              code: errorCode,
-              details: errorDetails,
-              hint: errorHint
-            });
-          }
-          // Don't fail the whole operation - invoice was already updated successfully
-          // Payment record creation is optional - invoice payment tracking still works
+      if (invErr) {
+        console.error('Error recording payment:', invErr);
+        if (insertedId) {
+          await supabase.from('invoice_payments').delete().eq('id', insertedId);
         }
-      } catch (paymentError) {
-        // Table might not exist yet, that's okay - we still updated the invoice
-        console.log('Could not create payment record (table may not exist):', paymentError);
+        alert('Unable to update the invoice after saving the payment. Please try again.');
+        return;
       }
 
       showToast({ type: 'success', message: 'Payment recorded successfully' });
@@ -2308,13 +2395,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       const { data: restRows } = await supabase
         .from('invoice_payments')
-        .select('amount')
+        .select('amount, card_fee')
         .eq('invoice_id', invoiceId);
-      const newPaid = (restRows || []).reduce((s, r: any) => s + (Number(r.amount) || 0), 0);
+      const newPaid = round2((restRows || []).reduce((s, r: any) => s + ((Number(r.amount) || 0) - (Number((r as any).card_fee) || 0)), 0));
 
       const { data: invRow, error: invErr } = await supabase
         .from('invoices')
-        .select('total_amount, card_fee_amount, paid_at')
+        .select('total_amount, paid_at')
         .eq('id', invoiceId)
         .maybeSingle();
 
@@ -2327,9 +2414,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       }
 
       const invoiceTotal = Number((invRow as any).total_amount) || 0;
-      const cardFeeAmount = Number((invRow as any).card_fee_amount) || 0;
-      const amountDue = invoiceTotal + cardFeeAmount;
-      const remaining = amountDue - newPaid;
+      const remaining = invoiceTotal - newPaid;
 
       let newStatus: string;
       if (remaining <= 0.01) {
@@ -2337,7 +2422,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       } else if (newPaid > 0.01) {
         newStatus = 'partial';
       } else {
-        newStatus = amountDue > 0.01 ? 'unpaid' : 'pending';
+        newStatus = invoiceTotal > 0.01 ? 'unpaid' : 'pending';
       }
 
       const { error: updErr } = await supabase
@@ -2399,18 +2484,16 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     try {
       const { data: invRow } = await supabase
         .from('invoices')
-        .select('total_amount, card_fee_amount')
+        .select('total_amount')
         .eq('id', invoiceId)
         .maybeSingle();
       const invoiceTotal = Number((invRow as any)?.total_amount) || 0;
-      const cardFeeAmount = Number((invRow as any)?.card_fee_amount) || 0;
-      const amountDue = invoiceTotal + cardFeeAmount;
 
       const { error } = await supabase
         .from('invoices')
         .update({
           paid_amount: 0,
-          status: amountDue > 0.01 ? 'unpaid' : 'pending',
+          status: invoiceTotal > 0.01 ? 'unpaid' : 'pending',
           paid_at: null,
         })
         .eq('id', invoiceId);
@@ -19585,15 +19668,24 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
             </div>
 
             <div className="p-6">
-              {/* Invoice Summary: total_amount = base only; balance_due = total + card_fee - paid */}
+              {/* Invoice Summary: total incl. fee is fixed; balance = total - gross paid (card fee split across card payments). */}
               {(() => {
                 const baseTotal = (invoiceForPayment.total_amount ?? 0);
-                const cardFee = Number((invoiceForPayment as any).card_fee_amount) || 0;
-                const amountDue = baseTotal + cardFee;
-                const paid = invoiceForPayment.paid_amount ?? 0;
-                const balanceDue = invoiceForPayment.balance_due != null
-                  ? Math.max(0, Number(invoiceForPayment.balance_due))
-                  : Math.max(0, amountDue - paid);
+                const fullInvCardFee = Number((invoiceForPayment as any).card_fee_amount) || 0;
+                const feeEnabledOnInvoice =
+                  (invoiceForPayment as any).apply_card_fee === true || fullInvCardFee > 0;
+                const totalInclFee = round2(baseTotal + (feeEnabledOnInvoice ? fullInvCardFee : 0));
+                const grossPaid = getGrossPaidForInvoice(invoiceForPayment.id);
+                const paidDisplay =
+                  grossPaid > 0
+                    ? grossPaid
+                    : Number(invoiceForPayment.paid_amount) || 0;
+                const balanceDue = getBalanceDueFromPayments(invoiceForPayment);
+                const allocatedFee = getAllocatedCardFeesForInvoice(invoiceForPayment.id);
+                const remainingCardFee = Math.max(0, round2(fullInvCardFee - allocatedFee));
+                const payingByCard = paymentFormData.method === 'card';
+                const showFeeOnNext =
+                  feeEnabledOnInvoice && payingByCard && balanceDue > 0 && remainingCardFee > 0.005;
                 return (
               <div className="bg-gray-50 rounded-lg p-4 mb-6">
                 <div className="space-y-2">
@@ -19605,25 +19697,31 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     <span className="text-gray-600">Tax (${(defaultTaxRate).toFixed(1)}%):</span>
                     <span className="font-medium">${(invoiceForPayment.tax_amount || 0).toFixed(2)}</span>
                   </div>
-                  {cardFee > 0 && (
+                  {feeEnabledOnInvoice && fullInvCardFee > 0 && (
                     <div className="flex justify-between">
-                      <span className="text-gray-600">Card Processing Fee ({cardProcessingFeePercentage}%):</span>
-                      <span className="font-medium text-orange-600">${cardFee.toFixed(2)}</span>
+                      <span className="text-gray-600">Card Processing Fee ({cardProcessingFeePercentage}%, total):</span>
+                      <span className="font-medium text-orange-600">${fullInvCardFee.toFixed(2)}</span>
                     </div>
                   )}
                   <div className="flex justify-between border-t border-gray-300 pt-2">
                     <span className="font-bold text-gray-900">Invoice Total (base):</span>
                     <span className="font-bold text-gray-900">${baseTotal.toFixed(2)}</span>
                   </div>
-                  {cardFee > 0 && (
+                  {feeEnabledOnInvoice && (
                     <div className="flex justify-between">
-                      <span className="font-bold text-gray-900">Amount due (incl. fee):</span>
-                      <span className="font-bold text-gray-900">${amountDue.toFixed(2)}</span>
+                      <span className="font-bold text-gray-900">Total (incl. card fee):</span>
+                      <span className="font-bold text-gray-900">${totalInclFee.toFixed(2)}</span>
+                    </div>
+                  )}
+                  {showFeeOnNext && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Card fee (this payment):</span>
+                      <span className="font-medium text-orange-600">${remainingCardFee.toFixed(2)}</span>
                     </div>
                   )}
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Already Paid:</span>
-                    <span className="font-medium">${paid.toFixed(2)}</span>
+                    <span className="text-gray-600">Already Paid (gross):</span>
+                    <span className="font-medium">${paidDisplay.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between border-t border-gray-300 pt-2">
                     <span className="font-bold text-gray-900">Balance Due:</span>
@@ -19642,9 +19740,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <div className="flex space-x-2 mb-3">
                   <button
                     onClick={() => {
-                      const balanceDue = invoiceForPayment.balance_due != null
-                        ? Math.max(0, Number(invoiceForPayment.balance_due))
-                        : Math.max(0, (invoiceForPayment.total_amount ?? 0) + (Number((invoiceForPayment as any).card_fee_amount) || 0) - (invoiceForPayment.paid_amount ?? 0));
+                      const balanceDue = getBalanceDueFromPayments(invoiceForPayment);
                       setPaymentFormData(prev => ({ ...prev, amount: balanceDue.toFixed(2) }));
                     }}
                     className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
@@ -19653,9 +19749,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   </button>
                   <button
                     onClick={() => {
-                      const balanceDue = invoiceForPayment.balance_due != null
-                        ? Math.max(0, Number(invoiceForPayment.balance_due))
-                        : Math.max(0, (invoiceForPayment.total_amount ?? 0) + (Number((invoiceForPayment as any).card_fee_amount) || 0) - (invoiceForPayment.paid_amount ?? 0));
+                      const balanceDue = getBalanceDueFromPayments(invoiceForPayment);
                       setPaymentFormData(prev => ({ ...prev, amount: (balanceDue / 2).toFixed(2) }));
                     }}
                     className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
@@ -20536,52 +20630,40 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   <div className="border-b border-gray-200 pb-4">
                     <h3 className="text-sm font-medium text-gray-700 mb-3">Payments</h3>
                     <div className="space-y-2">
-                      <div className="flex justify-between">
-                        <span className="text-gray-600">Amount Paid:</span>
-                        <span className="font-medium text-green-600">
-                          -${(editingInvoice.paid_amount || 0).toFixed(2)}
-                        </span>
-                      </div>
                       {(() => {
-                        // Calculate current total from line items (subtotal + tax on taxable items only, no card fee)
                         const currentSubtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
                         const currentTax = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
-                        const currentTotal = currentSubtotal + currentTax;
-                        
-                        // Calculate balance due (what's left to pay) before card fee
-                        const balanceDueBeforeFee = Math.max(0, currentTotal - (editingInvoice.paid_amount || 0));
-                        
-                        // Calculate card processing fee based on balance due (only if applyCardFee is true)
-                        const cardProcessingFee = applyCardFee && balanceDueBeforeFee > 0 
-                          ? balanceDueBeforeFee * (cardProcessingFeePercentage / 100) 
+                        const currentBaseTotal = currentSubtotal + currentTax;
+                        const fullCardFeeOnInvoice = applyCardFee
+                          ? Math.round(currentBaseTotal * (cardProcessingFeePercentage / 100) * 100) / 100
                           : 0;
-                        
-                        if (applyCardFee && cardProcessingFee > 0) {
-                          return (
-                            <>
-                              <div className="flex justify-between">
-                                <span className="text-gray-600">Card Processing Fee ({cardProcessingFeePercentage}%):</span>
-                                <span className="font-medium text-orange-600">
-                                  ${cardProcessingFee.toFixed(2)}
-                                </span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span className="text-gray-600">Balance Due:</span>
-                                <span className="font-medium text-blue-600">
-                                  ${(balanceDueBeforeFee + cardProcessingFee).toFixed(2)}
-                                </span>
-                              </div>
-                            </>
-                          );
-                        }
-                        
+                        const totalInclFee = round2(currentBaseTotal + (applyCardFee ? fullCardFeeOnInvoice : 0));
+                        const grossPaid = getGrossPaidForInvoice(editingInvoice.id);
+                        const paidShown =
+                          grossPaid > 0 ? grossPaid : Number(editingInvoice.paid_amount) || 0;
+                        const balanceDue =
+                          grossPaid > 0
+                            ? Math.max(0, round2(totalInclFee - grossPaid))
+                            : getBalanceDueFromPayments(editingInvoice);
+                        const allocated = getAllocatedCardFeesForInvoice(editingInvoice.id);
+                        const remainingFee = Math.max(0, round2(fullCardFeeOnInvoice - allocated));
                         return (
-                          <div className="flex justify-between">
-                            <span className="text-gray-600">Balance Due:</span>
-                            <span className="font-medium text-blue-600">
-                              ${balanceDueBeforeFee.toFixed(2)}
-                            </span>
-                          </div>
+                          <>
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Amount Paid (gross):</span>
+                              <span className="font-medium text-green-600">-${paidShown.toFixed(2)}</span>
+                            </div>
+                            {applyCardFee && fullCardFeeOnInvoice > 0 && grossPaid > 0 && balanceDue > 0.005 && (
+                              <div className="flex justify-between">
+                                <span className="text-gray-600">Card fee remaining (of total {fullCardFeeOnInvoice.toFixed(2)}):</span>
+                                <span className="font-medium text-orange-600">${remainingFee.toFixed(2)}</span>
+                              </div>
+                            )}
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Balance Due:</span>
+                              <span className="font-medium text-blue-600">${balanceDue.toFixed(2)}</span>
+                            </div>
+                          </>
                         );
                       })()}
                     </div>
@@ -20717,27 +20799,34 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         const subtotal = editingInvoice.subtotal || 0;
                         const tax = editingInvoice.tax_amount || 0;
                         const expectedTotal = subtotal + tax;
-                        // If total is more than expected, likely has card fee
-                        const hasCardFee = invoiceTotal > expectedTotal * 1.001; // Small tolerance for rounding
-                        
-                        // Try to get payment method from the most recent payment record
-                        // If invoicePayments is empty but we're here, try to fetch it
-                        let paymentMethod = 'cash'; // Default fallback
-                        if (hasCardFee) {
+                        const applyFee =
+                          (editingInvoice as any).apply_card_fee === true ||
+                          (Number((editingInvoice as any).card_fee_amount) || 0) > 0;
+                        const hasCardFee =
+                          applyFee || invoiceTotal > expectedTotal * 1.001;
+                        let paymentMethod = 'cash';
+                        if (applyFee) {
+                          paymentMethod = 'card';
+                        } else if (hasCardFee) {
                           paymentMethod = 'card';
                         } else if (paymentsForThisInvoice.length > 0) {
-                          // Use the most recent payment method
                           const latestPayment = paymentsForThisInvoice[0];
                           const rawMethod = latestPayment.payment_method || 'cash';
                           paymentMethod = rawMethod === 'finance' ? 'financing' : rawMethod;
                         } else {
-                          // Last resort: try to infer from invoice or default to cash
                           paymentMethod = (editingInvoice as any).payment_method || 'cash';
                           if (paymentMethod === 'finance') paymentMethod = 'financing';
                         }
-                        
-                        const cardFee = hasCardFee ? invoiceTotal - expectedTotal : 0;
-                        const baseAmount = paidAmount - cardFee;
+                        const rate = (cardProcessingFeePercentage || 0) / 100;
+                        const baseAmount = paidAmount;
+                        const showEstimateGross =
+                          applyFee && rate > 0 && paymentMethod === 'card';
+                        const grossDisplay = showEstimateGross
+                          ? round2(baseAmount * (1 + rate))
+                          : baseAmount;
+                        const feeDisplay = showEstimateGross
+                          ? round2(grossDisplay - baseAmount)
+                          : 0;
                         
                         // Format payment method for display
                         const displayMethod = paymentMethod === 'card' ? 'Card' : 
@@ -20764,11 +20853,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               </div>
                               <div className="flex items-center gap-2 flex-shrink-0">
                                 <span className="text-sm font-semibold text-gray-900">
-                                  ${baseAmount.toFixed(2)}
+                                  ${grossDisplay.toFixed(2)}
                                 </span>
-                                {cardFee > 0 && (
+                                {feeDisplay > 0 && (
                                   <span className="text-sm text-orange-600">
-                                    + ${cardFee.toFixed(2)} fee
+                                    + ${feeDisplay.toFixed(2)} fee
                                   </span>
                                 )}
                                 <button
