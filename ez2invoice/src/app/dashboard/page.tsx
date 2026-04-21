@@ -2864,7 +2864,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           const baseAmount = paymentAmount - cardFee;
           
           return `
-            <div style="padding: 8px 0; border-bottom: 1px solid #e5e7eb;">
+            <div class="payment-history-row">
               ${paymentDate} (${paymentMethod}) $${baseAmount.toFixed(2)}${cardFee > 0 ? ` + $${cardFee.toFixed(2)} fee` : ''}
             </div>
           `;
@@ -2882,12 +2882,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         const paymentDate = invoice.paid_at ? new Date(invoice.paid_at).toISOString().split('T')[0] : (invoice.created_at ? new Date(invoice.created_at).toISOString().split('T')[0] : '');
         
         paymentHistoryHtml = `
-          <div style="padding: 8px 0; border-bottom: 1px solid #e5e7eb;">
+          <div class="payment-history-row">
             ${paymentDate} (${paymentMethod}) $${baseAmount.toFixed(2)}${cardFee > 0 ? ` + $${cardFee.toFixed(2)} fee` : ''}
           </div>
         `;
       } else {
-        paymentHistoryHtml = '<div style="padding: 8px 0; color: #6b7280;">No payment history</div>';
+        paymentHistoryHtml = '<div class="payment-history-empty">No payment history</div>';
       }
 
       // Company information - use shop data from database
@@ -3038,14 +3038,26 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 font-weight: 700;
                 color: #374151;
                 margin-bottom: 12px;
-                font-size: 14px;
+                font-size: 12px;
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
               }
               .payment-row {
                 margin-bottom: 4px;
-                font-size: 14px;
+                font-size: 12px;
                 color: #1f2937;
+              }
+              .payment-history-row {
+                padding: 6px 0;
+                border-bottom: 1px solid #e5e7eb;
+                font-size: 12px;
+                line-height: 1.3;
+              }
+              .payment-history-empty {
+                padding: 6px 0;
+                color: #6b7280;
+                font-size: 12px;
+                line-height: 1.3;
               }
               .payment-label {
                 font-weight: 600;
@@ -3179,7 +3191,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     <div class="payment-row">
                       <span class="payment-label">Amount Paid:</span> -$${paidAmount.toFixed(2)}
                     </div>
-                    <div class="payment-row" style="font-weight: 700; margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb;">
+                    <div class="payment-row" style="font-weight: 700; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e5e7eb;">
                       <span class="payment-label">Balance Due:</span> $${balanceDue.toFixed(2)}
                     </div>
                     <div style="margin-top: 20px;">
