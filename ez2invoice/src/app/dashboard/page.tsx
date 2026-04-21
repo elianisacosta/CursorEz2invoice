@@ -2756,7 +2756,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const handlePrintInvoice = async (invoice: Invoice) => {
     try {
       const printUrl = `/invoices/${invoice.id}/print`;
-      const printWindow = window.open(printUrl, '_blank', 'noopener,noreferrer');
+      const printWindow = window.open(printUrl, '_blank');
       if (!printWindow) {
         alert('Please allow pop-ups to print the invoice.');
       }

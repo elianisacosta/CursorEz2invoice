@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase';
 type PrintInvoice = {
   id: string;
   invoice_number: string | null;
+  status?: string | null;
   created_at?: string | null;
   due_date?: string | null;
   customer_id?: string | null;
@@ -153,12 +154,15 @@ export default function InvoicePrintPage() {
     const taxAmount = Number(invoice.tax_amount) || 0;
     const totalBase = Number(invoice.total_amount) || 0;
     const paidAmount = Number(invoice.paid_amount) || 0;
+    const grossPaidFromPayments = payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+    const paidDisplay = grossPaidFromPayments > 0 ? grossPaidFromPayments : paidAmount;
     const paidCardFees = payments.reduce((sum, p) => sum + (Number(p.card_fee) || 0), 0);
     const fallbackCardFee = Number(invoice.card_fee_amount) || 0;
     const cardFee = paidCardFees > 0 ? paidCardFees : fallbackCardFee;
     const grandTotal = totalBase + cardFee;
-    const balanceDue = Math.max(0, grandTotal - paidAmount);
-    return { subtotal, discount, taxRate, taxAmount, cardFee, grandTotal, paidAmount, balanceDue };
+    const balanceDue = Math.max(0, grandTotal - paidDisplay);
+    const showSignature = (invoice.status || '').toLowerCase() === 'paid' || balanceDue <= 0.01;
+    return { subtotal, discount, taxRate, taxAmount, cardFee, grandTotal, paidAmount, paidDisplay, balanceDue, showSignature };
   }, [invoice, payments]);
 
   useEffect(() => {
@@ -185,29 +189,34 @@ export default function InvoicePrintPage() {
       <style jsx global>{`
         * { box-sizing: border-box; }
         body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; color: #1f2937; }
-        .print-page { padding: 60px 80px; line-height: 1.6; background: #fff; }
-        .header { display: flex; justify-content: space-between; margin-bottom: 40px; padding-bottom: 20px; border-bottom: 2px solid #1f2937; }
+        .print-page { padding: 36px 52px; line-height: 1.4; background: #fff; }
+        .header { display: flex; justify-content: space-between; margin-bottom: 22px; padding-bottom: 12px; border-bottom: 2px solid #1f2937; }
         .invoice-title { font-size: 48px; font-weight: 700; color: #374151; margin-bottom: 8px; }
         .invoice-number { font-size: 16px; color: #6b7280; }
         .company-info { text-align: right; font-size: 14px; color: #374151; white-space: pre-line; }
         .company-name { font-weight: 700; font-size: 18px; margin-bottom: 8px; color: #1f2937; }
-        .main-content { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-bottom: 40px; }
-        .section-title { font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: .5px; color: #374151; margin-bottom: 12px; }
-        .table { width: 100%; border-collapse: collapse; margin: 30px 0; }
-        .table th { background: #f9fafb; border-bottom: 2px solid #e5e7eb; padding: 12px; text-align: left; font-size: 12px; text-transform: uppercase; color: #374151; }
-        .table td { border-bottom: 1px solid #e5e7eb; padding: 12px; }
-        .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
+        .main-content { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 20px; }
+        .section-title { font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: .4px; color: #374151; margin-bottom: 8px; }
+        .table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+        .table th { background: #f9fafb; border-bottom: 2px solid #e5e7eb; padding: 8px; text-align: left; font-size: 11px; text-transform: uppercase; color: #374151; }
+        .table td { border-bottom: 1px solid #e5e7eb; padding: 8px; }
+        .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
         .totals { text-align: right; }
-        .row { margin-bottom: 4px; font-size: 14px; }
-        .row.total { font-size: 20px; font-weight: 700; margin-top: 8px; padding-top: 8px; border-top: 2px solid #e5e7eb; }
-        .payments-title { font-weight: 700; margin: 12px 0; font-size: 12px; text-transform: uppercase; color: #374151; }
-        .payment-row { font-size: 12px; margin-bottom: 4px; }
-        .payment-history-row { padding: 6px 0; border-bottom: 1px solid #e5e7eb; font-size: 12px; line-height: 1.3; }
-        .terms-section { margin-top: 24px; font-size: 14px; }
-        .footer { margin-top: 60px; text-align: center; color: #9ca3af; font-size: 14px; }
+        .row { margin-bottom: 2px; font-size: 13px; }
+        .row.total { font-size: 16px; font-weight: 700; margin-top: 6px; padding-top: 6px; border-top: 2px solid #e5e7eb; }
+        .payments-title { font-weight: 700; margin: 8px 0 6px; font-size: 11px; text-transform: uppercase; color: #374151; }
+        .payment-row { font-size: 11px; margin-bottom: 2px; }
+        .payment-history-row { padding: 3px 0; border-bottom: 1px solid #e5e7eb; font-size: 10.5px; line-height: 1.2; }
+        .terms-section { margin-top: 14px; font-size: 12px; line-height: 1.35; }
+        .footer { margin-top: 26px; text-align: center; color: #9ca3af; font-size: 13px; }
+        .auth-block { margin-top: 28px; margin-bottom: 8px; text-align: left; font-size: 9px; line-height: 1.35; color: #374151; }
+        .auth-heading { font-weight: 700; font-size: 9px; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; color: #1f2937; }
+        .auth-body { font-size: 12px; font-weight: 400; line-height: 1.35; }
+        .signature-section { margin-top: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; font-size: 12px; }
+        .signature-line { border-top: 1px solid #1f2937; padding-top: 6px; margin-top: 22px; }
         .no-print { margin-top: 16px; }
         @media print {
-          .print-page { padding: 40px 60px; }
+          .print-page { padding: 22px 30px; }
           .no-print { display: none; }
           @page { margin: 0; }
         }
@@ -290,7 +299,7 @@ export default function InvoicePrintPage() {
           <div className="row total">Total (incl. card fee): ${model.grandTotal.toFixed(2)}</div>
           {(model.paidAmount > 0 || payments.length > 0) && (
             <div style={{ marginTop: 16 }}>
-              <div className="payment-row"><strong>Amount Paid:</strong> -${model.paidAmount.toFixed(2)}</div>
+              <div className="payment-row"><strong>Amount Paid:</strong> -${model.paidDisplay.toFixed(2)}</div>
               <div className="payment-row" style={{ fontWeight: 700, marginTop: 8, paddingTop: 8, borderTop: '1px solid #e5e7eb' }}>
                 <strong>Balance Due:</strong> ${model.balanceDue.toFixed(2)}
               </div>
@@ -316,6 +325,24 @@ export default function InvoicePrintPage() {
       )}
 
       <div className="footer">Thank you for your business!</div>
+      {model.showSignature && (
+        <>
+          <div className="auth-block">
+            <div className="auth-heading">Customer Authorization & Acceptance</div>
+            <div className="auth-body">
+              By signing, I authorize this purchase and approve the total amount. I confirm receipt/completion of the parts/services and agree to the Terms & Conditions.
+            </div>
+          </div>
+          <div className="signature-section">
+            <div>
+              <div className="signature-line">Customer Signature</div>
+            </div>
+            <div>
+              <div className="signature-line">Date</div>
+            </div>
+          </div>
+        </>
+      )}
       <div className="no-print">
         <button onClick={() => window.print()}>Print Again</button>
       </div>
