@@ -320,6 +320,39 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   }
 
   const newLineId = () => `line-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const createBlankInvoiceLineItem = (itemType: 'labor' | 'part' = 'labor'): InvoiceLineItem => ({
+    item_type: itemType,
+    reference_id: null,
+    description: '',
+    quantity: 1,
+    unit_price: 0,
+    total_price: 0,
+    taxable: true,
+    lineId: newLineId()
+  });
+  const createBlankInvoiceLineItems = (count = 2, itemType: 'labor' | 'part' = 'labor'): InvoiceLineItem[] =>
+    Array.from({ length: Math.max(1, count) }, () => createBlankInvoiceLineItem(itemType));
+  const isInvoiceLineEmpty = (item: InvoiceLineItem): boolean =>
+    !item.reference_id &&
+    !item.description?.trim() &&
+    (Number(item.quantity) || 0) === 1 &&
+    (Number(item.unit_price) || 0) === 0 &&
+    (Number(item.total_price) || 0) === 0;
+  const hasInvoiceLineInput = (item: InvoiceLineItem): boolean => !isInvoiceLineEmpty(item);
+  const normalizeInvoiceLineItems = (items: InvoiceLineItem[]): InvoiceLineItem[] =>
+    items.map((item) => ({ ...item, lineId: item.lineId || newLineId() }));
+  const ensureInvoiceLineItemPadding = (items: InvoiceLineItem[]): InvoiceLineItem[] => {
+    let normalized = normalizeInvoiceLineItems(items);
+    if (normalized.length < 2) {
+      const inheritedType = normalized.length > 0 ? normalized[normalized.length - 1].item_type : 'labor';
+      normalized = [...normalized, ...createBlankInvoiceLineItems(2 - normalized.length, inheritedType)];
+    }
+    const last = normalized[normalized.length - 1];
+    if (hasInvoiceLineInput(last)) {
+      normalized = [...normalized, createBlankInvoiceLineItem(last.item_type)];
+    }
+    return normalized;
+  };
 
   const getTaxableSubtotal = (items: InvoiceLineItem[]) =>
     items.reduce((sum, item) => sum + (item.taxable !== false ? (item.total_price || 0) : 0), 0);
@@ -576,10 +609,15 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     }
   };
 
-  const [invoiceLineItems, setInvoiceLineItems] = useState<InvoiceLineItem[]>([
-    { item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }
-  ]);
+  const [invoiceLineItems, setInvoiceLineItems] = useState<InvoiceLineItem[]>(createBlankInvoiceLineItems(2));
   const [invoiceItemSearch, setInvoiceItemSearch] = useState<{ [key: number]: string }>({});
+  useEffect(() => {
+    setInvoiceLineItems((prev) => {
+      const padded = ensureInvoiceLineItemPadding(prev);
+      const unchanged = padded.length === prev.length && padded.every((item, idx) => item.lineId === prev[idx]?.lineId);
+      return unchanged ? prev : padded;
+    });
+  }, [invoiceLineItems]);
   const [applyCardFee, setApplyCardFee] = useState(false);
   // Save settings to localStorage when they change - with error handling and persistence
   useEffect(() => {
@@ -13033,12 +13071,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                               quantity: Number(item.quantity) || 1,
                                               unit_price: Number(item.unit_price) || 0,
                                               total_price: Number(item.total_price) || 0,
-                                              taxable: (item as any).taxable !== false
+                                              taxable: (item as any).taxable !== false,
+                                              lineId: newLineId()
                                             };
                                             console.log('Mapped item:', mapped);
                                             return mapped;
                                           });
-                                          setInvoiceLineItems(mappedItems);
+                                          setInvoiceLineItems(ensureInvoiceLineItemPadding(mappedItems));
                                         } else {
                                           console.log('No line items found in database for invoice:', invoice.id);
                                           // If invoice has a subtotal but no line items, create a line item from the subtotal
@@ -13057,7 +13096,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                               quantity: 1,
                                               unit_price: subtotal,
                                               total_price: subtotal,
-                                              taxable: true
+                                              taxable: true,
+                                              lineId: newLineId()
                                             }]);
                                           } else if (total > 0) {
                                             // If no subtotal but there's a total, try to reverse calculate
@@ -13071,7 +13111,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                               quantity: 1,
                                               unit_price: calculatedSubtotal,
                                               total_price: calculatedSubtotal,
-                                              taxable: true
+                                              taxable: true,
+                                              lineId: newLineId()
                                             }]);
                                             // Also update the form data to match
                                             setInvoiceFormData(prev => ({
@@ -13081,7 +13122,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                           } else {
                                             console.log('Invoice has no subtotal or total, creating empty line item');
                                             // Start with empty line items so user can add
-                                            setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
+                                            setInvoiceLineItems(createBlankInvoiceLineItems(2));
                                           }
                                         }
                                         setInvoiceItemSearch({});
@@ -13292,12 +13333,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                             quantity: Number(item.quantity) || 1,
                                             unit_price: Number(item.unit_price) || 0,
                                             total_price: Number(item.total_price) || 0,
-                                            taxable: (item as any).taxable !== false
+                                          taxable: (item as any).taxable !== false,
+                                          lineId: newLineId()
                                           };
                                           console.log('Mapped item:', mapped);
                                           return mapped;
                                         });
-                                        setInvoiceLineItems(mappedItems);
+                                      setInvoiceLineItems(ensureInvoiceLineItemPadding(mappedItems));
                                       } else {
                                         console.log('No line items found in database for invoice:', invoice.id);
                                         // If invoice has a subtotal but no line items, create a line item from the subtotal
@@ -13316,7 +13358,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                             quantity: 1,
                                             unit_price: subtotal,
                                             total_price: subtotal,
-                                            taxable: true
+                                            taxable: true,
+                                            lineId: newLineId()
                                           }]);
                                         } else if (total > 0) {
                                           // If no subtotal but there's a total, try to reverse calculate
@@ -13330,7 +13373,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                             quantity: 1,
                                             unit_price: calculatedSubtotal,
                                             total_price: calculatedSubtotal,
-                                            taxable: true
+                                            taxable: true,
+                                            lineId: newLineId()
                                           }]);
                                           // Also update the form data to match
                                           setInvoiceFormData(prev => ({
@@ -13340,7 +13384,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                         } else {
                                           console.log('Invoice has no subtotal or total, creating empty line item');
                                           // Start with empty line items so user can add
-                                          setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
+                                          setInvoiceLineItems(createBlankInvoiceLineItems(2));
                                         }
                                       }
                                       setInvoiceItemSearch({});
@@ -19921,7 +19965,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 notes: '',
                 internal_notes: ''
               });
-              setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
+              setInvoiceLineItems(createBlankInvoiceLineItems(2));
               setInvoiceItemSearch({});
               setInvoicePayments([]);
               setInvoiceCustomerDiscounts([]);
@@ -19963,7 +20007,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         notes: '',
                         internal_notes: ''
                       });
-                      setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
+                      setInvoiceLineItems(createBlankInvoiceLineItems(2));
                       setInvoiceItemSearch({});
                       setInvoicePayments([]);
                       setInvoiceCustomerDiscounts([]);
@@ -20339,13 +20383,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               <div className="mb-6">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-lg font-semibold text-gray-900">Line Items</h3>
-                  <button
-                    onClick={() => setInvoiceLineItems(prev => [...prev, { item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }])}
-                    className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2"
-                  >
-                    <Plus className="h-4 w-4" />
-                    <span>Add Item</span>
-                  </button>
                 </div>
 
                 <div className="bg-gray-50 rounded-lg p-4 min-w-0 overflow-visible">
@@ -20381,7 +20418,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       });
                       
                       return (
-                        <div key={idx} className="grid gap-4 items-center min-w-0" style={{ gridTemplateColumns: 'minmax(72px, auto) minmax(56px, auto) minmax(180px, 1.5fr) minmax(220px, 2fr) minmax(64px, auto) minmax(80px, auto) minmax(80px, auto)' }}>
+                        <div key={item.lineId || `invoice-line-${idx}`} className="grid gap-4 items-center min-w-0" style={{ gridTemplateColumns: 'minmax(72px, auto) minmax(56px, auto) minmax(180px, 1.5fr) minmax(220px, 2fr) minmax(64px, auto) minmax(80px, auto) minmax(80px, auto)' }}>
                           <select
                             value={item.item_type}
                             onChange={(e) => {
@@ -21063,7 +21100,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     notes: '',
                     internal_notes: ''
                   });
-                  setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
+                  setInvoiceLineItems(createBlankInvoiceLineItems(2));
                   setInvoiceItemSearch({});
                   setApplyCardFee(false);
                   setInvoicePayments([]);
@@ -21075,12 +21112,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               <button
                 disabled={invoiceSaveInProgress}
                 onClick={async () => {
+                  const nonEmptyLineItems = invoiceLineItems.filter((item) => !isInvoiceLineEmpty(item));
+                  const savableLineItems = nonEmptyLineItems.filter((item) => item.description?.trim() && (item.total_price || 0) > 0);
+
                   if (!invoiceFormData.customer_id && !editingInvoice) {
                     alert('Please select a customer');
                     return;
                   }
 
-                  if (invoiceLineItems.length === 0 || invoiceLineItems.every(item => !item.description || item.total_price === 0)) {
+                  if (savableLineItems.length === 0) {
                     alert('Please add at least one line item with a description and price');
                     return;
                   }
@@ -21088,8 +21128,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   setInvoiceSaveInProgress(true);
                   try {
                     // Calculate totals (tax only on line items with taxable checked)
-                    const subtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                    const taxAmount = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
+                    const subtotal = nonEmptyLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
+                    const taxAmount = getTaxableSubtotal(nonEmptyLineItems) * (invoiceFormData.tax_rate || 0);
                     const baseTotal = subtotal + taxAmount; // Total without card fee
                     
                     if (editingInvoice) {
@@ -21174,7 +21214,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           const { data: refetchedLines } = await supabase.from('invoice_line_items').select('*').eq('invoice_id', editingInvoice.id);
                           setEditingInvoice(refetchedInv ? { ...refetchedInv, customer: editingInvoice.customer } : null);
                           if (refetchedLines && refetchedLines.length) {
-                            setInvoiceLineItems(refetchedLines.map((row: any) => ({
+                            setInvoiceLineItems(ensureInvoiceLineItemPadding(refetchedLines.map((row: any) => ({
                               id: row.id,
                               item_type: row.item_type,
                               reference_id: row.reference_id ?? undefined,
@@ -21182,10 +21222,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               quantity: row.quantity ?? 1,
                               unit_price: row.unit_price ?? 0,
                               total_price: row.total_price ?? 0,
-                              taxable: row.taxable !== false
-                            })));
+                              taxable: row.taxable !== false,
+                              lineId: newLineId()
+                            }))));
                           } else {
-                            setInvoiceLineItems([]);
+                            setInvoiceLineItems(createBlankInvoiceLineItems(2));
                           }
                           setInvoiceSaveInProgress(false);
                           alert('This invoice was updated from another device. The form has been refreshed with the latest data. Please review and save again if needed.');
@@ -21233,9 +21274,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         .delete()
                         .eq('invoice_id', editingInvoice.id);
 
-                      if (invoiceLineItems.length > 0) {
+                      if (nonEmptyLineItems.length > 0) {
                         // Build payload from current state only (no duplicate entries; one row per line item)
-                        const lineItemsPayload = invoiceLineItems.map(item => ({
+                        const lineItemsPayload = nonEmptyLineItems.map(item => ({
                           invoice_id: editingInvoice.id,
                           item_type: item.item_type,
                           reference_id: item.reference_id || null,
@@ -21272,8 +21313,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           if (oldItemsForInventory.length > 0) {
                             await adjustInventoryForInvoice(editingInvoice.id, oldItemsForInventory, 'add', true);
                           }
-                          if (invoiceLineItems.length > 0) {
-                            await adjustInventoryForInvoice(editingInvoice.id, invoiceLineItems, 'subtract', true);
+                          if (nonEmptyLineItems.length > 0) {
+                            await adjustInventoryForInvoice(editingInvoice.id, nonEmptyLineItems, 'subtract', true);
                           }
                           fetchInventory();
                         } catch (e) {
@@ -21441,8 +21482,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       }
 
                       // Create invoice line items if the table exists
-                      if (invoiceLineItems.length > 0) {
-                        const lineItemsPayload = invoiceLineItems.map(item => ({
+                      if (nonEmptyLineItems.length > 0) {
+                        const lineItemsPayload = nonEmptyLineItems.map(item => ({
                           invoice_id: invoice.id,
                           item_type: item.item_type,
                           reference_id: item.reference_id || null,
@@ -21462,7 +21503,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           console.warn('Could not create invoice line items:', lineItemsError);
                         } else {
                           // Successfully created line items - adjust inventory for any parts used
-                          await adjustInventoryForInvoice(invoice.id, invoiceLineItems);
+                          await adjustInventoryForInvoice(invoice.id, nonEmptyLineItems);
                         }
                       }
 
@@ -21482,7 +21523,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         notes: '',
                         internal_notes: ''
                       });
-                      setInvoiceLineItems([{ item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0, taxable: true }]);
+                      setInvoiceLineItems(createBlankInvoiceLineItems(2));
                       setInvoiceItemSearch({});
                       setApplyCardFee(false);
                       setInvoicePayments([]);
