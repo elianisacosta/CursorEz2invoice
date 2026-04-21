@@ -295,6 +295,8 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     due_date: getTodayDate(),
     invoice_date: getTodayDate(), // Invoice creation date
     tax_rate: defaultTaxRate / 100, // Convert percentage to decimal
+    discount_type: 'none' as 'none' | 'percentage' | 'fixed',
+    discount_value: 0,
     notes: '',
     internal_notes: ''
   });
@@ -313,6 +315,9 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     quantity: number;
     unit_price: number;
     total_price: number;
+    discount_type?: 'none' | 'percentage' | 'fixed';
+    discount_value?: number;
+    discount_amount?: number;
     /** If false, this line is excluded from tax (e.g. labor when client pays cash). Default true. */
     taxable?: boolean;
     /** Client-only id for React key and dedupe; not sent to DB. */
@@ -327,9 +332,56 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     quantity: 1,
     unit_price: 0,
     total_price: 0,
+    discount_type: 'none',
+    discount_value: 0,
+    discount_amount: 0,
     taxable: true,
     lineId: newLineId()
   });
+  const getLineItemGrossAmount = (item: InvoiceLineItem) =>
+    Math.max(0, (Number(item.quantity) || 0) * (Number(item.unit_price) || 0));
+  const getLineItemDiscountAmount = (item: InvoiceLineItem) => {
+    const gross = getLineItemGrossAmount(item);
+    const discountType = item.discount_type || 'none';
+    const rawDiscountValue = Number(item.discount_value) || 0;
+    if (gross <= 0 || rawDiscountValue <= 0 || discountType === 'none') return 0;
+    const discount = discountType === 'percentage'
+      ? gross * (rawDiscountValue / 100)
+      : rawDiscountValue;
+    return Math.min(gross, Math.max(0, discount));
+  };
+  const withComputedLineItemTotals = (item: InvoiceLineItem): InvoiceLineItem => {
+    const gross = getLineItemGrossAmount(item);
+    const discountAmount = getLineItemDiscountAmount(item);
+    const net = Math.max(0, gross - discountAmount);
+    return {
+      ...item,
+      discount_type: item.discount_type || 'none',
+      discount_value: Math.max(0, Number(item.discount_value) || 0),
+      discount_amount: +discountAmount.toFixed(2),
+      total_price: +net.toFixed(2)
+    };
+  };
+  const getInvoiceSubtotal = (items: InvoiceLineItem[]) =>
+    items.reduce((sum, item) => sum + (item.total_price || 0), 0);
+  const getInvoiceDiscountAmount = (subtotalAmount: number) => {
+    const discountType = invoiceFormData.discount_type || 'none';
+    const rawDiscountValue = Number(invoiceFormData.discount_value) || 0;
+    if (subtotalAmount <= 0 || rawDiscountValue <= 0 || discountType === 'none') return 0;
+    const discount = discountType === 'percentage'
+      ? subtotalAmount * (rawDiscountValue / 100)
+      : rawDiscountValue;
+    return Math.min(subtotalAmount, Math.max(0, discount));
+  };
+  const getTaxableSubtotalAfterInvoiceDiscount = (items: InvoiceLineItem[]) => {
+    const subtotalAmount = getInvoiceSubtotal(items);
+    const taxableSubtotal = getTaxableSubtotal(items);
+    const invoiceDiscountAmount = getInvoiceDiscountAmount(subtotalAmount);
+    if (subtotalAmount <= 0 || taxableSubtotal <= 0 || invoiceDiscountAmount <= 0) return taxableSubtotal;
+    const taxableShare = taxableSubtotal / subtotalAmount;
+    const taxableDiscountAmount = invoiceDiscountAmount * taxableShare;
+    return Math.max(0, taxableSubtotal - taxableDiscountAmount);
+  };
   const createBlankInvoiceLineItems = (count = 2, itemType: 'labor' | 'part' = 'labor'): InvoiceLineItem[] =>
     Array.from({ length: Math.max(1, count) }, () => createBlankInvoiceLineItem(itemType));
   const isInvoiceLineEmpty = (item: InvoiceLineItem): boolean =>
@@ -337,10 +389,11 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     !item.description?.trim() &&
     (Number(item.quantity) || 0) === 1 &&
     (Number(item.unit_price) || 0) === 0 &&
+    (Number(item.discount_value) || 0) === 0 &&
     (Number(item.total_price) || 0) === 0;
   const hasInvoiceLineInput = (item: InvoiceLineItem): boolean => !isInvoiceLineEmpty(item);
   const normalizeInvoiceLineItems = (items: InvoiceLineItem[]): InvoiceLineItem[] =>
-    items.map((item) => ({ ...item, lineId: item.lineId || newLineId() }));
+    items.map((item) => withComputedLineItemTotals({ ...item, lineId: item.lineId || newLineId() }));
   const ensureInvoiceLineItemPadding = (items: InvoiceLineItem[]): InvoiceLineItem[] => {
     let normalized = normalizeInvoiceLineItems(items);
     if (normalized.length < 2) {
@@ -352,6 +405,25 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
       normalized = [...normalized, createBlankInvoiceLineItem(last.item_type)];
     }
     return normalized;
+  };
+  const areInvoiceLineItemsEqual = (a: InvoiceLineItem[], b: InvoiceLineItem[]) => {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      const left = a[i];
+      const right = b[i];
+      if ((left.lineId || '') !== (right.lineId || '')) return false;
+      if (left.item_type !== right.item_type) return false;
+      if ((left.reference_id || null) !== (right.reference_id || null)) return false;
+      if ((left.description || '') !== (right.description || '')) return false;
+      if ((left.taxable !== false) !== (right.taxable !== false)) return false;
+      if ((left.discount_type || 'none') !== (right.discount_type || 'none')) return false;
+      if ((Number(left.quantity) || 0) !== (Number(right.quantity) || 0)) return false;
+      if ((Number(left.unit_price) || 0) !== (Number(right.unit_price) || 0)) return false;
+      if ((Number(left.discount_value) || 0) !== (Number(right.discount_value) || 0)) return false;
+      if ((Number(left.discount_amount) || 0) !== (Number(right.discount_amount) || 0)) return false;
+      if ((Number(left.total_price) || 0) !== (Number(right.total_price) || 0)) return false;
+    }
+    return true;
   };
 
   const getTaxableSubtotal = (items: InvoiceLineItem[]) =>
@@ -614,8 +686,7 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   useEffect(() => {
     setInvoiceLineItems((prev) => {
       const padded = ensureInvoiceLineItemPadding(prev);
-      const unchanged = padded.length === prev.length && padded.every((item, idx) => item.lineId === prev[idx]?.lineId);
-      return unchanged ? prev : padded;
+      return areInvoiceLineItemsEqual(prev, padded) ? prev : padded;
     });
   }, [invoiceLineItems]);
   const [applyCardFee, setApplyCardFee] = useState(false);
@@ -1623,6 +1694,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     status: string; 
     total_amount: number; 
     subtotal?: number;
+    discount_type?: 'none' | 'percentage' | 'fixed' | null;
+    discount_value?: number | null;
+    discount_amount?: number | null;
     tax_rate?: number;
     tax_amount?: number;
     notes?: string | null;
@@ -1653,6 +1727,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     status: string;
     total_amount: number;
     subtotal?: number;
+    discount_type?: 'none' | 'percentage' | 'fixed' | null;
+    discount_value?: number | null;
+    discount_amount?: number | null;
     tax_rate?: number;
     tax_amount?: number;
     created_at?: string;
@@ -2758,6 +2835,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       // Calculate totals
       const subtotal = invoice.subtotal || 0;
+      const invoiceDiscountAmount = Number((invoice as any).discount_amount) || 0;
       const taxRate = invoice.tax_rate || 0;
       const taxAmount = invoice.tax_amount || 0;
       const total = invoice.total_amount || 0;
@@ -2821,7 +2899,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 item_type: item.item_type || 'labor',
                 quantity: Number(item.quantity) || 1,
                 unit_price: Number(item.unit_price) || 0,
-                total_price: Number(item.total_price) || 0
+                total_price: Number(item.total_price) || 0,
+                discount_type: (item.discount_type || 'none') as 'none' | 'percentage' | 'fixed',
+                discount_value: Number(item.discount_value) || 0,
+                discount_amount: Number(item.discount_amount) || 0
               };
             })
           )
@@ -2834,11 +2915,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
             const displayType = itemType.toLowerCase() === 'labor' ? 'Labor' : itemType.toLowerCase() === 'part' ? 'Part' : 'Service';
             const itemDisplayVal = item.itemDisplay || item.description || 'Item';
             const descDisplayVal = item.descDisplay || item.description || itemDisplayVal;
+            const lineDiscount = Number(item.discount_amount) || 0;
             return `
               <tr>
                 <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${displayType}</td>
                 <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${itemDisplayVal}</td>
-                <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${descDisplayVal}</td>
+                <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">${descDisplayVal}${lineDiscount > 0 ? `<div style="font-size: 11px; color: #b91c1c;">Discount: -$${lineDiscount.toFixed(2)}</div>` : ''}</td>
                 <td style="padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: right;">${Number(item.quantity) || 1}</td>
                 <td style="padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: right;">$${Number(item.unit_price || 0).toFixed(2)}</td>
                 <td style="padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: right;">$${Number(item.total_price || 0).toFixed(2)}</td>
@@ -3181,6 +3263,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               </div>
               <div class="totals">
                 <div class="total-row">Subtotal: $${subtotal.toFixed(2)}</div>
+                ${invoiceDiscountAmount > 0 ? `<div class="total-row">Discount: -$${invoiceDiscountAmount.toFixed(2)}</div>` : ''}
                 <div class="total-row">Tax (${(taxRate * 100).toFixed(0)}%): $${taxAmount.toFixed(2)}</div>
                 ${totalCardFees > 0 ? `
                   <div class="total-row">Card Processing Fee (${cardProcessingFeePercentage}%): $${totalCardFees.toFixed(2)}</div>
@@ -13036,6 +13119,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                           due_date: invoice.due_date || getTodayDate(),
                                           invoice_date: invoiceDate, // Always has a value (today or parsed date)
                                           tax_rate: defaultTaxRate / 100, // Always use tax rate from settings
+                                          discount_type: ((invoice as any).discount_type || 'none') as 'none' | 'percentage' | 'fixed',
+                                          discount_value: Number((invoice as any).discount_value) || 0,
                                           notes: effectiveNotes,
                                           internal_notes: effectiveInternalNotes
                                         });
@@ -13083,6 +13168,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                               quantity: Number(item.quantity) || 1,
                                               unit_price: Number(item.unit_price) || 0,
                                               total_price: Number(item.total_price) || 0,
+                                              discount_type: ((item as any).discount_type || 'none') as 'none' | 'percentage' | 'fixed',
+                                              discount_value: Number((item as any).discount_value) || 0,
+                                              discount_amount: Number((item as any).discount_amount) || 0,
                                               taxable: (item as any).taxable !== false,
                                               lineId: newLineId()
                                             };
@@ -13298,6 +13386,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         invoice_date: invoiceDate,
                         due_date: effectiveDueDate,
                         tax_rate: defaultTaxRate / 100, // Always use tax rate from settings
+                        discount_type: ((invoice as any).discount_type || 'none') as 'none' | 'percentage' | 'fixed',
+                        discount_value: Number((invoice as any).discount_value) || 0,
                         notes: effectiveNotes,
                         internal_notes: effectiveInternalNotes
                       });
@@ -13345,6 +13435,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                             quantity: Number(item.quantity) || 1,
                                             unit_price: Number(item.unit_price) || 0,
                                             total_price: Number(item.total_price) || 0,
+                                          discount_type: ((item as any).discount_type || 'none') as 'none' | 'percentage' | 'fixed',
+                                          discount_value: Number((item as any).discount_value) || 0,
+                                          discount_amount: Number((item as any).discount_amount) || 0,
                                           taxable: (item as any).taxable !== false,
                                           lineId: newLineId()
                                           };
@@ -19974,6 +20067,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 due_date: getTodayDate(),
                 invoice_date: getTodayDate(),
                 tax_rate: defaultTaxRate / 100,
+                discount_type: 'none',
+                discount_value: 0,
                 notes: '',
                 internal_notes: ''
               });
@@ -20016,6 +20111,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         due_date: getTodayDate(),
                         invoice_date: getTodayDate(),
                         tax_rate: defaultTaxRate / 100,
+                        discount_type: 'none',
+                        discount_value: 0,
                         notes: '',
                         internal_notes: ''
                       });
@@ -20398,13 +20495,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 </div>
 
                 <div className="bg-gray-50 rounded-lg p-4 min-w-0 overflow-visible">
-                  <div className="grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4" style={{ gridTemplateColumns: 'minmax(72px, auto) minmax(56px, auto) minmax(180px, 1.5fr) minmax(220px, 2fr) minmax(64px, auto) minmax(80px, auto) minmax(80px, auto)' }}>
+                  <div className="grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4" style={{ gridTemplateColumns: 'minmax(72px, auto) minmax(56px, auto) minmax(180px, 1.4fr) minmax(200px, 1.8fr) minmax(64px, auto) minmax(80px, auto) minmax(100px, auto) minmax(90px, auto) minmax(80px, auto)' }}>
                     <div>Type</div>
                     <div title="Include in tax (uncheck e.g. for labor when client pays cash)">Tax</div>
                     <div>Select Item</div>
                     <div>Description</div>
                     <div>Qty</div>
                     <div>Price</div>
+                    <div>Disc Type</div>
+                    <div>Discount</div>
                     <div>Total</div>
                   </div>
                   
@@ -20430,12 +20529,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       });
                       
                       return (
-                        <div key={item.lineId || `invoice-line-${idx}`} className="grid gap-4 items-center min-w-0" style={{ gridTemplateColumns: 'minmax(72px, auto) minmax(56px, auto) minmax(180px, 1.5fr) minmax(220px, 2fr) minmax(64px, auto) minmax(80px, auto) minmax(80px, auto)' }}>
+                        <div key={item.lineId || `invoice-line-${idx}`} className="grid gap-4 items-center min-w-0" style={{ gridTemplateColumns: 'minmax(72px, auto) minmax(56px, auto) minmax(180px, 1.4fr) minmax(200px, 1.8fr) minmax(64px, auto) minmax(80px, auto) minmax(100px, auto) minmax(90px, auto) minmax(80px, auto)' }}>
                           <select
                             value={item.item_type}
                             onChange={(e) => {
                               const t = e.target.value as 'labor' | 'part';
-                              setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, item_type: t, reference_id: null, description: '', unit_price: 0, total_price: 0 } : p));
+                              setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, item_type: t, reference_id: null, description: '', unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
                               setInvoiceItemSearch(prev => ({ ...prev, [idx]: '' }));
                             }}
                             className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
@@ -20460,7 +20559,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 const newValue = e.target.value;
                                 // If user starts typing and there's a selected item, clear the selection to allow searching
                                 if (item.reference_id && newValue !== selectedItemName) {
-                                  setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, reference_id: null, description: '', unit_price: 0, total_price: 0 } : p));
+                                  setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, reference_id: null, description: '', unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
                                 }
                                 setInvoiceItemSearch(prev => ({ ...prev, [idx]: newValue }));
                               }}
@@ -20496,8 +20595,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                           ...p,
                                           reference_id: option.id,
                                           description: li?.description || li?.service_name || '',
-                                          unit_price: finalPrice,
-                                          total_price: +(p.quantity * finalPrice).toFixed(2)
+                                          unit_price: finalPrice
                                         } : p));
                                         // Set the input to show the selected item name
                                         setInvoiceItemSearch(prev => ({ ...prev, [idx]: li?.service_name || '' }));
@@ -20507,8 +20605,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                           ...p,
                                           reference_id: option.id,
                                           description: pi?.part_name || pi?.description || '',
-                                          unit_price: pi ? pi.selling_price : 0,
-                                          total_price: +(p.quantity * (pi ? pi.selling_price : 0)).toFixed(2)
+                                          unit_price: pi ? pi.selling_price : 0
                                         } : p));
                                         // Set the input to show the part number in SELECT ITEM field
                                         setInvoiceItemSearch(prev => ({ ...prev, [idx]: pi?.part_number || pi?.part_name || '' }));
@@ -20616,24 +20713,57 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               const q = Number(e.target.value) || 0;
                               setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? {
                                 ...p,
-                                quantity: q,
-                                total_price: +(q * (p.unit_price || 0)).toFixed(2)
+                                quantity: q
                               } : p));
                             }}
                             className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                           />
-                          <input
-                            type="number"
-                            value={item.unit_price}
+                          <div className="relative">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">$</span>
+                            <input
+                              type="number"
+                              value={item.unit_price}
+                              onChange={(e) => {
+                                const u = Number(e.target.value) || 0;
+                                setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? {
+                                  ...p,
+                                  unit_price: u
+                                } : p));
+                              }}
+                              className="w-full pl-7 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                            />
+                          </div>
+                          <select
+                            value={item.discount_type || 'none'}
                             onChange={(e) => {
-                              const u = Number(e.target.value) || 0;
+                              const discountType = e.target.value as 'none' | 'percentage' | 'fixed';
                               setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? {
                                 ...p,
-                                unit_price: u,
-                                total_price: +((p.quantity || 0) * u).toFixed(2)
+                                discount_type: discountType,
+                                discount_value: discountType === 'none' ? 0 : (p.discount_value || 0)
                               } : p));
                             }}
-                            className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                            className="px-2 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          >
+                            <option value="none">None</option>
+                            <option value="percentage">%</option>
+                            <option value="fixed">$</option>
+                          </select>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={item.discount_type === 'none' ? '' : (item.discount_value ?? 0)}
+                            onChange={(e) => {
+                              const discountValue = Number(e.target.value) || 0;
+                              setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? {
+                                ...p,
+                                discount_value: discountValue
+                              } : p));
+                            }}
+                            placeholder={item.discount_type === 'percentage' ? '%' : '$'}
+                            disabled={(item.discount_type || 'none') === 'none'}
+                            className="px-2 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-400"
                           />
                           <div className="flex items-center justify-between">
                             <span className="font-medium">${(item.total_price || 0).toFixed(2)}</span>
@@ -20696,6 +20826,40 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     </button>
                   </div>
                 </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Invoice Discount
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <select
+                      value={invoiceFormData.discount_type}
+                      onChange={(e) => {
+                        const discountType = e.target.value as 'none' | 'percentage' | 'fixed';
+                        setInvoiceFormData((prev) => ({
+                          ...prev,
+                          discount_type: discountType,
+                          discount_value: discountType === 'none' ? 0 : prev.discount_value
+                        }));
+                      }}
+                      className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                    >
+                      <option value="none">No discount</option>
+                      <option value="percentage">Percentage (%)</option>
+                      <option value="fixed">Fixed amount ($)</option>
+                    </select>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={invoiceFormData.discount_type === 'none' ? '' : invoiceFormData.discount_value}
+                      onChange={(e) => setInvoiceFormData((prev) => ({ ...prev, discount_value: Math.max(0, Number(e.target.value) || 0) }))}
+                      placeholder={invoiceFormData.discount_type === 'percentage' ? '0.00 %' : '$0.00'}
+                      disabled={invoiceFormData.discount_type === 'none'}
+                      className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-400"
+                    />
+                  </div>
+                </div>
               </div>
 
               {/* Cost Summary, Payments, and Payment History - Only show when editing */}
@@ -20708,19 +20872,31 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       <div className="flex justify-between">
                         <span className="text-gray-600">Subtotal:</span>
                         <span className="font-medium text-gray-900">
-                          ${invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0).toFixed(2)}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-600">Tax ({((invoiceFormData.tax_rate || 0) * 100).toFixed(1)}%):</span>
-                        <span className="font-medium text-gray-900">
-                          ${(getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0)).toFixed(2)}
+                          ${getInvoiceSubtotal(invoiceLineItems).toFixed(2)}
                         </span>
                       </div>
                       {(() => {
-                        const subtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                        const tax = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
-                        const baseTotal = subtotal + tax;
+                        const subtotal = getInvoiceSubtotal(invoiceLineItems);
+                        const invoiceDiscountAmount = getInvoiceDiscountAmount(subtotal);
+                        if (invoiceDiscountAmount <= 0) return null;
+                        return (
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Discount:</span>
+                            <span className="font-medium text-red-600">-${invoiceDiscountAmount.toFixed(2)}</span>
+                          </div>
+                        );
+                      })()}
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Tax ({((invoiceFormData.tax_rate || 0) * 100).toFixed(1)}%):</span>
+                        <span className="font-medium text-gray-900">
+                          ${(getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0)).toFixed(2)}
+                        </span>
+                      </div>
+                      {(() => {
+                        const subtotal = getInvoiceSubtotal(invoiceLineItems);
+                        const invoiceDiscountAmount = getInvoiceDiscountAmount(subtotal);
+                        const tax = getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
+                        const baseTotal = Math.max(0, subtotal - invoiceDiscountAmount) + tax;
                         const cardFee = applyCardFee ? Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100 : 0;
                         const totalWithFee = baseTotal + cardFee;
                         return (
@@ -20746,9 +20922,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     <h3 className="text-sm font-medium text-gray-700 mb-3">Payments</h3>
                     <div className="space-y-2">
                       {(() => {
-                        const currentSubtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                        const currentTax = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
-                        const currentBaseTotal = currentSubtotal + currentTax;
+                        const currentSubtotal = getInvoiceSubtotal(invoiceLineItems);
+                        const invoiceDiscountAmount = getInvoiceDiscountAmount(currentSubtotal);
+                        const currentTax = getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
+                        const currentBaseTotal = Math.max(0, currentSubtotal - invoiceDiscountAmount) + currentTax;
                         const fullCardFeeOnInvoice = applyCardFee
                           ? Math.round(currentBaseTotal * (cardProcessingFeePercentage / 100) * 100) / 100
                           : 0;
@@ -20756,10 +20933,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         const grossPaid = getGrossPaidForInvoice(editingInvoice.id);
                         const paidShown =
                           grossPaid > 0 ? grossPaid : Number(editingInvoice.paid_amount) || 0;
-                        const balanceDue =
-                          grossPaid > 0
-                            ? Math.max(0, round2(totalInclFee - grossPaid))
-                            : getBalanceDueFromPayments(editingInvoice);
+                        const balanceDue = Math.max(0, round2(totalInclFee - paidShown));
                         const allocated = getAllocatedCardFeesForInvoice(editingInvoice.id);
                         const remainingFee = Math.max(0, round2(fullCardFeeOnInvoice - allocated));
                         return (
@@ -20792,8 +20966,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         if (editingInvoice) {
                           // Base total only (subtotal + tax on taxable items); card fee is separate so Record Payment modal shows it
                           const currentSubtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                          const currentTax = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
-                          const baseTotal = currentSubtotal + currentTax;
+                          const invoiceDiscountAmount = getInvoiceDiscountAmount(currentSubtotal);
+                          const currentTax = getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
+                          const baseTotal = Math.max(0, currentSubtotal - invoiceDiscountAmount) + currentTax;
                           const cardFeeAmount = applyCardFee ? Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100 : 0;
                           const paid = editingInvoice.paid_amount ?? 0;
                           const balanceDue = Math.max(0, baseTotal + cardFeeAmount - paid);
@@ -21007,22 +21182,34 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     <div className="flex justify-between">
                       <span className="text-gray-600">Subtotal:</span>
                       <span className="font-medium">
-                        ${invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0).toFixed(2)}
+                        ${getInvoiceSubtotal(invoiceLineItems).toFixed(2)}
                       </span>
                     </div>
+                    {(() => {
+                      const subtotal = getInvoiceSubtotal(invoiceLineItems);
+                      const invoiceDiscountAmount = getInvoiceDiscountAmount(subtotal);
+                      if (invoiceDiscountAmount <= 0) return null;
+                      return (
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Discount:</span>
+                          <span className="font-medium text-red-600">-${invoiceDiscountAmount.toFixed(2)}</span>
+                        </div>
+                      );
+                    })()}
                     <div className="flex justify-between">
                       <span className="text-gray-600">Tax ({((invoiceFormData.tax_rate || 0) * 100).toFixed(1)}%):</span>
                       <span className="font-medium">
-                        ${(getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0)).toFixed(2)}
+                        ${(getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0)).toFixed(2)}
                       </span>
                     </div>
                     {(() => {
                       // Calculate card fee the same way as in the balance due section
                       // For new invoices: calculate on (subtotal + tax)
                       // For editing invoices: calculate on balance due (subtotal + tax - paid_amount)
-                      const subtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                      const tax = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
-                      const baseTotal = subtotal + tax;
+                      const subtotal = getInvoiceSubtotal(invoiceLineItems);
+                      const invoiceDiscountAmount = getInvoiceDiscountAmount(subtotal);
+                      const tax = getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
+                      const baseTotal = Math.max(0, subtotal - invoiceDiscountAmount) + tax;
                       
                       if (editingInvoice && applyCardFee) {
                         // When editing: calculate on balance due
@@ -21057,10 +21244,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       <span>Total:</span>
                       <span>
                         ${(() => {
-                          const subtotal = invoiceLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                          const tax = getTaxableSubtotal(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
-                          const cardFee = applyCardFee ? (subtotal + tax) * (cardProcessingFeePercentage / 100) : 0;
-                          return (subtotal + tax + cardFee).toFixed(2);
+                          const subtotal = getInvoiceSubtotal(invoiceLineItems);
+                          const invoiceDiscountAmount = getInvoiceDiscountAmount(subtotal);
+                          const tax = getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
+                          const baseAfterDiscount = Math.max(0, subtotal - invoiceDiscountAmount);
+                          const feeBase = baseAfterDiscount + tax;
+                          return (feeBase + (applyCardFee ? feeBase * (cardProcessingFeePercentage / 100) : 0)).toFixed(2);
                         })()}
                       </span>
                     </div>
@@ -21109,6 +21298,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     due_date: getTodayDate(),
                     invoice_date: getTodayDate(),
                     tax_rate: defaultTaxRate / 100,
+                    discount_type: 'none',
+                    discount_value: 0,
                     notes: '',
                     internal_notes: ''
                   });
@@ -21139,10 +21330,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
                   setInvoiceSaveInProgress(true);
                   try {
-                    // Calculate totals (tax only on line items with taxable checked)
-                    const subtotal = nonEmptyLineItems.reduce((sum, item) => sum + (item.total_price || 0), 0);
-                    const taxAmount = getTaxableSubtotal(nonEmptyLineItems) * (invoiceFormData.tax_rate || 0);
-                    const baseTotal = subtotal + taxAmount; // Total without card fee
+                    // Calculate totals (line-item discounts first, then invoice discount, then tax, then optional card fee)
+                    const subtotal = getInvoiceSubtotal(nonEmptyLineItems);
+                    const invoiceDiscountAmount = getInvoiceDiscountAmount(subtotal);
+                    const discountedSubtotal = Math.max(0, subtotal - invoiceDiscountAmount);
+                    const taxAmount = getTaxableSubtotalAfterInvoiceDiscount(nonEmptyLineItems) * (invoiceFormData.tax_rate || 0);
+                    const baseTotal = discountedSubtotal + taxAmount; // Total without card fee
                     
                     if (editingInvoice) {
                       // total_amount = base only (subtotal + tax). Card fee is stored separately and never doubled.
@@ -21184,6 +21377,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       const useOptimisticLock = Boolean(editingInvoice.updated_at);
                       let updateData: any = {
                         subtotal: subtotal,
+                        discount_type: invoiceFormData.discount_type || 'none',
+                        discount_value: Number(invoiceFormData.discount_value) || 0,
+                        discount_amount: invoiceDiscountAmount,
                         tax_rate: invoiceFormData.tax_rate || 0,
                         tax_amount: taxAmount,
                         total_amount: totalAmount,
@@ -21234,6 +21430,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               quantity: row.quantity ?? 1,
                               unit_price: row.unit_price ?? 0,
                               total_price: row.total_price ?? 0,
+                              discount_type: ((row as any).discount_type || 'none') as 'none' | 'percentage' | 'fixed',
+                              discount_value: Number((row as any).discount_value) || 0,
+                              discount_amount: Number((row as any).discount_amount) || 0,
                               taxable: row.taxable !== false,
                               lineId: newLineId()
                             }))));
@@ -21258,7 +21457,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         
                         if (isColumnError) {
                           console.log('Column error detected, retrying without payment_terms/internal_notes only (keep card fee)');
-                          const { payment_terms, ...dataWithoutOptional } = updateData;
+                          const { payment_terms, discount_type, discount_value, discount_amount, ...dataWithoutOptional } = updateData;
                           const dataRetry = { ...dataWithoutOptional };
                           if (payment_terms !== undefined) (dataRetry as any).payment_terms = payment_terms;
                           // updateData does not include internal_notes; always use form value so retry persists it
@@ -21296,13 +21495,37 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           quantity: item.quantity,
                           unit_price: item.unit_price,
                           total_price: item.total_price,
+                          discount_type: item.discount_type || 'none',
+                          discount_value: Number(item.discount_value) || 0,
+                          discount_amount: Number(item.discount_amount) || 0,
                           taxable: item.taxable !== false
                         }));
 
-                        const { error: lineItemsError } = await supabase
+                        let { error: lineItemsError } = await supabase
                           .from('invoice_line_items')
                           .insert(lineItemsPayload);
-
+                        if (lineItemsError) {
+                          const msg = String(lineItemsError.message || '');
+                          const code = String(lineItemsError.code || '');
+                          const isDiscountColumnMissing =
+                            code === '42703' ||
+                            code === 'PGRST204' ||
+                            msg.toLowerCase().includes('discount_');
+                          if (isDiscountColumnMissing) {
+                            const payloadWithoutDiscounts = nonEmptyLineItems.map(item => ({
+                              invoice_id: editingInvoice.id,
+                              item_type: item.item_type,
+                              reference_id: item.reference_id || null,
+                              description: item.description,
+                              quantity: item.quantity,
+                              unit_price: item.unit_price,
+                              total_price: item.total_price,
+                              taxable: item.taxable !== false
+                            }));
+                            const retry = await supabase.from('invoice_line_items').insert(payloadWithoutDiscounts);
+                            lineItemsError = retry.error;
+                          }
+                        }
                         if (lineItemsError) {
                           console.error('Could not save invoice line items:', lineItemsError);
                           alert(`Failed to save line items. Please try Update again.\n\n${lineItemsError.message || ''}`);
@@ -21354,6 +21577,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             card_fee_amount: cardFeeAmount,
                             balance_due: newBalanceDue,
                             subtotal,
+                            discount_type: invoiceFormData.discount_type,
+                            discount_value: Number(invoiceFormData.discount_value) || 0,
+                            discount_amount: invoiceDiscountAmount,
                             tax_amount: taxAmount,
                             tax_rate: invoiceFormData.tax_rate ?? inv.tax_rate,
                             due_date: invoiceFormData.due_date || undefined,
@@ -21376,6 +21602,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         return {
                           ...prev,
                           subtotal,
+                          discount_type: invoiceFormData.discount_type,
+                          discount_value: Number(invoiceFormData.discount_value) || 0,
+                          discount_amount: invoiceDiscountAmount,
                           tax_rate: invoiceFormData.tax_rate ?? prev.tax_rate,
                           tax_amount: taxAmount,
                           total_amount: totalAmount,
@@ -21429,6 +21658,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         // invoice_number will be auto-generated by database trigger
                         status: invoiceStatus,
                         subtotal: subtotal,
+                        discount_type: invoiceFormData.discount_type || 'none',
+                        discount_value: Number(invoiceFormData.discount_value) || 0,
+                        discount_amount: invoiceDiscountAmount,
                         tax_rate: invoiceFormData.tax_rate || 0,
                         tax_amount: taxAmount,
                         total_amount: totalAmount,
@@ -21462,7 +21694,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         
                         if (isColumnError) {
                           console.log('Column error detected, retrying without problematic columns');
-                          const { payment_terms, internal_notes, apply_card_fee, card_fee_amount, ...baseInsert } = insertData;
+                          const { payment_terms, internal_notes, apply_card_fee, card_fee_amount, discount_type, discount_value, discount_amount, ...baseInsert } = insertData;
                           const dataWithoutBoth = { ...baseInsert };
                           if (payment_terms !== undefined) (dataWithoutBoth as any).payment_terms = payment_terms;
                           if (internal_notes !== undefined) (dataWithoutBoth as any).internal_notes = internal_notes;
@@ -21503,15 +21735,39 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           quantity: item.quantity,
                           unit_price: item.unit_price,
                           total_price: item.total_price,
+                          discount_type: item.discount_type || 'none',
+                          discount_value: Number(item.discount_value) || 0,
+                          discount_amount: Number(item.discount_amount) || 0,
                           taxable: item.taxable !== false
                         }));
 
-                        const { error: lineItemsError } = await supabase
+                        let { error: lineItemsError } = await supabase
                           .from('invoice_line_items')
                           .insert(lineItemsPayload);
-
                         if (lineItemsError) {
-                          // Log but don't fail - line items table or taxable column may be missing
+                          const msg = String(lineItemsError.message || '');
+                          const code = String(lineItemsError.code || '');
+                          const isDiscountColumnMissing =
+                            code === '42703' ||
+                            code === 'PGRST204' ||
+                            msg.toLowerCase().includes('discount_');
+                          if (isDiscountColumnMissing) {
+                            const payloadWithoutDiscounts = nonEmptyLineItems.map(item => ({
+                              invoice_id: invoice.id,
+                              item_type: item.item_type,
+                              reference_id: item.reference_id || null,
+                              description: item.description,
+                              quantity: item.quantity,
+                              unit_price: item.unit_price,
+                              total_price: item.total_price,
+                              taxable: item.taxable !== false
+                            }));
+                            const retry = await supabase.from('invoice_line_items').insert(payloadWithoutDiscounts);
+                            lineItemsError = retry.error;
+                          }
+                        }
+                        if (lineItemsError) {
+                          // Log but don't fail - line items table or optional columns may be missing
                           console.warn('Could not create invoice line items:', lineItemsError);
                         } else {
                           // Successfully created line items - adjust inventory for any parts used
@@ -21532,6 +21788,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         due_date: getTodayDate(),
                         invoice_date: getTodayDate(),
                         tax_rate: defaultTaxRate / 100,
+                        discount_type: 'none',
+                        discount_value: 0,
                         notes: '',
                         internal_notes: ''
                       });
