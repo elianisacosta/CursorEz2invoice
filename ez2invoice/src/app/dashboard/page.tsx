@@ -32,6 +32,7 @@ interface WorkOrder {
   mechanic?: string;
   arrival_time?: string;
   customer_phone?: string;
+  updated_at?: string | null;
 }
 
 interface WaitlistEntry {
@@ -1588,6 +1589,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     tax_amount?: number;
     notes?: string | null;
     created_at?: string;
+  updated_at?: string | null;
     valid_until?: string;
     customer_id?: string;
     shop_id?: string;
@@ -2197,6 +2199,17 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     return Math.max(0, round2(totalInclFee - paidBase));
   };
 
+  const updateWorkOrderSafely = async (workOrderId: string, updates: Record<string, unknown>, expectedUpdatedAt?: string | null) => {
+    const nextUpdatedAt = new Date().toISOString();
+    const payload = { ...updates, updated_at: nextUpdatedAt };
+    const query = supabase.from('work_orders').update(payload).eq('id', workOrderId);
+    const res = expectedUpdatedAt
+      ? await query.eq('updated_at', expectedUpdatedAt).select('id')
+      : await query.select('id');
+    const isConflict = !res.error && Array.isArray((res as any).data) && ((res as any).data.length === 0);
+    return { error: res.error, conflict: isConflict };
+  };
+
   const handleRecordPayment = async () => {
     if (!invoiceForPayment?.id) return;
     
@@ -2208,16 +2221,26 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
     setMarkingInvoiceId(invoiceForPayment.id);
     try {
+      const { data: latestInvoice, error: latestInvoiceError } = await supabase
+        .from('invoices')
+        .select('id,total_amount,paid_amount,status,paid_at,updated_at,apply_card_fee,card_fee_amount')
+        .eq('id', invoiceForPayment.id)
+        .single();
+      if (latestInvoiceError || !latestInvoice) {
+        alert('Could not load latest invoice data. Please refresh and try again.');
+        return;
+      }
+
       const normalizedMethod = paymentFormData.method === 'finance' ? 'financing' : paymentFormData.method;
-      const invoiceBaseTotal = Number(invoiceForPayment.total_amount) || 0;
+      const invoiceBaseTotal = Number(latestInvoice.total_amount) || 0;
       const alreadyPaidBase = getBasePaidForInvoice(
         invoiceForPayment.id,
-        Number(invoiceForPayment.paid_amount) || 0,
-        invoiceForPayment
+        Number(latestInvoice.paid_amount) || 0,
+        latestInvoice as Invoice
       );
       const baseRemainingBefore = Math.max(0, invoiceBaseTotal - alreadyPaidBase);
       const cardFeeRate = (cardProcessingFeePercentage || 0) / 100;
-      const feeEnabledOnInvoice = (invoiceForPayment as any).apply_card_fee === true || (Number((invoiceForPayment as any).card_fee_amount) || 0) > 0;
+      const feeEnabledOnInvoice = (latestInvoice as any).apply_card_fee === true || (Number((latestInvoice as any).card_fee_amount) || 0) > 0;
       const isCardPayment = normalizedMethod === 'card' && feeEnabledOnInvoice;
 
       // For card transactions, user-entered payment amount is gross (base + fee).
@@ -2246,7 +2269,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       const remainingBase = Math.max(0, invoiceBaseTotal - newPaidAmount);
 
       // Determine status based on remaining base amount (fees are per transaction only)
-      let newStatus = invoiceForPayment.status;
+      let newStatus = latestInvoice.status;
       if (remainingBase <= 0.01) {
         newStatus = 'paid';
       } else if (newPaidAmount > 0) {
@@ -2262,6 +2285,20 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         created_by: userData?.user?.id || null,
       };
       const insertWithFee = { ...insertPayload, card_fee: paymentCardFeePortion };
+      const duplicateCutoff = new Date(Date.now() - 15000).toISOString();
+      const { data: likelyDuplicate } = await supabase
+        .from('invoice_payments')
+        .select('id')
+        .eq('invoice_id', invoiceForPayment.id)
+        .eq('amount', paymentAmount)
+        .eq('payment_method', normalizedMethod)
+        .eq('created_by', userData?.user?.id || null)
+        .gte('created_at', duplicateCutoff)
+        .limit(1);
+      if (likelyDuplicate && likelyDuplicate.length > 0) {
+        showToast({ type: 'success', message: 'Payment already saved from another session.' });
+        return;
+      }
 
       let insertRes = await supabase
         .from('invoice_payments')
@@ -2298,14 +2335,19 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       const insertedId = (insertRes.data as { id?: string } | null)?.id;
 
-      const { error: invErr } = await supabase
+      const invoiceUpdatePayload = {
+        status: newStatus,
+        paid_amount: newPaidAmount,
+        paid_at: newStatus === 'paid' ? new Date().toISOString() : latestInvoice.paid_at,
+        updated_at: new Date().toISOString(),
+      };
+      const invoiceUpdateQuery = supabase
         .from('invoices')
-        .update({
-          status: newStatus,
-          paid_amount: newPaidAmount,
-          paid_at: newStatus === 'paid' ? new Date().toISOString() : invoiceForPayment.paid_at,
-        })
+        .update(invoiceUpdatePayload)
         .eq('id', invoiceForPayment.id);
+      const { error: invErr } = latestInvoice.updated_at
+        ? await invoiceUpdateQuery.eq('updated_at', latestInvoice.updated_at)
+        : await invoiceUpdateQuery;
 
       if (invErr) {
         console.error('Error recording payment:', invErr);
@@ -2313,6 +2355,19 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           await supabase.from('invoice_payments').delete().eq('id', insertedId);
         }
         alert('Unable to update the invoice after saving the payment. Please try again.');
+        return;
+      }
+      const { data: verifyUpdated } = await supabase
+        .from('invoices')
+        .select('id')
+        .eq('id', invoiceForPayment.id)
+        .eq('paid_amount', newPaidAmount)
+        .limit(1);
+      if (!verifyUpdated || verifyUpdated.length === 0) {
+        if (insertedId) {
+          await supabase.from('invoice_payments').delete().eq('id', insertedId);
+        }
+        alert('This invoice changed on another device before payment could be applied. Please refresh and try again.');
         return;
       }
 
@@ -3914,7 +3969,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           estimated_hours: wo.estimated_hours || null,
           service_title: serviceTitle,
           customer_phone: wo.customers?.phone || '',
-          mechanic: wo.employee_id || wo.mechanic || null // Map employee_id to mechanic field
+          mechanic: wo.employee_id || wo.mechanic || null, // Map employee_id to mechanic field
+          updated_at: wo.updated_at || null
         };
       });
 
@@ -9333,16 +9389,20 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       }
 
       // Update work order in database to assign it to the bay
-      const { error: updateError } = await supabase
-        .from('work_orders')
-        .update({
+      const waitlistUpdate = await updateWorkOrderSafely(
+        order.id,
+        {
           bay_id: bay.id,
           status: order.status === 'on hold' || order.status === 'on_hold' ? 'pending' : order.status
-        })
-        .eq('id', order.id);
-
-      if (updateError) {
-        console.error('Error updating work order:', updateError);
+        },
+        order.updated_at
+      );
+      if (waitlistUpdate.conflict) {
+        alert('This work order was updated on another device. Please refresh and try again.');
+        return;
+      }
+      if (waitlistUpdate.error) {
+        console.error('Error updating work order:', waitlistUpdate.error);
         alert('Error adding work order to waitlist. Please try again.');
         return;
       }
@@ -9409,15 +9469,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       // Clear the bay_id in the database but keep the status as 'waiting' or 'pending'
       // This allows the work order to appear in the general waiting queue again
-      const { error } = await supabase
-        .from('work_orders')
-        .update({
-          bay_id: null
-        })
-        .eq('id', workOrderId);
-
-      if (error) {
-        console.error('Error removing work order from bay:', error);
+      const removeWaitlist = await updateWorkOrderSafely(workOrderId, { bay_id: null }, workOrder.updated_at);
+      if (removeWaitlist.conflict) {
+        alert('This work order was updated on another device. Please refresh and try again.');
+        return;
+      }
+      if (removeWaitlist.error) {
+        console.error('Error removing work order from bay:', removeWaitlist.error);
         alert('Failed to remove work order from bay. Please try again.');
         return;
       }
@@ -9469,16 +9527,20 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       }
 
       // Update work order with bay_id
-      const { error } = await supabase
-        .from('work_orders')
-        .update({
+      const assignUpdate = await updateWorkOrderSafely(
+        workOrder.id,
+        {
           bay_id: bay.id,
           status: 'in_progress'
-        })
-        .eq('id', workOrder.id);
-
-      if (error) {
-        console.error('Error assigning work order to bay:', error);
+        },
+        workOrder.updated_at
+      );
+      if (assignUpdate.conflict) {
+        alert('This work order was updated on another device. Please refresh and try again.');
+        return;
+      }
+      if (assignUpdate.error) {
+        console.error('Error assigning work order to bay:', assignUpdate.error);
         alert('Error assigning work order to bay. Please try again.');
         return;
       }
@@ -9566,13 +9628,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         updateData.status = 'pending';
       }
 
-      const { error: updateError } = await supabase
-        .from('work_orders')
-        .update(updateData)
-        .eq('id', workOrder.id);
-
-      if (updateError) {
-        console.error('Error moving work order:', updateError);
+      const moveUpdate = await updateWorkOrderSafely(workOrder.id, updateData, workOrder.updated_at);
+      if (moveUpdate.conflict) {
+        alert('This work order was updated on another device. Please refresh and try again.');
+        return;
+      }
+      if (moveUpdate.error) {
+        console.error('Error moving work order:', moveUpdate.error);
         alert('Error moving work order. Please try again.');
         return;
       }
@@ -9653,15 +9715,19 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       const previousMechanicId = workOrder.mechanic || null;
 
       // Update work order with mechanic
-      const { error } = await supabase
-        .from('work_orders')
-        .update({
+      const mechanicUpdate = await updateWorkOrderSafely(
+        workOrder.id,
+        {
           employee_id: mechanicId
-        })
-        .eq('id', workOrder.id);
-
-      if (error) {
-        console.error('Error assigning mechanic:', error);
+        },
+        workOrder.updated_at
+      );
+      if (mechanicUpdate.conflict) {
+        alert('This work order was updated on another device. Please refresh and try again.');
+        return;
+      }
+      if (mechanicUpdate.error) {
+        console.error('Error assigning mechanic:', mechanicUpdate.error);
         alert('Error assigning mechanic. Please try again.');
         return;
       }

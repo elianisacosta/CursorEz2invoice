@@ -152,7 +152,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    // Local scope keeps other device sessions active for the same account.
+    await supabase.auth.signOut({ scope: 'local' });
     // Explicitly clear user state on sign out
     setSession(null);
     setUser(null);

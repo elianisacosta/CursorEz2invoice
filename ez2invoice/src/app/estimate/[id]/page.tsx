@@ -16,6 +16,7 @@ interface Estimate {
   tax_amount?: number;
   notes?: string | null;
   created_at?: string;
+  updated_at?: string | null;
   valid_until?: string;
   customer_id?: string;
   customer?: {
@@ -121,14 +122,29 @@ export default function EstimateViewPage() {
       // Update estimate status to accepted
       // Note: approved_at column needs to be added to database first
       // Run the SQL in add-approved-at-column.sql to add it
-      const { error: updateError } = await supabase
+      if (estimate.status === 'accepted') {
+        setSuccess('Estimate is already accepted.');
+        return;
+      }
+      const updatePayload = {
+        status: 'accepted',
+        updated_at: new Date().toISOString(),
+        approved_at: new Date().toISOString(),
+      };
+      const updateQuery = supabase
         .from('estimates')
-        .update({
-          status: 'accepted',
-          updated_at: new Date().toISOString(),
-          approved_at: new Date().toISOString(),
-        })
+        .update(updatePayload)
         .eq('id', estimate.id);
+      const updateRes = estimate.updated_at
+        ? await updateQuery.eq('updated_at', estimate.updated_at).select('id')
+        : await updateQuery.select('id');
+      const updateError = updateRes.error;
+      const conflict = !updateError && Array.isArray(updateRes.data) && updateRes.data.length === 0;
+      if (conflict) {
+        setError('This estimate was changed from another session. The latest data has been reloaded.');
+        await fetchEstimate();
+        return;
+      }
 
       if (updateError) {
         throw new Error(updateError.message);
@@ -160,13 +176,28 @@ export default function EstimateViewPage() {
       setAccepting(true);
       setError('');
 
-      const { error: updateError } = await supabase
+      if (estimate.status === 'rejected') {
+        setSuccess('Estimate is already rejected.');
+        return;
+      }
+      const rejectPayload = {
+        status: 'rejected',
+        updated_at: new Date().toISOString(),
+      };
+      const rejectQuery = supabase
         .from('estimates')
-        .update({
-          status: 'rejected',
-          updated_at: new Date().toISOString(),
-        })
+        .update(rejectPayload)
         .eq('id', estimate.id);
+      const rejectRes = estimate.updated_at
+        ? await rejectQuery.eq('updated_at', estimate.updated_at).select('id')
+        : await rejectQuery.select('id');
+      const updateError = rejectRes.error;
+      const conflict = !updateError && Array.isArray(rejectRes.data) && rejectRes.data.length === 0;
+      if (conflict) {
+        setError('This estimate was changed from another session. The latest data has been reloaded.');
+        await fetchEstimate();
+        return;
+      }
 
       if (updateError) {
         throw new Error(updateError.message);
