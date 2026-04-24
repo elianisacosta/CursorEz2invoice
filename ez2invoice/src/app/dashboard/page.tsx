@@ -20325,15 +20325,25 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             ? laborItems.find(l => l.id === item.reference_id)?.service_name 
                             : inventory.find(p => p.id === item.reference_id)?.part_number || inventory.find(p => p.id === item.reference_id)?.part_name)
                         : null;
-                      
-                      const filteredLaborItems = laborItems.filter(li =>
-                        li.service_name.toLowerCase().includes(searchTerm.toLowerCase())
-                      );
-                      const filteredParts = inventory.filter(p => {
-                        const searchLower = searchTerm.toLowerCase();
-                        const partName = (p.part_name || '').toLowerCase();
-                        const partNumber = (p.part_number || '').toLowerCase();
-                        return partName.includes(searchLower) || partNumber.includes(searchLower);
+                      const searchLower = searchTerm.toLowerCase();
+                      const combinedInvoiceItemOptions: (
+                        | { source: 'labor'; option: (typeof laborItems)[number] }
+                        | { source: 'part'; option: (typeof inventory)[number] }
+                      )[] = [
+                        ...laborItems
+                          .filter((li) => li.service_name.toLowerCase().includes(searchLower))
+                          .map((li) => ({ source: 'labor' as const, option: li })),
+                        ...inventory
+                          .filter((p) => {
+                            const pn = (p.part_name || '').toLowerCase();
+                            const pnum = (p.part_number || '').toLowerCase();
+                            return pn.includes(searchLower) || pnum.includes(searchLower);
+                          })
+                          .map((p) => ({ source: 'part' as const, option: p })),
+                      ].sort((a, b) => {
+                        const la = a.source === 'labor' ? a.option.service_name : a.option.part_name || '';
+                        const lb = b.source === 'labor' ? b.option.service_name : b.option.part_name || '';
+                        return la.localeCompare(lb, undefined, { sensitivity: 'base' });
                       });
                       
                       return (
@@ -20361,7 +20371,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           <div className="relative min-w-0" style={{ zIndex: (searchTerm && !item.reference_id) ? 1000 : 'auto' }}>
                             <input
                               type="text"
-                              placeholder={`Choose ${item.item_type === 'labor' ? 'labor item' : 'part'}`}
+                              placeholder="Search labor or part item"
                               value={selectedItemName || searchTerm}
                               onChange={(e) => {
                                 const newValue = e.target.value;
@@ -20375,134 +20385,144 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             />
                             {searchTerm && !item.reference_id && (
                               <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-xl max-h-48 overflow-y-auto">
-                                {(item.item_type === 'labor' ? filteredLaborItems : filteredParts).map((option) => (
-                                  <div
-                                    key={option.id}
-                                    onClick={() => {
-                                      if (item.item_type === 'labor') {
-                                        const li = laborItems.find(l => l.id === option.id);
-                                        // Check for fleet discount
-                                        const discount = invoiceCustomerDiscounts.find(d => 
-                                          d.scope === 'labor' && d.labor_item_id === option.id
-                                        );
-                                        
-                                        let finalPrice = li ? li.rate : 0;
-                                        
-                                        if (discount) {
-                                          // Handle percentage discount
-                                          if (discount.percent_off && discount.percent_off > 0) {
-                                          finalPrice = finalPrice * (1 - (discount.percent_off / 100));
-                                          }
-                                          // Handle fixed amount discount
-                                          else if (discount.fixed_amount && discount.fixed_amount > 0) {
-                                            finalPrice = Math.max(0, finalPrice - discount.fixed_amount); // Can't go negative
-                                          }
-                                        }
-                                        
-                                        setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? {
-                                          ...p,
-                                          reference_id: option.id,
-                                          description: li?.description || li?.service_name || '',
-                                          unit_price: finalPrice
-                                        } : p));
-                                        // Set the input to show the selected item name
-                                        setInvoiceItemSearch(prev => ({ ...prev, [idx]: li?.service_name || '' }));
-                                      } else {
-                                        const pi = inventory.find(p => p.id === option.id);
-                                        setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? {
-                                          ...p,
-                                          reference_id: option.id,
-                                          description: pi?.part_name || pi?.description || '',
-                                          unit_price: pi ? pi.selling_price : 0
-                                        } : p));
-                                        // Set the input to show the part number in SELECT ITEM field
-                                        setInvoiceItemSearch(prev => ({ ...prev, [idx]: pi?.part_number || pi?.part_name || '' }));
-                                      }
-                                    }}
-                                    className="px-3 py-2 hover:bg-gray-100 cursor-pointer"
-                                  >
-                                    <div className="flex items-center justify-between">
-                                      <div className="flex flex-col">
-                                        <span>{item.item_type === 'labor' ? (option as LaborItem).service_name : (option as InventoryItem).part_name}</span>
-                                        {item.item_type === 'part' && (option as InventoryItem).part_number && (
-                                          <span className="text-xs text-gray-500">{(option as InventoryItem).part_number}</span>
-                                        )}
-                                      </div>
-                                      {item.item_type === 'labor' && (() => {
-                                        const disc = invoiceCustomerDiscounts.find(d => d.scope === 'labor' && d.labor_item_id === option.id);
-                                        if (disc) {
-                                          if (disc.percent_off && disc.percent_off > 0) {
-                                            return <span className="text-xs text-red-600 font-medium ml-2">{disc.percent_off}% off</span>;
-                                          } else if (disc.fixed_amount && disc.fixed_amount > 0) {
-                                            return <span className="text-xs text-red-600 font-medium ml-2">${disc.fixed_amount} off</span>;
-                                          }
-                                        }
-                                        return null;
-                                      })()}
-                                    </div>
-                              </div>
-                            ))}
-                                {(item.item_type === 'labor' ? filteredLaborItems : filteredParts).length === 0 && (
-                                  item.item_type === 'part' ? (
-                                    <div className="px-3 py-2">
-                                      <div className="text-sm text-gray-500 mb-2">No parts found</div>
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.preventDefault();
-                                          e.stopPropagation();
-                                          setCreatingPartFromInvoice(true);
-                                          setCreatingPartForLineItem(idx);
-                                          
-                                          // Pre-populate inventory form with search query
-                                          // Try to determine if it's a part number (alphanumeric) or part name
-                                          const searchQuery = searchTerm.trim();
-                                          if (searchQuery) {
-                                            // If it looks like a part number (contains numbers and possibly letters), use as SKU
-                                            const looksLikePartNumber = /[0-9]/.test(searchQuery);
-                                            if (looksLikePartNumber) {
-                                              setInventoryForm(prev => ({ ...prev, sku: searchQuery, name: searchQuery }));
-                                            } else {
-                                              setInventoryForm(prev => ({ ...prev, name: searchQuery }));
+                                {combinedInvoiceItemOptions.map((row) => {
+                                  const rowKey = row.source === 'labor' ? `labor-${row.option.id}` : `part-${row.option.id}`;
+                                  return (
+                                    <div
+                                      key={rowKey}
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        if (row.source === 'labor') {
+                                          const li = row.option;
+                                          const discount = invoiceCustomerDiscounts.find(
+                                            (d) => d.scope === 'labor' && d.labor_item_id === li.id
+                                          );
+                                          let finalPrice = li.rate;
+                                          if (discount) {
+                                            if (discount.percent_off && discount.percent_off > 0) {
+                                              finalPrice = finalPrice * (1 - discount.percent_off / 100);
+                                            } else if (discount.fixed_amount && discount.fixed_amount > 0) {
+                                              finalPrice = Math.max(0, finalPrice - discount.fixed_amount);
                                             }
                                           }
-                                          
-                                          setShowAddInventoryModal(true);
-                                        }}
-                                        className="w-full px-3 py-1.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
-                                      >
-                                        <Plus className="h-4 w-4" />
-                                        Create New Part
-                                      </button>
-                                    </div>
-                                  ) : item.item_type === 'labor' ? (
-                                    <div className="px-3 py-2">
-                                      <div className="text-sm text-gray-500 mb-2">No labor items found</div>
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.preventDefault();
-                                          e.stopPropagation();
-                                          setCreatingLaborFromInvoice(true);
-                                          setCreatingLaborForLineItem(idx);
-
-                                          // Pre-populate labor form with search query
-                                          const searchQuery = searchTerm.trim();
-                                          if (searchQuery) {
-                                            setLaborForm(prev => ({ ...prev, service_name: searchQuery }));
+                                          setInvoiceLineItems((prev) =>
+                                            prev.map((p, i) =>
+                                              i === idx
+                                                ? withComputedLineItemTotals({
+                                                    ...p,
+                                                    item_type: 'labor',
+                                                    reference_id: li.id,
+                                                    description: li?.description || li?.service_name || '',
+                                                    unit_price: finalPrice,
+                                                  })
+                                                : p
+                                            )
+                                          );
+                                          setInvoiceItemSearch((prev) => ({ ...prev, [idx]: li?.service_name || '' }));
+                                        } else {
+                                          const pi = row.option;
+                                          setInvoiceLineItems((prev) =>
+                                            prev.map((p, i) =>
+                                              i === idx
+                                                ? withComputedLineItemTotals({
+                                                    ...p,
+                                                    item_type: 'part',
+                                                    reference_id: pi.id,
+                                                    description: pi?.part_name || pi?.description || '',
+                                                    unit_price: pi ? Number(pi.selling_price) || 0 : 0,
+                                                  })
+                                                : p
+                                            )
+                                          );
+                                          setInvoiceItemSearch((prev) => ({
+                                            ...prev,
+                                            [idx]: pi?.part_number || pi?.part_name || '',
+                                          }));
+                                        }
+                                      }}
+                                      className="px-3 py-2 hover:bg-gray-100 cursor-pointer"
+                                    >
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="flex flex-col min-w-0">
+                                          <span className="text-sm text-gray-900">
+                                            {row.source === 'labor' ? row.option.service_name : row.option.part_name}
+                                            <span className="text-gray-500"> — {row.source === 'labor' ? 'Labor' : 'Part'}</span>
+                                          </span>
+                                          {row.source === 'part' && row.option.part_number && (
+                                            <span className="text-xs text-gray-500">{row.option.part_number}</span>
+                                          )}
+                                        </div>
+                                        {row.source === 'labor' && (() => {
+                                          const disc = invoiceCustomerDiscounts.find(
+                                            (d) => d.scope === 'labor' && d.labor_item_id === row.option.id
+                                          );
+                                          if (disc) {
+                                            if (disc.percent_off && disc.percent_off > 0) {
+                                              return (
+                                                <span className="text-xs text-red-600 font-medium shrink-0">
+                                                  {disc.percent_off}% off
+                                                </span>
+                                              );
+                                            }
+                                            if (disc.fixed_amount && disc.fixed_amount > 0) {
+                                              return (
+                                                <span className="text-xs text-red-600 font-medium shrink-0">
+                                                  ${disc.fixed_amount} off
+                                                </span>
+                                              );
+                                            }
                                           }
-
-                                          setShowAddLaborModal(true);
-                                        }}
-                                        className="w-full px-3 py-1.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
-                                      >
-                                        <Plus className="h-4 w-4" />
-                                        Create New Labor
-                                      </button>
+                                          return null;
+                                        })()}
+                                      </div>
                                     </div>
-                                  ) : (
-                                    <div className="px-3 py-2 text-gray-500 text-sm">No items found</div>
-                                  )
+                                  );
+                                })}
+                                {combinedInvoiceItemOptions.length === 0 && (
+                                  <div className="px-3 py-2 space-y-2">
+                                    <div className="text-sm text-gray-500">No items found</div>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setCreatingPartFromInvoice(true);
+                                        setCreatingPartForLineItem(idx);
+                                        const searchQuery = searchTerm.trim();
+                                        if (searchQuery) {
+                                          const looksLikePartNumber = /[0-9]/.test(searchQuery);
+                                          if (looksLikePartNumber) {
+                                            setInventoryForm((prev) => ({ ...prev, sku: searchQuery, name: searchQuery }));
+                                          } else {
+                                            setInventoryForm((prev) => ({ ...prev, name: searchQuery }));
+                                          }
+                                        }
+                                        setShowAddInventoryModal(true);
+                                      }}
+                                      className="w-full px-3 py-1.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
+                                    >
+                                      <Plus className="h-4 w-4" />
+                                      Create New Part
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setCreatingLaborFromInvoice(true);
+                                        setCreatingLaborForLineItem(idx);
+                                        const searchQuery = searchTerm.trim();
+                                        if (searchQuery) {
+                                          setLaborForm((prev) => ({ ...prev, service_name: searchQuery }));
+                                        }
+                                        setShowAddLaborModal(true);
+                                      }}
+                                      className="w-full px-3 py-1.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
+                                    >
+                                      <Plus className="h-4 w-4" />
+                                      Create New Labor
+                                    </button>
+                                  </div>
                                 )}
                               </div>
                             )}
@@ -24446,7 +24466,29 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
-                      {estimateItems.map((item, idx) => (
+                      {estimateItems.map((item, idx) => {
+                        const estSearchTerm = estimateItemSearch[idx] || '';
+                        const estSearchLower = estSearchTerm.toLowerCase();
+                        const combinedEstimateItemOptions: (
+                          | { source: 'labor'; option: (typeof laborItems)[number] }
+                          | { source: 'part'; option: (typeof inventory)[number] }
+                        )[] = [
+                          ...laborItems
+                            .filter((li) => li.service_name.toLowerCase().includes(estSearchLower))
+                            .map((li) => ({ source: 'labor' as const, option: li })),
+                          ...inventory
+                            .filter((p) => {
+                              const pn = (p.part_name || '').toLowerCase();
+                              const pnum = (p.part_number || '').toLowerCase();
+                              return pn.includes(estSearchLower) || pnum.includes(estSearchLower);
+                            })
+                            .map((p) => ({ source: 'part' as const, option: p })),
+                        ].sort((a, b) => {
+                          const la = a.source === 'labor' ? a.option.service_name : a.option.part_name || '';
+                          const lb = b.source === 'labor' ? b.option.service_name : b.option.part_name || '';
+                          return la.localeCompare(lb, undefined, { sensitivity: 'base' });
+                        });
+                        return (
                         <tr key={idx}>
                           <td className="px-4 py-3">
                             <select value={item.item_type} onChange={(e)=>{
@@ -24489,57 +24531,64 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   }
                                 }}
                                 onFocus={() => setEstimateItemSearchOpen(prev=> ({...prev, [idx]: true}))}
-                                placeholder="Choose item"
+                                placeholder="Search labor or part item"
                                 className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                               />
-                              {estimateItemSearchOpen[idx] && (
+                              {estimateItemSearchOpen[idx] && estSearchTerm.trim() && !item.reference_id && (
                                 <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-xl max-h-60 overflow-auto" style={{ position: 'absolute', top: '100%', left: 0, right: 0 }}>
-                                  {(item.item_type === 'labor' 
-                                    ? laborItems.filter(l => 
-                                        l.service_name.toLowerCase().includes((estimateItemSearch[idx] || '').toLowerCase())
-                                      )
-                                    : inventory.filter(p => {
-                                        const searchLower = (estimateItemSearch[idx] || '').toLowerCase();
-                                        const partName = (p.part_name || '').toLowerCase();
-                                        const partNumber = (p.part_number || '').toLowerCase();
-                                        return partName.includes(searchLower) || partNumber.includes(searchLower);
-                                      })
-                                  ).map((option: any) => (
+                                  {combinedEstimateItemOptions.map((row) => {
+                                    const rowKey = row.source === 'labor' ? `labor-${row.option.id}` : `part-${row.option.id}`;
+                                    return (
                                     <div
-                                      key={option.id}
+                                      key={rowKey}
                                       onMouseDown={(e) => {
                                         e.preventDefault(); // Prevent blur event
-                                        if(item.item_type==='labor'){
-                                          const li = laborItems.find(l=>l.id===option.id);
-                                          setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, reference_id: option.id, description: li?.service_name || '', unit_price: li ? li.rate : 0, total_price: (p.quantity||1)*(li? li.rate:0)}: p)));
-                                        } else if(item.item_type==='part'){
-                                          const pi = inventory.find(x=>x.id===option.id);
-                                          setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, reference_id: option.id, description: pi?.part_name || '', unit_price: pi ? pi.selling_price : 0, total_price: (p.quantity||1)*(pi? pi.selling_price:0)}: p)));
+                                        if (row.source === 'labor') {
+                                          const li = row.option;
+                                          setEstimateItems(prev => ensureEstimateLineItemPadding(prev.map((p, i) => i === idx
+                                            ? withComputedEstimateLineTotals({
+                                                ...p,
+                                                item_type: 'labor',
+                                                reference_id: li.id,
+                                                description: li?.service_name || '',
+                                                unit_price: li ? li.rate : 0,
+                                              })
+                                            : p
+                                          )));
+                                          setEstimateItemSearch(prev => ({ ...prev, [idx]: li?.service_name || '' }));
+                                        } else {
+                                          const pi = row.option;
+                                          setEstimateItems(prev => ensureEstimateLineItemPadding(prev.map((p, i) => i === idx
+                                            ? withComputedEstimateLineTotals({
+                                                ...p,
+                                                item_type: 'part',
+                                                reference_id: pi.id,
+                                                description: pi?.part_name || '',
+                                                unit_price: pi ? Number(pi.selling_price) || 0 : 0,
+                                              })
+                                            : p
+                                          )));
+                                          setEstimateItemSearch(prev => ({ ...prev, [idx]: pi?.part_name || '' }));
                                         }
-                                        setEstimateItemSearch(prev=> ({...prev, [idx]: item.item_type === 'labor' ? option.service_name : option.part_name}));
                                         setEstimateItemSearchOpen(prev=> ({...prev, [idx]: false}));
                                       }}
                                       className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
                                     >
-                                      <div className="flex flex-col">
-                                        <span>{item.item_type === 'labor' ? option.service_name : option.part_name}</span>
-                                        {item.item_type === 'part' && option.part_number && (
-                                          <span className="text-xs text-gray-500">{option.part_number}</span>
-                                        )}
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="flex flex-col min-w-0">
+                                          <span className="text-gray-900">
+                                            {row.source === 'labor' ? row.option.service_name : row.option.part_name}
+                                            <span className="text-gray-500"> — {row.source === 'labor' ? 'Labor' : 'Part'}</span>
+                                          </span>
+                                          {row.source === 'part' && row.option.part_number && (
+                                            <span className="text-xs text-gray-500">{row.option.part_number}</span>
+                                          )}
+                                        </div>
                                       </div>
                                     </div>
-                                  ))}
-                                  {((item.item_type === 'labor' 
-                                    ? laborItems.filter(l => 
-                                        l.service_name.toLowerCase().includes((estimateItemSearch[idx] || '').toLowerCase())
-                                      )
-                                    : inventory.filter(p => {
-                                        const searchLower = (estimateItemSearch[idx] || '').toLowerCase();
-                                        const partName = (p.part_name || '').toLowerCase();
-                                        const partNumber = (p.part_number || '').toLowerCase();
-                                        return partName.includes(searchLower) || partNumber.includes(searchLower);
-                                      })
-                                  ).length === 0) && (
+                                    );
+                                  })}
+                                  {combinedEstimateItemOptions.length === 0 && (
                                     <div className="px-3 py-2 text-sm text-gray-500">No items found</div>
                                   )}
                                 </div>
@@ -24560,7 +24609,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             <button onClick={()=> setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.filter((_,i)=> i!==idx)))} className="text-red-600 hover:text-red-700"><X className="h-5 w-5" /></button>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
