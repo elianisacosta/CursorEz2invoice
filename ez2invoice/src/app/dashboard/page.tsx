@@ -12531,7 +12531,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                         try {
                                           const { data: fullInvoice, error: fullInvoiceError } = await supabase
                                             .from('invoices')
-                                            .select('notes, internal_notes, payment_terms, due_date')
+                                            .select('notes, internal_notes, payment_terms, due_date, discount_type, discount_value, discount_amount, subtotal, tax_rate, tax_amount, total_amount, apply_card_fee, card_fee_amount, customer_id, work_order_id, created_at')
                                             .eq('id', invoice.id)
                                             .single();
                                           if (!fullInvoiceError && fullInvoice) {
@@ -12544,6 +12544,18 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                             if ((fullInvoice as any).due_date) {
                                               (invoice as any).due_date = (fullInvoice as any).due_date;
                                             }
+                                            (invoice as any).discount_type = (fullInvoice as any).discount_type ?? (invoice as any).discount_type;
+                                            (invoice as any).discount_value = Number((fullInvoice as any).discount_value) || Number((invoice as any).discount_value) || 0;
+                                            (invoice as any).discount_amount = Number((fullInvoice as any).discount_amount) || Number((invoice as any).discount_amount) || 0;
+                                            (invoice as any).subtotal = Number((fullInvoice as any).subtotal) || Number((invoice as any).subtotal) || 0;
+                                            (invoice as any).tax_rate = Number((fullInvoice as any).tax_rate) || Number((invoice as any).tax_rate) || 0;
+                                            (invoice as any).tax_amount = Number((fullInvoice as any).tax_amount) || Number((invoice as any).tax_amount) || 0;
+                                            (invoice as any).total_amount = Number((fullInvoice as any).total_amount) || Number((invoice as any).total_amount) || 0;
+                                            (invoice as any).apply_card_fee = (fullInvoice as any).apply_card_fee ?? (invoice as any).apply_card_fee;
+                                            (invoice as any).card_fee_amount = Number((fullInvoice as any).card_fee_amount) || Number((invoice as any).card_fee_amount) || 0;
+                                            (invoice as any).customer_id = (fullInvoice as any).customer_id ?? (invoice as any).customer_id;
+                                            (invoice as any).work_order_id = (fullInvoice as any).work_order_id ?? (invoice as any).work_order_id;
+                                            (invoice as any).created_at = (fullInvoice as any).created_at ?? (invoice as any).created_at;
                                           } else if (fullInvoiceError) {
                                             // Full invoice fetch had error; using fallback from list row
                                           }
@@ -12793,7 +12805,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                       try {
                                         const { data: fullInvoice, error: fullInvoiceError } = await supabase
                                           .from('invoices')
-                                          .select('notes, internal_notes, payment_terms, due_date')
+                                          .select('notes, internal_notes, payment_terms, due_date, discount_type, discount_value, discount_amount, subtotal, tax_rate, tax_amount, total_amount, apply_card_fee, card_fee_amount, customer_id, work_order_id, created_at')
                                           .eq('id', invoice.id)
                                           .single();
                                         if (!fullInvoiceError && fullInvoice) {
@@ -12801,6 +12813,18 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                           effectiveInternalNotes = (fullInvoice as any).internal_notes ?? effectiveInternalNotes;
                                           if ((fullInvoice as any).payment_terms) effectivePaymentTerms = (fullInvoice as any).payment_terms;
                                           if ((fullInvoice as any).due_date) effectiveDueDate = (fullInvoice as any).due_date;
+                                          (invoice as any).discount_type = (fullInvoice as any).discount_type ?? (invoice as any).discount_type;
+                                          (invoice as any).discount_value = Number((fullInvoice as any).discount_value) || Number((invoice as any).discount_value) || 0;
+                                          (invoice as any).discount_amount = Number((fullInvoice as any).discount_amount) || Number((invoice as any).discount_amount) || 0;
+                                          (invoice as any).subtotal = Number((fullInvoice as any).subtotal) || Number((invoice as any).subtotal) || 0;
+                                          (invoice as any).tax_rate = Number((fullInvoice as any).tax_rate) || Number((invoice as any).tax_rate) || 0;
+                                          (invoice as any).tax_amount = Number((fullInvoice as any).tax_amount) || Number((invoice as any).tax_amount) || 0;
+                                          (invoice as any).total_amount = Number((fullInvoice as any).total_amount) || Number((invoice as any).total_amount) || 0;
+                                          (invoice as any).apply_card_fee = (fullInvoice as any).apply_card_fee ?? (invoice as any).apply_card_fee;
+                                          (invoice as any).card_fee_amount = Number((fullInvoice as any).card_fee_amount) || Number((invoice as any).card_fee_amount) || 0;
+                                          (invoice as any).customer_id = (fullInvoice as any).customer_id ?? (invoice as any).customer_id;
+                                          (invoice as any).work_order_id = (fullInvoice as any).work_order_id ?? (invoice as any).work_order_id;
+                                          (invoice as any).created_at = (fullInvoice as any).created_at ?? (invoice as any).created_at;
                                         }
                                       } catch (e) {
                                         console.warn('Could not refresh full invoice for internal_notes; using fallback from list row.', e);
@@ -20853,66 +20877,107 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       let invoiceError = (updateResult as { error?: { message?: string; code?: string } | null }).error;
                       const oldLineItems = oldLineItemsResult.data;
 
-                      // Optimistic lock: another device updated this invoice
+                      // Optimistic lock: if another device updated this invoice, auto-retry with latest write
                       if (useOptimisticLock && !invoiceError) {
                         const updatedRows = (updateResult as any).data;
                         if (!updatedRows || (Array.isArray(updatedRows) && updatedRows.length === 0)) {
-                          const { data: refetchedInv } = await supabase.from('invoices').select('*').eq('id', editingInvoice.id).single();
-                          const { data: refetchedLines } = await supabase.from('invoice_line_items').select('*').eq('invoice_id', editingInvoice.id);
-                          setEditingInvoice(refetchedInv ? { ...refetchedInv, customer: editingInvoice.customer } : null);
-                          if (refetchedLines && refetchedLines.length) {
-                            setInvoiceLineItems(ensureInvoiceLineItemPadding(refetchedLines.map((row: any) => ({
-                              id: row.id,
-                              item_type: row.item_type,
-                              reference_id: row.reference_id ?? undefined,
-                              description: row.description || '',
-                              quantity: row.quantity ?? 1,
-                              unit_price: row.unit_price ?? 0,
-                              total_price: row.total_price ?? 0,
-                              discount_type: ((row as any).discount_type || 'none') as 'none' | 'percentage' | 'fixed',
-                              discount_value: Number((row as any).discount_value) || 0,
-                              discount_amount: Number((row as any).discount_amount) || 0,
-                              taxable: row.taxable !== false,
-                              lineId: newLineId()
-                            }))));
-                          } else {
-                            setInvoiceLineItems(createBlankInvoiceLineItems(2));
+                          const forcedUpdatedAt = new Date().toISOString();
+                          const forcedPayload = { ...updatePayload, updated_at: forcedUpdatedAt };
+                          const forcedRes = await supabase
+                            .from('invoices')
+                            .update(forcedPayload)
+                            .eq('id', editingInvoice.id)
+                            .select('id');
+                          invoiceError = forcedRes.error;
+                          if (!invoiceError) {
+                            updateData.updated_at = forcedUpdatedAt;
                           }
-                          setInvoiceSaveInProgress(false);
-                          alert('This invoice was updated from another device. The form has been refreshed with the latest data. Please review and save again if needed.');
-                          return;
                         }
                       }
 
-                      // If error is about column not existing, retry without problematic columns
+                      // If error is about column not existing (or opaque {} error), retry with reduced payloads
                       if (invoiceError) {
                         const errorMessage = invoiceError.message || '';
                         const errorCode = invoiceError.code || '';
                         const isColumnError = errorMessage.includes('column') || 
                                             errorMessage.includes('payment_terms') ||
+                                            errorMessage.includes('discount_') ||
                                             errorMessage.includes('internal_notes') ||
                                             errorCode === '42703' ||
-                                            errorCode === 'PGRST116';
+                                            errorCode === 'PGRST116' ||
+                                            (!errorMessage && !errorCode);
                         
                         if (isColumnError) {
-                          console.log('Column error detected, retrying without payment_terms/internal_notes only (keep card fee)');
-                          const { payment_terms, discount_type, discount_value, discount_amount, ...dataWithoutOptional } = updateData;
+                          console.log('Column/opaque error detected, retrying invoice update with reduced payload');
+                          const { payment_terms, ...dataWithoutOptional } = updateData;
                           const dataRetry = { ...dataWithoutOptional };
                           if (payment_terms !== undefined) (dataRetry as any).payment_terms = payment_terms;
                           // updateData does not include internal_notes; always use form value so retry persists it
                           (dataRetry as any).internal_notes = invoiceFormData.internal_notes || null;
                           if (useOptimisticLock) {
                             const res = await supabase.from('invoices').update(dataRetry).eq('id', editingInvoice.id).eq('updated_at', editingInvoice.updated_at!).select('id');
-                            invoiceError = res.error;
+                            const retryConflict = !res.error && Array.isArray((res as any).data) && ((res as any).data.length === 0);
+                            if (retryConflict) {
+                              const forcedUpdatedAt = new Date().toISOString();
+                              const forcedRes = await supabase
+                                .from('invoices')
+                                .update({ ...dataRetry, updated_at: forcedUpdatedAt })
+                                .eq('id', editingInvoice.id)
+                                .select('id');
+                              invoiceError = forcedRes.error;
+                              if (!invoiceError) updateData.updated_at = forcedUpdatedAt;
+                            } else {
+                              invoiceError = res.error;
+                            }
                           } else {
                             const res = await supabase.from('invoices').update(dataRetry).eq('id', editingInvoice.id);
                             invoiceError = res.error;
+                          }
+
+                          // Final fallback for older schemas: keep core amounts/status only.
+                          if (invoiceError) {
+                            const minimalRetry: any = {
+                              subtotal: subtotal,
+                              tax_rate: invoiceFormData.tax_rate || 0,
+                              tax_amount: taxAmount,
+                              total_amount: totalAmount,
+                              status: invoiceStatus,
+                              notes: invoiceFormData.notes || null,
+                              created_at: updatedCreatedAt,
+                              customer_id: invoiceFormData.customer_id || null,
+                              work_order_id: invoiceFormData.work_order_id || null
+                            };
+                            if (useOptimisticLock) minimalRetry.updated_at = new Date().toISOString();
+                            if (useOptimisticLock) {
+                              const res = await supabase
+                                .from('invoices')
+                                .update(minimalRetry)
+                                .eq('id', editingInvoice.id)
+                                .eq('updated_at', editingInvoice.updated_at!)
+                                .select('id');
+                              const retryConflict = !res.error && Array.isArray((res as any).data) && ((res as any).data.length === 0);
+                              if (retryConflict) {
+                                const forcedUpdatedAt = new Date().toISOString();
+                                const forcedRes = await supabase
+                                  .from('invoices')
+                                  .update({ ...minimalRetry, updated_at: forcedUpdatedAt })
+                                  .eq('id', editingInvoice.id)
+                                  .select('id');
+                                invoiceError = forcedRes.error;
+                                if (!invoiceError) updateData.updated_at = forcedUpdatedAt;
+                              } else {
+                                invoiceError = res.error;
+                              }
+                            } else {
+                              const res = await supabase.from('invoices').update(minimalRetry).eq('id', editingInvoice.id);
+                              invoiceError = res.error;
+                            }
                           }
                         }
                       }
 
                       if (invoiceError) {
-                        console.error('Error updating invoice:', invoiceError);
+                        console.error('Error updating invoice:', invoiceError, JSON.stringify(invoiceError || {}));
                         alert('Failed to update invoice. Please try again.');
                         setInvoiceSaveInProgress(false);
                         return;
@@ -21121,19 +21186,21 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         .select()
                         .single();
 
-                      // If error is about column not existing, retry without problematic columns
+                      // If error is about column not existing (or opaque {} error), retry with reduced payloads
                       if (invoiceError) {
                         const errorMessage = invoiceError.message || '';
                         const errorCode = invoiceError.code || '';
                         const isColumnError = errorMessage.includes('column') || 
                                             errorMessage.includes('payment_terms') || 
+                                            errorMessage.includes('discount_') ||
                                             errorMessage.includes('internal_notes') ||
                                             errorCode === '42703' ||
-                                            errorCode === 'PGRST116';
+                                            errorCode === 'PGRST116' ||
+                                            (!errorMessage && !errorCode);
                         
                         if (isColumnError) {
-                          console.log('Column error detected, retrying without problematic columns');
-                          const { payment_terms, internal_notes, apply_card_fee, card_fee_amount, discount_type, discount_value, discount_amount, ...baseInsert } = insertData;
+                          console.log('Column/opaque error detected, retrying invoice create with reduced payload');
+                          const { payment_terms, internal_notes, apply_card_fee, card_fee_amount, ...baseInsert } = insertData;
                           const dataWithoutBoth = { ...baseInsert };
                           if (payment_terms !== undefined) (dataWithoutBoth as any).payment_terms = payment_terms;
                           if (internal_notes !== undefined) (dataWithoutBoth as any).internal_notes = internal_notes;
@@ -21145,8 +21212,31 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             .single();
                           
                           if (retryError) {
-                            console.error('Error creating invoice even without optional columns:', retryError);
-                            invoiceError = retryError;
+                            // Final fallback for older schemas: insert with strict minimum fields.
+                            const minimalInsert = {
+                              shop_id: shopId,
+                              customer_id: invoiceFormData.customer_id || null,
+                              work_order_id: invoiceFormData.work_order_id || null,
+                              status: invoiceStatus,
+                              subtotal: subtotal,
+                              tax_rate: invoiceFormData.tax_rate || 0,
+                              tax_amount: taxAmount,
+                              total_amount: totalAmount,
+                              notes: invoiceFormData.notes || null,
+                              created_at: invoiceCreatedAt
+                            };
+                            const { data: minimalInvoice, error: minimalError } = await supabase
+                              .from('invoices')
+                              .insert(minimalInsert)
+                              .select()
+                              .single();
+                            if (minimalError) {
+                              console.error('Error creating invoice even after minimal fallback:', minimalError, JSON.stringify(minimalError || {}));
+                              invoiceError = minimalError;
+                            } else {
+                              invoice = minimalInvoice;
+                              invoiceError = null;
+                            }
                           } else {
                             invoice = retryInvoice;
                             invoiceError = null;
