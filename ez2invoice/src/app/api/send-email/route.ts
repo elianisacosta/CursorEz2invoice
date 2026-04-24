@@ -9,7 +9,7 @@ const supabase = createClient(
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { to, subject, html, type, estimateId, invoiceId } = body;
+    const { to, subject, html, type, estimateId, invoiceId, attachments } = body;
 
     if (!to || !subject || !html) {
       return NextResponse.json(
@@ -90,6 +90,14 @@ export async function POST(request: NextRequest) {
         to: to,
         subject: subject,
         html: html,
+        attachments: Array.isArray(attachments)
+          ? attachments
+              .filter((a: any) => a?.filename && a?.content)
+              .map((a: any) => ({
+                filename: String(a.filename),
+                content: String(a.content),
+              }))
+          : undefined,
       }),
     });
 

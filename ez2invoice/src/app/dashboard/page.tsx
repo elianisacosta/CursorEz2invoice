@@ -2711,8 +2711,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       const confirmed = confirm(`Send ${formatInvoiceNumber(invoice.invoice_number)} to ${customer.email}?`);
       if (!confirmed) return;
 
-      // Generate email HTML
+      // Generate email HTML + PDF attachment so customer can print directly.
       const emailHTML = await generateInvoiceEmailHTML(invoice);
+      const invoicePdfBase64 = await generateInvoicePdfBase64(invoice);
       const invoiceNumber = formatInvoiceNumber(invoice.invoice_number);
       
       // Send email via API
@@ -2727,6 +2728,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           html: emailHTML,
           type: 'invoice',
           invoiceId: invoice.id,
+          attachments: invoicePdfBase64
+            ? [{
+                filename: `${invoiceNumber.replace(/[^a-zA-Z0-9-_]/g, '_')}.pdf`,
+                content: invoicePdfBase64,
+              }]
+            : [],
         }),
       });
 
@@ -2922,6 +2929,108 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     }
   };
 
+  const generateInvoicePdfBase64 = async (invoice: Invoice): Promise<string | null> => {
+    try {
+      const { jsPDF } = await import('jspdf');
+      const { data: lineItems } = await supabase
+        .from('invoice_line_items')
+        .select('*')
+        .eq('invoice_id', invoice.id)
+        .order('created_at', { ascending: true });
+
+      const customerName = getInvoiceCustomerName(invoice);
+      const invoiceNumber = formatInvoiceNumber(invoice.invoice_number);
+      const invoiceDate = invoice.created_at
+        ? formatDateInTimezone(invoice.created_at, { month: 'short', day: 'numeric', year: 'numeric' })
+        : 'N/A';
+      const dueDate = invoice.due_date
+        ? formatDateOnly(invoice.due_date, { month: 'short', day: 'numeric', year: 'numeric' })
+        : 'No due date';
+
+      const subtotal = Number(invoice.subtotal) || 0;
+      const discountAmount = Number((invoice as any).discount_amount) || 0;
+      const taxRate = Number(invoice.tax_rate) || 0;
+      const taxAmount = Number(invoice.tax_amount) || 0;
+      const baseTotal = Number(invoice.total_amount) || 0;
+      const paidAmount = Number(invoice.paid_amount) || 0;
+      const cardFeeAmount = Number((invoice as any).card_fee_amount) || 0;
+      const totalInclFee = baseTotal + cardFeeAmount;
+      const balanceDue = invoice.balance_due != null
+        ? Math.max(0, Number(invoice.balance_due))
+        : Math.max(0, totalInclFee - paidAmount);
+
+      const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+      let y = 42;
+      doc.setFontSize(20);
+      doc.text('INVOICE', 42, y);
+      y += 24;
+      doc.setFontSize(11);
+      doc.text(`Invoice #: ${invoiceNumber}`, 42, y);
+      y += 16;
+      doc.text(`Date: ${invoiceDate}`, 42, y);
+      y += 16;
+      doc.text(`Due Date: ${dueDate}`, 42, y);
+      y += 22;
+      doc.setFontSize(12);
+      doc.text(`Bill To: ${customerName}`, 42, y);
+      y += 20;
+
+      doc.setFontSize(10);
+      doc.text('Description', 42, y);
+      doc.text('Qty', 330, y, { align: 'right' });
+      doc.text('Unit Price', 430, y, { align: 'right' });
+      doc.text('Total', 550, y, { align: 'right' });
+      y += 10;
+      doc.line(42, y, 550, y);
+      y += 14;
+
+      for (const item of (lineItems || [])) {
+        const description = String(item.description || '—').slice(0, 60);
+        doc.text(description, 42, y);
+        doc.text(`${Number(item.quantity) || 0}`, 330, y, { align: 'right' });
+        doc.text(`$${(Number(item.unit_price) || 0).toFixed(2)}`, 430, y, { align: 'right' });
+        doc.text(`$${(Number(item.total_price) || 0).toFixed(2)}`, 550, y, { align: 'right' });
+        y += 16;
+        if (y > 700) {
+          doc.addPage();
+          y = 42;
+        }
+      }
+
+      y += 8;
+      doc.line(320, y, 550, y);
+      y += 16;
+      doc.text(`Subtotal: $${subtotal.toFixed(2)}`, 550, y, { align: 'right' });
+      y += 14;
+      if (discountAmount > 0) {
+        doc.text(`Discount: -$${discountAmount.toFixed(2)}`, 550, y, { align: 'right' });
+        y += 14;
+      }
+      doc.text(`Tax (${(taxRate * 100).toFixed(2)}%): $${taxAmount.toFixed(2)}`, 550, y, { align: 'right' });
+      y += 14;
+      if (cardFeeAmount > 0) {
+        doc.text(`Card Processing Fee: $${cardFeeAmount.toFixed(2)}`, 550, y, { align: 'right' });
+        y += 14;
+      }
+      doc.setFontSize(12);
+      doc.text(`Total (incl. card fee): $${totalInclFee.toFixed(2)}`, 550, y, { align: 'right' });
+      y += 16;
+      doc.setFontSize(10);
+      if (paidAmount > 0) {
+        doc.text(`Paid: $${paidAmount.toFixed(2)}`, 550, y, { align: 'right' });
+        y += 14;
+      }
+      doc.text(`Balance Due: $${balanceDue.toFixed(2)}`, 550, y, { align: 'right' });
+
+      const dataUri = doc.output('datauristring');
+      const base64 = dataUri.split(',')[1] || '';
+      return base64 || null;
+    } catch (error) {
+      console.error('Could not generate invoice PDF attachment:', error);
+      return null;
+    }
+  };
+
   // Function to generate estimate email HTML
   const generateEstimateEmailHTML = async (estimate: Estimate, baseUrl?: string) => {
     // Fetch line items
@@ -3057,9 +3166,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     const subtotal = invoice.subtotal || 0;
     const taxRate = invoice.tax_rate || 0;
     const taxAmount = invoice.tax_amount || 0;
-    const total = invoice.total_amount || 0;
+    const totalBase = invoice.total_amount || 0;
     const paidAmount = invoice.paid_amount || 0;
-    const balanceDue = invoice.balance_due != null ? Math.max(0, Number(invoice.balance_due)) : Math.max(0, total - paidAmount);
+    const cardFeeAmount = Number((invoice as any).card_fee_amount) || 0;
+    const totalInclFee = totalBase + cardFeeAmount;
+    const balanceDue = invoice.balance_due != null ? Math.max(0, Number(invoice.balance_due)) : Math.max(0, totalInclFee - paidAmount);
     const statusLabel = (invoice.computed_status || invoice.status || 'Pending').toString();
     const statusDisplay = statusLabel.charAt(0).toUpperCase() + statusLabel.slice(1).toLowerCase();
 
@@ -3130,9 +3241,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${taxAmount.toFixed(2)}</strong></td>
               </tr>
               ` : ''}
+              ${cardFeeAmount > 0 ? `
+              <tr style="background-color: #f9fafb;">
+                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Card Processing Fee:</strong></td>
+                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${cardFeeAmount.toFixed(2)}</strong></td>
+              </tr>
+              ` : ''}
               <tr style="background-color: #dbeafe; font-size: 18px;">
-                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Total:</strong></td>
-                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${total.toFixed(2)}</strong></td>
+                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Total (incl. card fee):</strong></td>
+                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${totalInclFee.toFixed(2)}</strong></td>
               </tr>
               ${paidAmount > 0 ? `
               <tr style="background-color: #f0fdf4;">
