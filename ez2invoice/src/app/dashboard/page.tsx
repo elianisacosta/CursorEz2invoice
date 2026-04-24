@@ -19981,7 +19981,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               return (
                                 <div
                                   key={customer.id}
-                                  onClick={async () => {
+                                  onPointerDown={async (e) => {
+                                    e.preventDefault();
                                     setInvoiceFormData(prev => ({
                                       ...prev,
                                       customer_id: customer.id,
@@ -20023,7 +20024,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         setInvoiceCustomerDiscounts([]);
                       }
                     }}
-                                  className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                                  className="px-4 py-3.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
                                 >
                                   <div className="font-medium text-gray-900">{displayName}</div>
                                   <div className="flex items-center gap-2 mt-1">
@@ -20118,7 +20119,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             return (
                               <div
                                 key={customer.id}
-                                onClick={async () => {
+                                onPointerDown={async (e) => {
+                                  e.preventDefault();
                                   setInvoiceFormData(prev => ({
                                     ...prev,
                                     customer_id: customer.id,
@@ -20160,7 +20162,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     setInvoiceCustomerDiscounts([]);
                                   }
                                 }}
-                                className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                                className="px-4 py-3.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
                               >
                                 <div className="font-medium text-gray-900">{displayName}</div>
                                 <div className="flex items-center gap-2 mt-1">
@@ -21768,7 +21770,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               return (
                                 <div
                                   key={customer.id}
-                                  onClick={async () => {
+                                  onPointerDown={async (e) => {
+                                    e.preventDefault();
                                     setFormData(prev => ({ 
                                       ...prev, 
                                       customer: customerName,
@@ -21831,7 +21834,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                       setSelectedFleetTruck('');
                                     }
                                   }}
-                                  className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                                  className="px-4 py-3.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
                                 >
                                   <div className="font-medium text-gray-900">{displayName}</div>
                                   <div className="flex items-center gap-2 mt-1">
@@ -21921,7 +21924,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             return (
                               <div
                                 key={customer.id}
-                                onClick={async () => {
+                                onPointerDown={async (e) => {
+                                  e.preventDefault();
                                   setFormData(prev => ({ 
                                     ...prev, 
                                     customer: customerName,
@@ -21978,7 +21982,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     setSelectedFleetTruck('');
                                   }
                                 }}
-                                className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                                className="px-4 py-3.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
                               >
                                 <div className="font-medium text-gray-900">{displayName}</div>
                                 <div className="flex items-center gap-2 mt-1">
@@ -24295,12 +24299,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               return (
                                 <div
                                   key={customer.id}
-                                  onClick={() => {
+                                  onPointerDown={(e) => {
+                                    e.preventDefault();
                                     setEstimateCustomerId(customer.id);
                                     setEstimateCustomerSearch(displayName);
                                     setShowEstimateCustomerDropdown(false);
                                   }}
-                                  className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                                  className="px-4 py-3.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
                                 >
                                   <div className="font-medium text-gray-900">{displayName}</div>
                                   <div className="flex items-center gap-2 mt-1">
@@ -24390,12 +24395,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             return (
                               <div
                                 key={customer.id}
-                                onClick={() => {
+                                onPointerDown={(e) => {
+                                  e.preventDefault();
                                   setEstimateCustomerId(customer.id);
                                   setEstimateCustomerSearch(displayName);
                                   setShowEstimateCustomerDropdown(false);
                                 }}
-                                className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                                className="px-4 py-3.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
                               >
                                 <div className="font-medium text-gray-900">{displayName}</div>
                                 <div className="flex items-center gap-2 mt-1">
