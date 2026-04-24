@@ -7398,6 +7398,50 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const occupiedBays = Object.values(bayStatus).filter(bay => bay.status === 'Occupied').length;
   const bayUtilization = totalBays > 0 ? Math.round((occupiedBays / totalBays) * 100) : 0;
 
+  /** Compact shop snapshot for the Invoices tab (above the invoice list). */
+  const invoicesPageWorkflow = useMemo(() => {
+    const waitingWo = workOrders.filter((wo) => {
+      const s = (wo.status || '').toLowerCase();
+      return s === 'pending' || s === 'waiting';
+    }).length;
+    const inProgressWo = workOrders.filter((wo) => {
+      const s = (wo.status || '').toLowerCase();
+      return s === 'in_progress' || s === 'in progress';
+    }).length;
+    const completedWo = workOrders.filter((wo) => (wo.status || '').toLowerCase() === 'completed').length;
+    const bayEntries = Object.values(bayStatus);
+    const nBays = Object.keys(bayStatus).length;
+    const nAvailableBays = bayEntries.filter((bay) => !bay.currentWorkOrder).length;
+    const nOccupiedBays = bayEntries.filter((bay) => !!bay.currentWorkOrder).length;
+    const nWaitingInBays = bayEntries.reduce((sum, bay) => sum + (bay.waitlist?.length || 0), 0);
+    const recentEstimates = [...estimates]
+      .sort((a, b) => {
+        const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return tb - ta;
+      })
+      .slice(0, 4);
+    const estimatesDraft = estimates.filter((e) => (e.status || '').toLowerCase() === 'draft').length;
+    const estimatesSent = estimates.filter((e) => (e.status || '').toLowerCase() === 'sent').length;
+    const estimatesAccepted = estimates.filter((e) => (e.status || '').toLowerCase() === 'accepted').length;
+    const estimatesOpen = estimatesDraft + estimatesSent;
+    return {
+      waitingWo,
+      inProgressWo,
+      completedWo,
+      nBays,
+      nAvailableBays,
+      nOccupiedBays,
+      nWaitingInBays,
+      recentEstimates,
+      estimatesDraft,
+      estimatesSent,
+      estimatesAccepted,
+      /** Draft + sent (not yet accepted) */
+      estimatesOpen,
+    };
+  }, [workOrders, bayStatus, estimates]);
+
   // Function to create new work order
   const handleCreateWorkOrder = async () => {
     if (isCreatingWorkOrder) {
@@ -12508,7 +12552,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           {/* Invoices Tab Content */}
           {activeTab === 'invoices' && (
             <div className="space-y-6">
-              {/* Invoice Stats (respects current search/status filter) */}
+              {/* Invoice stats (respects current search/status filter) */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-2xl font-bold text-gray-900">
@@ -12538,6 +12582,206 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     }).length}
                   </div>
                   <div className="text-sm text-gray-600">Overdue</div>
+                </div>
+              </div>
+
+              {/* Shop workflow: full-card opens tab; quick actions stop propagation */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Open Work orders tab"
+                  onClick={() => setActiveTab('work-orders')}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setActiveTab('work-orders');
+                    }
+                  }}
+                  className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm text-left cursor-pointer transition-all hover:border-primary-300 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 group"
+                >
+                  <div className="flex items-start justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-700 group-hover:bg-primary-50 group-hover:text-primary-700 transition-colors">
+                        <Wrench className="h-4 w-4" aria-hidden />
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-gray-900">Work orders</div>
+                        <div className="text-[11px] text-gray-500 leading-snug">Open work orders tab</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-gray-300 group-hover:text-primary-500 transition-colors mt-1" aria-hidden />
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="rounded-md bg-slate-50 py-2 px-1 border border-transparent group-hover:border-slate-100">
+                      <div className="text-lg font-bold text-slate-900 tabular-nums">{invoicesPageWorkflow.waitingWo}</div>
+                      <div className="text-[11px] text-gray-600 leading-tight">Waiting</div>
+                    </div>
+                    <div className="rounded-md bg-amber-50 py-2 px-1 border border-transparent group-hover:border-amber-100">
+                      <div className="text-lg font-bold text-amber-800 tabular-nums">{invoicesPageWorkflow.inProgressWo}</div>
+                      <div className="text-[11px] text-gray-600 leading-tight">In progress</div>
+                    </div>
+                    <div className="rounded-md bg-emerald-50 py-2 px-1 border border-transparent group-hover:border-emerald-100">
+                      <div className="text-lg font-bold text-emerald-800 tabular-nums">{invoicesPageWorkflow.completedWo}</div>
+                      <div className="text-[11px] text-gray-600 leading-tight">Completed</div>
+                    </div>
+                  </div>
+                  <div
+                    className="mt-3 pt-3 border-t border-gray-100"
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setShowNewOrderModal(true)}
+                      className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary-200 bg-primary-50 px-3 py-2 text-xs font-medium text-primary-800 hover:bg-primary-100 transition-colors"
+                    >
+                      <Plus className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      New Work Order
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Open Bays tab"
+                  onClick={() => setActiveTab('bays')}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setActiveTab('bays');
+                    }
+                  }}
+                  className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm text-left cursor-pointer transition-all hover:border-primary-300 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 group"
+                >
+                  <div className="flex items-start justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-700 group-hover:bg-primary-50 group-hover:text-primary-700 transition-colors">
+                        <Car className="h-4 w-4" aria-hidden />
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-gray-900">Bays</div>
+                        <div className="text-[11px] text-gray-500 leading-snug">Open bays tab</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-gray-300 group-hover:text-primary-500 transition-colors mt-1" aria-hidden />
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div className="text-center rounded-md bg-slate-50 py-2 px-1 border border-transparent group-hover:border-slate-100">
+                      <div className="text-base font-bold text-slate-900 tabular-nums">{invoicesPageWorkflow.nBays}</div>
+                      <div className="text-[11px] text-gray-600 leading-tight">Total</div>
+                    </div>
+                    <div className="text-center rounded-md bg-green-50 py-2 px-1 border border-transparent group-hover:border-green-100">
+                      <div className="text-base font-bold text-green-800 tabular-nums">{invoicesPageWorkflow.nAvailableBays}</div>
+                      <div className="text-[11px] text-gray-600 leading-tight">Available</div>
+                    </div>
+                    <div className="text-center rounded-md bg-orange-50 py-2 px-1 border border-transparent group-hover:border-orange-100">
+                      <div className="text-base font-bold text-orange-800 tabular-nums">{invoicesPageWorkflow.nOccupiedBays}</div>
+                      <div className="text-[11px] text-gray-600 leading-tight">Occupied</div>
+                    </div>
+                    <div className="text-center rounded-md bg-amber-50 py-2 px-1 border border-transparent group-hover:border-amber-100" title="Work orders in bay waitlists">
+                      <div className="text-base font-bold text-amber-900 tabular-nums">{invoicesPageWorkflow.nWaitingInBays}</div>
+                      <div className="text-[10px] sm:text-[11px] text-gray-600 leading-tight">Waiting WOs</div>
+                    </div>
+                  </div>
+                  <div
+                    className="mt-3 pt-3 border-t border-gray-100"
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('bays')}
+                      className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-800 hover:bg-gray-50 transition-colors"
+                    >
+                      <Eye className="h-3.5 w-3.5 shrink-0 text-gray-600" aria-hidden />
+                      View bays
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Open Estimates tab"
+                  onClick={() => setActiveTab('estimates')}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setActiveTab('estimates');
+                    }
+                  }}
+                  className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm text-left cursor-pointer transition-all hover:border-primary-300 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 group flex flex-col min-h-[200px]"
+                >
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-700 group-hover:bg-primary-50 group-hover:text-primary-700 transition-colors">
+                        <ClipboardList className="h-4 w-4" aria-hidden />
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-gray-900">Estimates</div>
+                        <div className="text-[11px] text-gray-500 leading-snug">Open estimates tab</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-gray-300 group-hover:text-primary-500 transition-colors mt-1" aria-hidden />
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center mb-2">
+                    <div className="rounded-md bg-slate-50 py-2 px-0.5 border border-transparent group-hover:border-slate-100" title="Draft — not sent yet">
+                      <div className="text-base font-bold text-slate-900 tabular-nums">{invoicesPageWorkflow.estimatesDraft}</div>
+                      <div className="text-[10px] text-gray-600 leading-tight">Draft</div>
+                    </div>
+                    <div className="rounded-md bg-amber-50 py-2 px-0.5 border border-transparent group-hover:border-amber-100" title="Sent — awaiting customer approval">
+                      <div className="text-base font-bold text-amber-900 tabular-nums">{invoicesPageWorkflow.estimatesSent}</div>
+                      <div className="text-[10px] text-gray-600 leading-tight">Awaiting</div>
+                      <div className="text-[9px] text-gray-400 leading-tight">sent</div>
+                    </div>
+                    <div className="rounded-md bg-emerald-50 py-2 px-0.5 border border-transparent group-hover:border-emerald-100" title="Accepted by customer">
+                      <div className="text-base font-bold text-emerald-800 tabular-nums">{invoicesPageWorkflow.estimatesAccepted}</div>
+                      <div className="text-[10px] text-gray-600 leading-tight">Approved</div>
+                      <div className="text-[9px] text-gray-400 leading-tight">accepted</div>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-gray-500 mb-1.5 tabular-nums" title="Draft + sent, not yet accepted">
+                    Open: {invoicesPageWorkflow.estimatesOpen} · Total: {estimates.length}
+                  </div>
+                  <div className="flex-1 min-h-0 mb-2">
+                    {estimates.length === 0 ? (
+                      <p className="text-xs text-gray-500">No estimates yet</p>
+                    ) : (
+                      <ul className="space-y-1 text-xs text-gray-700">
+                        {invoicesPageWorkflow.recentEstimates.map((est) => {
+                          const c = est.customer;
+                          const name = c
+                            ? [c.first_name, c.last_name].filter(Boolean).join(' ') || c.company || 'Customer'
+                            : 'Customer';
+                          const st = (est.status || '').toLowerCase();
+                          return (
+                            <li key={est.id} className="flex items-center justify-between gap-2">
+                              <span className="truncate" title={name}>
+                                {est.estimate_number || est.id?.slice(0, 8)} — {name}
+                              </span>
+                              <span className="shrink-0 text-gray-500 capitalize">{st || '—'}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                  <div
+                    className="mt-auto pt-3 border-t border-gray-100"
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateEstimateModal(true)}
+                      className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-primary-200 bg-primary-50 px-3 py-2 text-xs font-medium text-primary-800 hover:bg-primary-100 transition-colors"
+                    >
+                      <Plus className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      New estimate
+                    </button>
+                  </div>
                 </div>
               </div>
 
