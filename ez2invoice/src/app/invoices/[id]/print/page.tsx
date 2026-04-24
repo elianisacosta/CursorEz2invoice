@@ -209,11 +209,14 @@ export default function InvoicePrintPage() {
         .payment-history-row { padding: 3px 0; border-bottom: 1px solid #e5e7eb; font-size: 10.5px; line-height: 1.2; }
         .terms-section { margin-top: 14px; font-size: 12px; line-height: 1.35; }
         .footer { margin-top: 26px; text-align: center; color: #9ca3af; font-size: 13px; }
-        .auth-block { margin-top: 28px; margin-bottom: 8px; text-align: left; font-size: 9px; line-height: 1.35; color: #374151; }
-        .auth-heading { font-weight: 700; font-size: 9px; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; color: #1f2937; }
-        .auth-body { font-size: 12px; font-weight: 400; line-height: 1.35; }
-        .signature-section { margin-top: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; font-size: 12px; }
-        .signature-line { border-top: 1px solid #1f2937; padding-top: 6px; margin-top: 22px; }
+        .auth-block { margin-top: 28px; margin-bottom: 10px; text-align: left; color: #374151; }
+        .auth-heading { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 10px; color: #1f2937; }
+        .auth-body { font-size: 11px; font-weight: 400; line-height: 1.45; }
+        .signature-block { margin-top: 4px; margin-bottom: 8px; font-size: 11px; }
+        .signature-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 20px; }
+        .sig-label { white-space: nowrap; flex-shrink: 0; }
+        .sig-line { flex: 1 1 180px; border-bottom: 1px solid #1f2937; min-height: 22px; }
+        .sig-line-narrow { flex: 0 1 100px; border-bottom: 1px solid #1f2937; min-height: 22px; }
         .no-print { margin-top: 16px; }
         @media print {
           .print-page { padding: 22px 30px; }
@@ -324,25 +327,26 @@ export default function InvoicePrintPage() {
         </div>
       )}
 
-      <div className="footer">Thank you for your business!</div>
       {model.showSignature && (
         <>
           <div className="auth-block">
-            <div className="auth-heading">Customer Authorization & Acceptance</div>
+            <div className="auth-heading">Customer Authorization &amp; Acceptance</div>
             <div className="auth-body">
-              By signing, I authorize this purchase and approve the total amount. I confirm receipt/completion of the parts/services and agree to the Terms & Conditions.
+              By signing below, I approve the total amount on this invoice and confirm that the listed parts, labor, repairs, diagnostics, and/or services were requested, approved, and completed. I had the opportunity to review the invoice and inspect the vehicle/unit. If paid by card, I authorize the card transaction and agree not to dispute or charge back approved and completed services.
             </div>
           </div>
-          <div className="signature-section">
-            <div>
-              <div className="signature-line">Customer Signature</div>
-            </div>
-            <div>
-              <div className="signature-line">Date</div>
+          <div className="signature-block">
+            <div className="signature-row">
+              <span className="sig-label">Customer Signature:</span>
+              <span className="sig-line" role="presentation" />
+              <span className="sig-label">Date:</span>
+              <span className="sig-line-narrow" role="presentation" />
             </div>
           </div>
         </>
       )}
+
+      <div className="footer">Thank you for your business!</div>
       <div className="no-print">
         <button onClick={() => window.print()}>Print Again</button>
       </div>
