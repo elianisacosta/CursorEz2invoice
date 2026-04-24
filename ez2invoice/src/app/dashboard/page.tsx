@@ -1822,6 +1822,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState('All Status');
   const [invoiceSearchQuery, setInvoiceSearchQuery] = useState('');
   const [invoiceSortDir, setInvoiceSortDir] = useState<'asc' | 'desc'>('desc'); // Invoice ID column: desc = newest first (20, 19, 18...)
+  const [invoicePageSize, setInvoicePageSize] = useState(25);
+  const [invoiceCurrentPage, setInvoiceCurrentPage] = useState(1);
   const [selectedEstimate, setSelectedEstimate] = useState<Estimate | null>(null);
   const [showViewEstimateModal, setShowViewEstimateModal] = useState(false);
   const [estimateLineItems, setEstimateLineItems] = useState<any[]>([]);
@@ -6869,6 +6871,22 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       return matchesSearch && matchesStatus;
     });
   }, [invoices, invoiceSearchQuery, invoiceStatusFilter, customers]);
+
+  const invoiceTotalPages = Math.max(1, Math.ceil(filteredInvoicesForList.length / invoicePageSize));
+  const paginatedInvoicesForList = useMemo(() => {
+    const start = (invoiceCurrentPage - 1) * invoicePageSize;
+    return filteredInvoicesForList.slice(start, start + invoicePageSize);
+  }, [filteredInvoicesForList, invoiceCurrentPage, invoicePageSize]);
+
+  useEffect(() => {
+    setInvoiceCurrentPage(1);
+  }, [invoiceSearchQuery, invoiceStatusFilter, invoicePageSize]);
+
+  useEffect(() => {
+    if (invoiceCurrentPage > invoiceTotalPages) {
+      setInvoiceCurrentPage(invoiceTotalPages);
+    }
+  }, [invoiceCurrentPage, invoiceTotalPages]);
 
   // Customer stats from invoices and work orders (for Customers tab)
   const { customerStatsMap, totalRevenue, totalVisits } = useMemo(() => {
@@ -12303,8 +12321,25 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               {/* Invoice List */}
               <div className="bg-white rounded-lg shadow-sm border border-gray-200">
                 <div className="p-6 border-b border-gray-200">
-                  <h3 className="text-lg font-semibold text-gray-900">Invoice List</h3>
-                  <p className="text-sm text-gray-600 mt-1">Manage billing and track payment status.</p>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900">Invoice List</h3>
+                      <p className="text-sm text-gray-600 mt-1">Manage billing and track payment status.</p>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-gray-600">
+                      <span>Rows</span>
+                      <select
+                        value={invoicePageSize}
+                        onChange={(e) => setInvoicePageSize(Number(e.target.value))}
+                        className="border border-gray-300 rounded-md px-2 py-1 focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                      >
+                        <option value={25}>25</option>
+                        <option value={50}>50</option>
+                        <option value={100}>100</option>
+                      </select>
+                      <span className="text-gray-500">of {filteredInvoicesForList.length}</span>
+                    </div>
+                  </div>
                 </div>
                 <div className="p-6">
                   {invoices.length === 0 ? (
@@ -12322,9 +12357,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       </button>
                     </div>
                   ) : (
-                    <div className="min-w-0 overflow-x-auto">
+                    <div className="min-w-0 overflow-x-hidden md:overflow-x-auto">
                       {/* Table Header - Desktop Only (Total | Paid | Balance Due) */}
-                      <div className="hidden md:grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4 min-w-0" style={{ gridTemplateColumns: 'minmax(160px, 1.4fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr) minmax(90px, 1fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
+                      <div className="hidden md:grid gap-2 text-xs font-medium text-gray-500 uppercase tracking-wider mb-3 min-w-0" style={{ gridTemplateColumns: 'minmax(110px, 1.1fr) minmax(130px, 1.35fr) minmax(90px, 0.95fr) minmax(84px, 0.8fr) minmax(84px, 0.8fr) minmax(90px, 0.9fr) minmax(80px, 0.8fr) minmax(95px, 0.9fr) minmax(170px, 1.25fr)' }}>
                         <button
                           type="button"
                           onClick={() => {
@@ -12348,7 +12383,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         <div className="min-w-0 text-right">Balance Due</div>
                         <div className="min-w-0">Status</div>
                         <div className="min-w-0">Date</div>
-                        <div className="min-w-0">Actions</div>
+                        <div className="min-w-0 sticky right-0 bg-white pl-2 text-right">Actions</div>
                       </div>
                       
                       {/* Invoice List */}
@@ -12368,7 +12403,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             );
                           }
                           
-                          return filteredInvoicesForList.map((invoice) => {
+                          return paginatedInvoicesForList.map((invoice) => {
                             const customerName = getInvoiceCustomerName(invoice);
                             const customerPhone = invoice.customer?.phone || '';
                             const baseTotal = invoice.total_amount || 0;
@@ -12397,14 +12432,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           return (
                             <div key={invoice.id}>
                               {/* Mobile Card View */}
-                              <div className="md:hidden bg-white border border-gray-200 rounded-lg p-4 space-y-3">
+                              <div className="md:hidden bg-white border border-gray-200 rounded-lg p-3 space-y-3">
                                 <div className="flex items-start justify-between">
                                   <div className="flex-1">
                                     <div className="font-medium text-gray-900 text-sm mb-1">
                                       {formatInvoiceNumber(invoice.invoice_number)}
                                     </div>
-                                    <div className="text-sm text-gray-600 font-medium">
-                                      <div>{customerName}</div>
+                                    <div className="text-sm text-gray-600 font-medium min-w-0">
+                                      <div className="truncate max-w-[12rem]">{customerName}</div>
                                       {customerPhone && <div className="text-xs text-gray-500">{customerPhone}</div>}
                                     </div>
                                   </div>
@@ -12708,12 +12743,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               </div>
 
                               {/* Desktop Table View (Total | Paid | Balance Due) */}
-                              <div className="hidden md:grid gap-4 items-center py-3 border-b border-gray-100 hover:bg-gray-50 min-w-0" style={{ gridTemplateColumns: 'minmax(160px, 1.4fr) minmax(140px, 1.5fr) minmax(110px, 1.2fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr) minmax(90px, 1fr) minmax(90px, 1fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(180px, 2fr)' }}>
+                              <div className="hidden md:grid gap-2 items-center py-2 border-b border-gray-100 hover:bg-gray-50 min-w-0 text-sm" style={{ gridTemplateColumns: 'minmax(110px, 1.1fr) minmax(130px, 1.35fr) minmax(90px, 0.95fr) minmax(84px, 0.8fr) minmax(84px, 0.8fr) minmax(90px, 0.9fr) minmax(80px, 0.8fr) minmax(95px, 0.9fr) minmax(170px, 1.25fr)' }}>
                                 <div className="font-medium text-gray-900 min-w-0 whitespace-nowrap" title={formatInvoiceNumber(invoice.invoice_number)}>
                                   {formatInvoiceNumber(invoice.invoice_number)}
                                 </div>
                                 <div className="text-gray-700 min-w-0">
-                                  <div className="font-medium truncate">{customerName}</div>
+                                  <div className="font-medium truncate max-w-[14rem]">{customerName}</div>
                                   {customerPhone && <div className="text-xs text-gray-500 truncate">{customerPhone}</div>}
                                 </div>
                                 <div className="text-sm text-gray-600 min-w-0 truncate">
@@ -12736,7 +12771,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 <div className="text-sm text-gray-600 min-w-0 whitespace-nowrap">
                                   {formatDateInTimezone((invoice as any).invoice_date || invoice.created_at)}
                                 </div>
-                                <div className="flex items-center justify-end space-x-2 min-w-0 flex-shrink-0 flex-wrap gap-1">
+                                <div className="sticky right-0 bg-white flex items-center justify-end space-x-1 min-w-0 flex-shrink-0 pl-2">
                                 <button
                                   onClick={() => handlePrintInvoice(invoice)}
                                   className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors flex-shrink-0"
@@ -12990,6 +13025,33 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         });
                         })()}
                       </div>
+                      {filteredInvoicesForList.length > 0 && (
+                        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-sm text-gray-600">
+                          <div>
+                            Showing {Math.min((invoiceCurrentPage - 1) * invoicePageSize + 1, filteredInvoicesForList.length)}-
+                            {Math.min(invoiceCurrentPage * invoicePageSize, filteredInvoicesForList.length)} of {filteredInvoicesForList.length}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setInvoiceCurrentPage((p) => Math.max(1, p - 1))}
+                              disabled={invoiceCurrentPage <= 1}
+                              className="px-3 py-1.5 border border-gray-300 rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                            >
+                              Previous
+                            </button>
+                            <span>Page {invoiceCurrentPage} / {invoiceTotalPages}</span>
+                            <button
+                              type="button"
+                              onClick={() => setInvoiceCurrentPage((p) => Math.min(invoiceTotalPages, p + 1))}
+                              disabled={invoiceCurrentPage >= invoiceTotalPages}
+                              className="px-3 py-1.5 border border-gray-300 rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                            >
+                              Next
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
