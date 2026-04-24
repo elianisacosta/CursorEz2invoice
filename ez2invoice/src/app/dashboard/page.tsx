@@ -1714,7 +1714,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       company: string | null;
     } | null;
   }
-  interface EstimateItem { item_type: 'labor'|'part'; reference_id?: string | null; description: string; quantity: number; unit_price: number; total_price: number; }
+  interface EstimateItem {
+    item_type: 'labor'|'part';
+    reference_id?: string | null;
+    description: string;
+    quantity: number;
+    unit_price: number;
+    total_price: number;
+    taxable?: boolean;
+  }
   const [estimates, setEstimates] = useState<Estimate[]>([]);
   const [estimatesLoading, setEstimatesLoading] = useState(false);
   
@@ -1809,12 +1817,55 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     }
   }, [showCreateEstimateModal]);
   const [estimateNotes, setEstimateNotes] = useState('');
-  const [estimateItems, setEstimateItems] = useState<EstimateItem[]>([ { item_type: 'labor', description: '', quantity: 1, unit_price: 0, total_price: 0 } ]);
+  const createBlankEstimateLineItem = (itemType: 'labor' | 'part' = 'labor'): EstimateItem => ({
+    item_type: itemType,
+    reference_id: null,
+    description: '',
+    quantity: 1,
+    unit_price: 0,
+    total_price: 0,
+    taxable: true,
+  });
+  const createBlankEstimateLineItems = (count = 2, itemType: 'labor' | 'part' = 'labor'): EstimateItem[] =>
+    Array.from({ length: Math.max(1, count) }, () => createBlankEstimateLineItem(itemType));
+  const isEstimateLineItemEmpty = (item: EstimateItem) =>
+    !item.reference_id &&
+    !item.description.trim() &&
+    (Number(item.unit_price) || 0) === 0 &&
+    (Number(item.total_price) || 0) === 0;
+  const withComputedEstimateLineTotals = (item: EstimateItem): EstimateItem => {
+    const quantity = Math.max(0, Number(item.quantity) || 0);
+    const unitPrice = Math.max(0, Number(item.unit_price) || 0);
+    return {
+      ...item,
+      taxable: item.taxable !== false,
+      quantity,
+      unit_price: unitPrice,
+      total_price: +(quantity * unitPrice).toFixed(2),
+    };
+  };
+  const ensureEstimateLineItemPadding = (items: EstimateItem[]): EstimateItem[] => {
+    let normalized = items.map((item) => withComputedEstimateLineTotals(item));
+    if (normalized.length === 0) {
+      normalized = createBlankEstimateLineItems(2);
+    }
+    if (normalized.length < 2) {
+      const inheritedType = normalized.length > 0 ? normalized[normalized.length - 1].item_type : 'labor';
+      normalized = [...normalized, ...createBlankEstimateLineItems(2 - normalized.length, inheritedType)];
+    }
+    const last = normalized[normalized.length - 1];
+    if (last && !isEstimateLineItemEmpty(last)) {
+      normalized = [...normalized, createBlankEstimateLineItem(last.item_type)];
+    }
+    return normalized;
+  };
+  const [estimateItems, setEstimateItems] = useState<EstimateItem[]>(createBlankEstimateLineItems(2));
   const [estimateApplyCardFee, setEstimateApplyCardFee] = useState(false);
   const [estimateItemSearch, setEstimateItemSearch] = useState<{ [key: number]: string }>({});
   const [estimateItemSearchOpen, setEstimateItemSearchOpen] = useState<{ [key: number]: boolean }>({});
-  const estimateSubtotal = estimateItems.reduce((s,i)=> s + (i.quantity * i.unit_price), 0);
-  const estimateTaxAmount = +(estimateSubtotal * (estimateTaxRate/100)).toFixed(2);
+  const estimateSubtotal = estimateItems.reduce((s,i)=> s + (Number(i.total_price) || 0), 0);
+  const estimateTaxableSubtotal = estimateItems.reduce((s,i)=> s + ((i.taxable !== false) ? (Number(i.total_price) || 0) : 0), 0);
+  const estimateTaxAmount = +(estimateTaxableSubtotal * (estimateTaxRate/100)).toFixed(2);
   const estimateCardFee = estimateApplyCardFee ? +(estimateSubtotal * (cardProcessingFeePercentage / 100)).toFixed(2) : 0;
   const estimateTotal = +(estimateSubtotal + estimateTaxAmount + estimateCardFee).toFixed(2);
   const [estimateSearchQuery, setEstimateSearchQuery] = useState('');
@@ -24171,7 +24222,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               </div>
               <button onClick={()=>{
                 setShowCreateEstimateModal(false);
-                setEstimateItems([{ item_type:'labor', description:'', quantity:1, unit_price:0, total_price:0 }]);
+                setEstimateItems(createBlankEstimateLineItems(2));
                 setEstimateCustomerId('');
                 setEstimateApplyCardFee(false);
                 setEstimateNotes('');
@@ -24373,13 +24424,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="font-semibold text-gray-900">Line Items</h3>
-                  <button onClick={()=> setEstimateItems(prev => [...prev, { item_type:'labor', description:'', quantity:1, unit_price:0, total_price:0 }])} className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700">+ Add Item</button>
                 </div>
                 <div className="border border-gray-200 rounded-lg overflow-visible">
                   <table className="w-full relative">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">TYPE</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">TAX</th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">SELECT ITEM</th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">DESCRIPTION</th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase">QTY</th>
@@ -24394,13 +24445,24 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           <td className="px-4 py-3">
                             <select value={item.item_type} onChange={(e)=>{
                               const t = e.target.value as 'labor'|'part';
-                              setEstimateItems(prev=> prev.map((p,i)=> i===idx? {...p, item_type:t, reference_id: null, description: '', unit_price: 0, total_price: 0 }: p));
+                              setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, item_type:t, reference_id: null, description: '', unit_price: 0, total_price: 0 }: p)));
                               setEstimateItemSearch(prev=> ({...prev, [idx]: ''}));
                               setEstimateItemSearchOpen(prev=> ({...prev, [idx]: false}));
                             }} className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
                               <option value="labor">Labor</option>
                               <option value="part">Part</option>
                             </select>
+                          </td>
+                          <td className="px-4 py-3">
+                            <input
+                              type="checkbox"
+                              checked={item.taxable !== false}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setEstimateItems(prev => ensureEstimateLineItemPadding(prev.map((p, i) => i === idx ? { ...p, taxable: checked } : p)));
+                              }}
+                              className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                            />
                           </td>
                           <td className="px-4 py-3 relative">
                             <div className="relative" onBlur={(e) => {
@@ -24417,7 +24479,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   setEstimateItemSearchOpen(prev=> ({...prev, [idx]: true}));
                                   // Clear selection if user is typing
                                   if (e.target.value !== (item.item_type === 'labor' ? laborItems.find(l => l.id === item.reference_id)?.service_name : inventory.find(p => p.id === item.reference_id)?.part_name)) {
-                                    setEstimateItems(prev=> prev.map((p,i)=> i===idx? {...p, reference_id: null, description: '', unit_price: 0, total_price: 0 }: p));
+                                    setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, reference_id: null, description: '', unit_price: 0, total_price: 0 }: p)));
                                   }
                                 }}
                                 onFocus={() => setEstimateItemSearchOpen(prev=> ({...prev, [idx]: true}))}
@@ -24443,10 +24505,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                         e.preventDefault(); // Prevent blur event
                                         if(item.item_type==='labor'){
                                           const li = laborItems.find(l=>l.id===option.id);
-                                          setEstimateItems(prev=> prev.map((p,i)=> i===idx? {...p, reference_id: option.id, description: li?.service_name || '', unit_price: li ? li.rate : 0, total_price: (p.quantity||1)*(li? li.rate:0)}: p));
+                                          setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, reference_id: option.id, description: li?.service_name || '', unit_price: li ? li.rate : 0, total_price: (p.quantity||1)*(li? li.rate:0)}: p)));
                                         } else if(item.item_type==='part'){
                                           const pi = inventory.find(x=>x.id===option.id);
-                                          setEstimateItems(prev=> prev.map((p,i)=> i===idx? {...p, reference_id: option.id, description: pi?.part_name || '', unit_price: pi ? pi.selling_price : 0, total_price: (p.quantity||1)*(pi? pi.selling_price:0)}: p));
+                                          setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, reference_id: option.id, description: pi?.part_name || '', unit_price: pi ? pi.selling_price : 0, total_price: (p.quantity||1)*(pi? pi.selling_price:0)}: p)));
                                         }
                                         setEstimateItemSearch(prev=> ({...prev, [idx]: item.item_type === 'labor' ? option.service_name : option.part_name}));
                                         setEstimateItemSearchOpen(prev=> ({...prev, [idx]: false}));
@@ -24479,17 +24541,17 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             </div>
                           </td>
                           <td className="px-4 py-3">
-                            <input value={item.description} onChange={(e)=> setEstimateItems(prev=> prev.map((p,i)=> i===idx? {...p, description:e.target.value }: p))} placeholder="Description" className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                            <input value={item.description} onChange={(e)=> setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, description:e.target.value }: p)))} placeholder="Description" className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
                           </td>
                           <td className="px-4 py-3">
-                            <input type="number" value={item.quantity} onChange={(e)=>{ const q = Number(e.target.value)||0; setEstimateItems(prev=> prev.map((p,i)=> i===idx? {...p, quantity:q, total_price: +(q*(p.unit_price||0)).toFixed(2) }: p)); }} className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                            <input type="number" value={item.quantity} onChange={(e)=>{ const q = Number(e.target.value)||0; setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, quantity:q, total_price: +(q*(p.unit_price||0)).toFixed(2) }: p))); }} className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
                           </td>
                           <td className="px-4 py-3">
-                            <input type="number" value={item.unit_price} onChange={(e)=>{ const u = Number(e.target.value)||0; setEstimateItems(prev=> prev.map((p,i)=> i===idx? {...p, unit_price:u, total_price: +((p.quantity||0)*u).toFixed(2) }: p)); }} className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                            <input type="number" value={item.unit_price} onChange={(e)=>{ const u = Number(e.target.value)||0; setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, unit_price:u, total_price: +((p.quantity||0)*u).toFixed(2) }: p))); }} className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
                           </td>
                           <td className="px-4 py-3 text-right font-medium">${(item.total_price||0).toFixed(2)}</td>
                           <td className="px-4 py-3">
-                            <button onClick={()=> setEstimateItems(prev=> prev.filter((_,i)=> i!==idx))} className="text-red-600 hover:text-red-700"><X className="h-5 w-5" /></button>
+                            <button onClick={()=> setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.filter((_,i)=> i!==idx)))} className="text-red-600 hover:text-red-700"><X className="h-5 w-5" /></button>
                           </td>
                         </tr>
                       ))}
@@ -24561,7 +24623,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
             <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
               <button onClick={()=>{
                 setShowCreateEstimateModal(false);
-                setEstimateItems([{ item_type:'labor', description:'', quantity:1, unit_price:0, total_price:0 }]);
+                setEstimateItems(createBlankEstimateLineItems(2));
                 setEstimateCustomerId('');
                 setEstimateApplyCardFee(false);
                 setEstimateNotes('');
@@ -24633,11 +24695,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   }
                   return;
                 }
-                const itemsPayload = estimateItems.map(i=> ({ estimate_id: estData.id, item_type: i.item_type, reference_id: i.reference_id||null, description: i.description, quantity: i.quantity, unit_price: i.unit_price, total_price: i.total_price }));
-                const { error: liErr } = await supabase.from('estimate_line_items').insert(itemsPayload);
-                if(liErr){ console.error('Line items error', liErr); }
+                const nonEmptyEstimateItems = estimateItems.filter((i) => !isEstimateLineItemEmpty(i));
+                const itemsPayload = nonEmptyEstimateItems.map(i=> ({ estimate_id: estData.id, item_type: i.item_type, reference_id: i.reference_id||null, description: i.description, quantity: i.quantity, unit_price: i.unit_price, total_price: i.total_price }));
+                if (itemsPayload.length > 0) {
+                  const { error: liErr } = await supabase.from('estimate_line_items').insert(itemsPayload);
+                  if(liErr){ console.error('Line items error', liErr); }
+                }
                 setShowCreateEstimateModal(false);
-                setEstimateItems([{ item_type:'labor', description:'', quantity:1, unit_price:0, total_price:0 }]);
+                setEstimateItems(createBlankEstimateLineItems(2));
                 setEstimateCustomerId('');
                 setEstimateApplyCardFee(false);
                 setEstimateNotes('');
