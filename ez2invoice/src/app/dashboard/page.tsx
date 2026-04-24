@@ -2803,6 +2803,22 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         .from('estimate_line_items')
         .select('*')
         .eq('estimate_id', estimate.id);
+
+      const isAcceptedEstimate = (estimate.status || '').toLowerCase() === 'accepted';
+      let approvalWorkOrder: any = null;
+      const estimateWorkOrderId = (estimate as any).work_order_id;
+      if (isAcceptedEstimate && estimateWorkOrderId) {
+        const { data: workOrderData } = await supabase
+          .from('work_orders')
+          .select(`
+            truck_number,
+            vin,
+            trucks:trucks(license_plate, vin)
+          `)
+          .eq('id', estimateWorkOrderId)
+          .maybeSingle();
+        approvalWorkOrder = workOrderData || null;
+      }
       
       // Fetch shop information
       const shopId = await getShopId();
@@ -2841,6 +2857,52 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       const customerName = estimate.customer 
         ? [estimate.customer.first_name, estimate.customer.last_name].filter(Boolean).join(' ') || estimate.customer.company || 'Unknown'
         : 'No Customer';
+      const acceptedAtRaw = (estimate as any).approved_at || (estimate as any).accepted_at || null;
+      const acceptedAtDisplay = acceptedAtRaw
+        ? formatDateInTimezone(acceptedAtRaw, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+        : 'Not available';
+      const customerEmail = estimate.customer?.email || 'Not available';
+      const approvalCustomerName = customerName || 'Not available';
+      const vehicleUnit = (approvalWorkOrder as any)?.truck_number || (estimate as any)?.vehicle || (estimate as any)?.unit_number || 'Not available';
+      const vinValue = (approvalWorkOrder as any)?.vin || (approvalWorkOrder as any)?.trucks?.vin || (estimate as any)?.vin || 'Not available';
+      const licensePlate = (approvalWorkOrder as any)?.trucks?.license_plate || (estimate as any)?.license_plate || 'Not available';
+      const acceptedIp =
+        (estimate as any)?.approved_ip ||
+        (estimate as any)?.accepted_ip ||
+        (estimate as any)?.ip_address ||
+        'Not available';
+      const approvalDetailsSection = isAcceptedEstimate
+        ? `
+          <div class="approval-proof">
+            <div class="approval-proof-title">CUSTOMER ELECTRONIC APPROVAL</div>
+            <div class="approval-proof-subtitle"><strong>Status:</strong> Accepted / Customer Approved</div>
+            <p style="margin: 10px 0 0 0;">
+              This estimate was sent to the customer by email. By clicking "Accept," the customer approved the listed work, parts, labor, pricing, taxes, and total shown on this estimate.
+            </p>
+            <p style="margin: 10px 0 0 0;">
+              The customer's electronic acceptance confirms authorization for the shop to proceed with the approved work.
+            </p>
+            <div style="margin-top: 12px;">
+              <div><strong>Accepted Date & Time:</strong> ${acceptedAtDisplay}</div>
+              <div><strong>Customer Email:</strong> ${customerEmail}</div>
+              <div><strong>Customer Name:</strong> ${approvalCustomerName}</div>
+              <div><strong>Estimate #:</strong> ${estimate.estimate_number || estimate.id.slice(0, 8)}</div>
+              <div><strong>Vehicle / Unit:</strong> ${vehicleUnit}</div>
+              <div><strong>VIN:</strong> ${vinValue}</div>
+              <div><strong>License Plate:</strong> ${licensePlate}</div>
+              <div><strong>IP Address:</strong> ${acceptedIp}</div>
+              <div><strong>Accepted From Email Link:</strong> Yes</div>
+            </div>
+            <div style="margin-top: 12px;">
+              <strong>Approval Notice:</strong> This accepted estimate may be used as proof that the customer reviewed and approved the work before service was performed.
+            </div>
+          </div>
+        `
+        : `
+          <div class="footer">
+            <p><strong>Status:</strong> ${estimate.status.charAt(0).toUpperCase() + estimate.status.slice(1)}</p>
+          </div>
+        `;
 
       printWindow.document.write(`
         <!DOCTYPE html>
@@ -2858,6 +2920,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
             th { background-color: #f5f5f5; font-weight: bold; }
             .total-row { font-weight: bold; font-size: 18px; }
             .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; }
+            .approval-proof { margin-top: 30px; padding: 18px; border: 1px solid #bfdbfe; border-left: 4px solid #2563eb; background: #f8fbff; border-radius: 8px; color: #1f2937; }
+            .approval-proof-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; color: #1e3a8a; text-transform: uppercase; letter-spacing: 0.4px; }
+            .approval-proof-subtitle { margin-bottom: 8px; }
             @media print { .no-print { display: none; } }
           </style>
         </head>
@@ -2913,9 +2978,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
             </tbody>
           </table>
           ${estimate.notes ? `<div class="footer"><strong>Notes:</strong><br>${estimate.notes}</div>` : ''}
-          <div class="footer">
-            <p><strong>Status:</strong> ${estimate.status.charAt(0).toUpperCase() + estimate.status.slice(1)}</p>
-          </div>
+          ${approvalDetailsSection}
         </body>
         </html>
       `);
@@ -2931,7 +2994,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
   const generateInvoicePdfBase64 = async (invoice: Invoice): Promise<string | null> => {
     try {
-      const { jsPDF } = await import('jspdf');
+      const { default: jsPDF } = await import('jspdf');
       const { data: lineItems } = await supabase
         .from('invoice_line_items')
         .select('*')
@@ -3038,6 +3101,21 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       .from('estimate_line_items')
       .select('*')
       .eq('estimate_id', estimate.id);
+    const isAcceptedEstimate = (estimate.status || '').toLowerCase() === 'accepted';
+    let approvalWorkOrder: any = null;
+    const estimateWorkOrderId = (estimate as any).work_order_id;
+    if (isAcceptedEstimate && estimateWorkOrderId) {
+      const { data: workOrderData } = await supabase
+        .from('work_orders')
+        .select(`
+          truck_number,
+          vin,
+          trucks:trucks(license_plate, vin)
+        `)
+        .eq('id', estimateWorkOrderId)
+        .maybeSingle();
+      approvalWorkOrder = workOrderData || null;
+    }
 
     const customerName = estimate.customer 
       ? [estimate.customer.first_name, estimate.customer.last_name].filter(Boolean).join(' ') || estimate.customer.company || 'Valued Customer'
@@ -3046,6 +3124,18 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     const estimateNumber = estimate.estimate_number || estimate.id.slice(0, 8);
     const estimateDate = formatDateInTimezone(estimate.created_at);
     const validUntil = formatDateInTimezone(estimate.valid_until);
+    const acceptedAtRaw = (estimate as any).approved_at || (estimate as any).accepted_at || null;
+    const acceptedAtDisplay = acceptedAtRaw
+      ? formatDateInTimezone(acceptedAtRaw, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+      : 'Not available';
+    const vehicleUnit = (approvalWorkOrder as any)?.truck_number || (estimate as any)?.vehicle || (estimate as any)?.unit_number || 'Not available';
+    const vinValue = (approvalWorkOrder as any)?.vin || (approvalWorkOrder as any)?.trucks?.vin || (estimate as any)?.vin || 'Not available';
+    const licensePlate = (approvalWorkOrder as any)?.trucks?.license_plate || (estimate as any)?.license_plate || 'Not available';
+    const acceptedIp =
+      (estimate as any)?.approved_ip ||
+      (estimate as any)?.accepted_ip ||
+      (estimate as any)?.ip_address ||
+      'Not available';
     
     // Get the base URL for the acceptance link
     // Use provided baseUrl, or environment variable, or window.location, or fallback
@@ -3121,21 +3211,44 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           </div>
         ` : ''}
 
-        <div style="background-color: #eff6ff; padding: 15px; border-radius: 8px; margin-top: 20px; border-left: 4px solid #2563eb;">
-          <p style="margin: 0;"><strong>Status:</strong> ${estimate.status.charAt(0).toUpperCase() + estimate.status.slice(1)}</p>
-          <p style="margin: 10px 0 0 0;">Please review this estimate and let us know if you have any questions.</p>
-        </div>
+        ${isAcceptedEstimate ? `
+          <div style="margin-top: 20px; padding: 18px; border: 1px solid #bfdbfe; border-left: 4px solid #2563eb; border-radius: 8px; background-color: #f8fbff;">
+            <div style="font-size: 16px; font-weight: 700; margin-bottom: 6px; color: #1e3a8a; text-transform: uppercase; letter-spacing: 0.4px;">CUSTOMER ELECTRONIC APPROVAL</div>
+            <div style="margin-bottom: 8px;"><strong>Status:</strong> Accepted / Customer Approved</div>
+            <p style="margin: 10px 0 0 0;">This estimate was sent to the customer by email. By clicking "Accept," the customer approved the listed work, parts, labor, pricing, taxes, and total shown on this estimate.</p>
+            <p style="margin: 10px 0 0 0;">The customer's electronic acceptance confirms authorization for the shop to proceed with the approved work.</p>
+            <div style="margin-top: 12px;">
+              <div><strong>Accepted Date & Time:</strong> ${acceptedAtDisplay}</div>
+              <div><strong>Customer Email:</strong> ${estimate.customer?.email || 'Not available'}</div>
+              <div><strong>Customer Name:</strong> ${customerName}</div>
+              <div><strong>Estimate #:</strong> ${estimateNumber}</div>
+              <div><strong>Vehicle / Unit:</strong> ${vehicleUnit}</div>
+              <div><strong>VIN:</strong> ${vinValue}</div>
+              <div><strong>License Plate:</strong> ${licensePlate}</div>
+              <div><strong>IP Address:</strong> ${acceptedIp}</div>
+              <div><strong>Accepted From Email Link:</strong> Yes</div>
+            </div>
+            <div style="margin-top: 12px;">
+              <strong>Approval Notice:</strong> This accepted estimate may be used as proof that the customer reviewed and approved the work before service was performed.
+            </div>
+          </div>
+        ` : `
+          <div style="background-color: #eff6ff; padding: 15px; border-radius: 8px; margin-top: 20px; border-left: 4px solid #2563eb;">
+            <p style="margin: 0;"><strong>Status:</strong> ${estimate.status.charAt(0).toUpperCase() + estimate.status.slice(1)}</p>
+            <p style="margin: 10px 0 0 0;">Please review this estimate and let us know if you have any questions.</p>
+          </div>
 
-        <div style="margin-top: 30px; padding: 20px; background-color: #f0fdf4; border: 2px solid #22c55e; border-radius: 8px; text-align: center;">
-          <h2 style="color: #15803d; margin: 0 0 15px 0; font-size: 20px;">Review, Approve or Reject Your Estimate</h2>
-          <p style="color: #166534; margin: 0 0 20px 0;">Click the button below to view this estimate online and approve or reject it:</p>
-          <a href="${acceptUrl}" 
-             style="display: inline-block; background-color: #22c55e; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px;">
-            View Estimate & Approve or Reject
-          </a>
-          <p style="color: #166534; margin: 15px 0 0 0; font-size: 12px;">Or copy and paste this link into your browser:</p>
-          <p style="color: #166534; margin: 5px 0 0 0; font-size: 11px; word-break: break-all;">${acceptUrl}</p>
-        </div>
+          <div style="margin-top: 30px; padding: 20px; background-color: #f0fdf4; border: 2px solid #22c55e; border-radius: 8px; text-align: center;">
+            <h2 style="color: #15803d; margin: 0 0 15px 0; font-size: 20px;">Review, Approve or Reject Your Estimate</h2>
+            <p style="color: #166534; margin: 0 0 20px 0;">Click the button below to view this estimate online and approve or reject it:</p>
+            <a href="${acceptUrl}" 
+               style="display: inline-block; background-color: #22c55e; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px;">
+              View Estimate & Approve or Reject
+            </a>
+            <p style="color: #166534; margin: 15px 0 0 0; font-size: 12px;">Or copy and paste this link into your browser:</p>
+            <p style="color: #166534; margin: 5px 0 0 0; font-size: 11px; word-break: break-all;">${acceptUrl}</p>
+          </div>
+        `}
 
         <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center; color: #6b7280; font-size: 12px;">
           <p>This is an automated email from EZ2Invoice. Please do not reply to this email.</p>
