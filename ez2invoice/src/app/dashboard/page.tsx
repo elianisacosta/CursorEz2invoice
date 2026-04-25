@@ -2453,6 +2453,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         created_by: userData?.user?.id || null,
       };
       const insertWithFee = { ...insertPayload, card_fee: paymentCardFeePortion };
+      const shouldIncludeCardFee = paymentCardFeePortion > 0;
       const duplicateCutoff = new Date(Date.now() - 15000).toISOString();
       const { data: likelyDuplicate } = await supabase
         .from('invoice_payments')
@@ -2470,7 +2471,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       let insertRes = await supabase
         .from('invoice_payments')
-        .insert(insertWithFee)
+        .insert(shouldIncludeCardFee ? insertWithFee : insertPayload)
         .select('id')
         .single();
 
@@ -2482,7 +2483,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           code === '42703' ||
           msg.toLowerCase().includes('card_fee') ||
           msg.includes('schema cache');
-        if (isMissingColumn && paymentCardFeePortion !== 0) {
+        if (isMissingColumn && shouldIncludeCardFee) {
           insertRes = await supabase.from('invoice_payments').insert(insertPayload).select('id').single();
         }
       }
