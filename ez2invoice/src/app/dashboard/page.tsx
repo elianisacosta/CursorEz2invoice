@@ -1341,6 +1341,40 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [customersLoading, setCustomersLoading] = useState(false);
   const [customerQuery, setCustomerQuery] = useState('');
+  const normalizePhoneForLookup = (value: string) => String(value || '').replace(/\D/g, '');
+  const normalizeTextForLookup = (value: string) => String(value || '').toLowerCase().trim().replace(/\s+/g, ' ');
+  const isPhoneSearchQuery = (query: string) => {
+    const trimmed = query.trim();
+    const normalized = normalizePhoneForLookup(trimmed);
+    return normalized.length >= 3 && !/[a-z]/i.test(trimmed);
+  };
+  const getCustomerLookupNameFields = (customer: Customer) => {
+    const firstName = normalizeTextForLookup(customer.first_name || '');
+    const lastName = normalizeTextForLookup(customer.last_name || '');
+    const fullName = normalizeTextForLookup([customer.first_name, customer.last_name].filter(Boolean).join(' '));
+    const companyName = normalizeTextForLookup(customer.company || '');
+    return [firstName, lastName, fullName, companyName].filter(Boolean);
+  };
+  const matchesCustomerLookup = (customer: Customer, query: string) => {
+    const normalizedQuery = normalizeTextForLookup(query);
+    if (!normalizedQuery) return true;
+    if (isPhoneSearchQuery(query)) {
+      const normalizedQueryPhone = normalizePhoneForLookup(query);
+      const customerPhone = normalizePhoneForLookup(customer.phone || '');
+      return normalizedQueryPhone.length > 0 && customerPhone.includes(normalizedQueryPhone);
+    }
+    return getCustomerLookupNameFields(customer).some(name => name.includes(normalizedQuery));
+  };
+  const hasExactCustomerLookupMatch = (customer: Customer, query: string) => {
+    const normalizedQuery = normalizeTextForLookup(query);
+    if (!normalizedQuery) return false;
+    if (isPhoneSearchQuery(query)) {
+      const normalizedQueryPhone = normalizePhoneForLookup(query);
+      const customerPhone = normalizePhoneForLookup(customer.phone || '');
+      return normalizedQueryPhone.length > 0 && customerPhone === normalizedQueryPhone;
+    }
+    return getCustomerLookupNameFields(customer).some(name => name === normalizedQuery);
+  };
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
   const [showEditCustomerModal, setShowEditCustomerModal] = useState<null | Customer>(null);
   // Analytics customer lookup
@@ -20285,50 +20319,19 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             });
                           }
                           
-                          // Filter customers based on search query
-                          const filteredCustomers = customers.filter(customer => {
-                            // Search individual name (first name + last name)
-                            const firstName = String(customer.first_name || '').toLowerCase().trim();
-                            const lastName = String(customer.last_name || '').toLowerCase().trim();
-                            const fullName = [customer.first_name, customer.last_name].filter(Boolean).join(' ').toLowerCase().trim();
-                            
-                            // Search company name (for fleets)
-                            const companyName = String(customer.company || '').toLowerCase().trim();
-                            
-                            // Check if search matches individual name components or full name
-                            const individualNameMatch = firstName.includes(searchLower) || 
-                                                       lastName.includes(searchLower) || 
-                                                       fullName.includes(searchLower);
-                            
-                            // Check if search matches company name
-                            const companyMatch = companyName.includes(searchLower);
-                            
-                            // Phone number search (normalize phone numbers)
-                            const normalizePhone = (p: string) => String(p || '').replace(/\D/g, '');
-                            const customerPhone = customer.phone || '';
-                            const normalizedPhone = normalizePhone(customerPhone).toLowerCase();
-                            const normalizedSearch = normalizePhone(searchLower);
-                            const phoneMatch = normalizedSearch.length > 0 && (
-                              normalizedPhone.includes(normalizedSearch) || 
-                              normalizedSearch.includes(normalizedPhone)
-                            );
-                            
-                            // Match if any of: individual name, company name, or phone number
-                            return individualNameMatch || companyMatch || phoneMatch;
-                          });
-                          
+                          const searchQuery = invoiceCustomerSearch.trim();
+                          const filteredCustomers = customers.filter(customer => matchesCustomerLookup(customer, searchQuery));
+                          const hasExactMatch = filteredCustomers.some(customer => hasExactCustomerLookupMatch(customer, searchQuery));
+                          const isPhoneNumber = isPhoneSearchQuery(searchQuery);
+                          const shouldShowCreateOption = searchQuery.length > 0 && !hasExactMatch;
+
                           if (filteredCustomers.length === 0) {
-                            // Check if search query looks like a phone number (contains digits)
-                            const normalizePhone = (p: string) => String(p || '').replace(/\D/g, '');
-                            const searchQuery = invoiceCustomerSearch.trim();
-                            const isPhoneNumber = normalizePhone(searchQuery).length >= 7;
-                            
                             return (
                               <div className="px-4 py-3">
                                 <div className="text-sm text-gray-500 mb-3">No customers found</div>
                                 <button
                                   type="button"
-                                  onClick={(e) => {
+                                  onPointerDown={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
                                     setShowInvoiceCustomerDropdown(false);
@@ -20336,10 +20339,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     
                                     // Pre-populate customer form with search query
                                     if (isPhoneNumber) {
-                                      setCustomerForm(prev => ({ ...prev, phone: searchQuery }));
+                                      setCustomerForm(prev => ({ ...prev, name: '', phone: searchQuery }));
                                     } else {
-                                      // Assume it's a name
-                                      setCustomerForm(prev => ({ ...prev, name: searchQuery }));
+                                      setCustomerForm(prev => ({ ...prev, phone: '', name: searchQuery }));
                                     }
                                     
                                     setShowAddCustomerModal(true);
@@ -20347,13 +20349,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   className="w-full px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
                                 >
                                   <UserPlus className="h-4 w-4" />
-                                  Create New Customer
+                                  {`Create new customer: ${searchQuery}`}
                                 </button>
                               </div>
                             );
                           }
-                          
-                          return filteredCustomers.map((customer) => {
+
+                          return (
+                            <>
+                              {filteredCustomers.map((customer) => {
                             // Display name: for individuals use first+last, for fleets use company
                             const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
                             const customerName = customer.company || individualName || 'Unknown';
@@ -20420,7 +20424,29 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 </div>
                               </div>
                             );
-                          });
+                          })}
+                              {shouldShowCreateOption && (
+                                <button
+                                  type="button"
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setShowInvoiceCustomerDropdown(false);
+                                    setCreatingCustomerFromInvoice(true);
+                                    if (isPhoneNumber) {
+                                      setCustomerForm(prev => ({ ...prev, name: '', phone: searchQuery }));
+                                    } else {
+                                      setCustomerForm(prev => ({ ...prev, phone: '', name: searchQuery }));
+                                    }
+                                    setShowAddCustomerModal(true);
+                                  }}
+                                  className="w-full px-4 py-3 text-left text-primary-600 hover:bg-primary-50 border-t border-gray-100 text-sm font-medium"
+                                >
+                                  {`+ Create new customer: ${searchQuery}`}
+                                </button>
+                              )}
+                            </>
+                          );
                         })()}
                       </div>
                     )}
@@ -22009,7 +22035,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   <div className="text-sm text-gray-500 mb-3">No customers yet</div>
                                   <button
                                     type="button"
-                                    onClick={(e) => {
+                                    onPointerDown={(e) => {
                                       e.preventDefault();
                                       e.stopPropagation();
                                       setShowCustomerDropdown(false);
@@ -22115,70 +22141,42 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             });
                           }
                           
-                          // Filter customers based on search query
-                          const filteredCustomers = customers.filter(customer => {
-                            // Search individual name (first name + last name)
-                            const firstName = String(customer.first_name || '').toLowerCase().trim();
-                            const lastName = String(customer.last_name || '').toLowerCase().trim();
-                            const fullName = [customer.first_name, customer.last_name].filter(Boolean).join(' ').toLowerCase().trim();
-                            
-                            // Search company name (for fleets)
-                            const companyName = String(customer.company || '').toLowerCase().trim();
-                            
-                            // Check if search matches individual name components or full name
-                            const individualNameMatch = firstName.includes(searchLower) || 
-                                                       lastName.includes(searchLower) || 
-                                                       fullName.includes(searchLower);
-                            
-                            // Check if search matches company name
-                            const companyMatch = companyName.includes(searchLower);
-                            
-                            // Phone number search (normalize phone numbers)
-                            const normalizePhone = (p: string) => String(p || '').replace(/\D/g, '');
-                            const customerPhone = customer.phone || '';
-                            const normalizedPhone = normalizePhone(customerPhone).toLowerCase();
-                            const normalizedSearch = normalizePhone(searchLower);
-                            const phoneMatch = normalizedSearch.length > 0 && (
-                              normalizedPhone.includes(normalizedSearch) || 
-                              normalizedSearch.includes(normalizedPhone)
-                            );
-                            
-                            // Match if any of: individual name, company name, or phone number
-                            return individualNameMatch || companyMatch || phoneMatch;
-                          });
-                          
+                          const searchQuery = customerSearchQuery.trim();
+                          const filteredCustomers = customers.filter(customer => matchesCustomerLookup(customer, searchQuery));
+                          const hasExactMatch = filteredCustomers.some(customer => hasExactCustomerLookupMatch(customer, searchQuery));
+                          const isPhoneNumber = isPhoneSearchQuery(searchQuery);
+                          const shouldShowCreateOption = searchQuery.length > 0 && !hasExactMatch;
+
                           if (filteredCustomers.length === 0) {
-                            const searchQuery = customerSearchQuery.trim();
-                            const normalizePhoneForCreate = (p: string) => String(p || '').replace(/\D/g, '');
-                            const isPhoneNumber = normalizePhoneForCreate(searchQuery).length >= 7;
-                            
                             return (
                               <div className="px-4 py-3">
                                 <div className="text-sm text-gray-500 mb-3">No customers found</div>
                                 <button
                                   type="button"
-                                  onClick={(e) => {
+                                  onPointerDown={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
                                     setShowCustomerDropdown(false);
                                     setCreatingCustomerFromWorkOrder(true);
                                     if (isPhoneNumber) {
-                                      setCustomerForm(prev => ({ ...prev, phone: searchQuery }));
+                                      setCustomerForm(prev => ({ ...prev, name: '', phone: searchQuery }));
                                     } else {
-                                      setCustomerForm(prev => ({ ...prev, name: searchQuery }));
+                                      setCustomerForm(prev => ({ ...prev, phone: '', name: searchQuery }));
                                     }
                                     setShowAddCustomerModal(true);
                                   }}
                                   className="w-full px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
                                 >
                                   <UserPlus className="h-4 w-4" />
-                                  Create New Customer
+                                  {`Create new customer: ${searchQuery}`}
                                 </button>
                               </div>
                             );
                           }
-                          
-                          return filteredCustomers.map((customer) => {
+
+                          return (
+                            <>
+                              {filteredCustomers.map((customer) => {
                             // Display name: for individuals use first+last, for fleets use company
                             const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
                             const customerName = customer.company || individualName || 'Unknown';
@@ -22260,7 +22258,29 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 </div>
                               </div>
                             );
-                          });
+                          })}
+                              {shouldShowCreateOption && (
+                                <button
+                                  type="button"
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setShowCustomerDropdown(false);
+                                    setCreatingCustomerFromWorkOrder(true);
+                                    if (isPhoneNumber) {
+                                      setCustomerForm(prev => ({ ...prev, name: '', phone: searchQuery }));
+                                    } else {
+                                      setCustomerForm(prev => ({ ...prev, phone: '', name: searchQuery }));
+                                    }
+                                    setShowAddCustomerModal(true);
+                                  }}
+                                  className="w-full px-4 py-3 text-left text-primary-600 hover:bg-primary-50 border-t border-gray-100 text-sm font-medium"
+                                >
+                                  {`+ Create new customer: ${searchQuery}`}
+                                </button>
+                              )}
+                            </>
+                          );
                         })()}
                       </div>
                     )}
@@ -24538,7 +24558,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   <div className="text-sm text-gray-500 mb-3">No customers yet</div>
                                   <button
                                     type="button"
-                                    onClick={(e) => {
+                                    onPointerDown={(e) => {
                                       e.preventDefault();
                                       e.stopPropagation();
                                       setShowEstimateCustomerDropdown(false);
@@ -24586,70 +24606,42 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             });
                           }
                           
-                          // Filter customers based on search query
-                          const filteredCustomers = customers.filter(customer => {
-                            // Search individual name (first name + last name)
-                            const firstName = String(customer.first_name || '').toLowerCase().trim();
-                            const lastName = String(customer.last_name || '').toLowerCase().trim();
-                            const fullName = [customer.first_name, customer.last_name].filter(Boolean).join(' ').toLowerCase().trim();
-                            
-                            // Search company name (for fleets)
-                            const companyName = String(customer.company || '').toLowerCase().trim();
-                            
-                            // Check if search matches individual name components or full name
-                            const individualNameMatch = firstName.includes(searchLower) || 
-                                                       lastName.includes(searchLower) || 
-                                                       fullName.includes(searchLower);
-                            
-                            // Check if search matches company name
-                            const companyMatch = companyName.includes(searchLower);
-                            
-                            // Phone number search (normalize phone numbers)
-                            const normalizePhone = (p: string) => String(p || '').replace(/\D/g, '');
-                            const customerPhone = customer.phone || '';
-                            const normalizedPhone = normalizePhone(customerPhone).toLowerCase();
-                            const normalizedSearch = normalizePhone(searchLower);
-                            const phoneMatch = normalizedSearch.length > 0 && (
-                              normalizedPhone.includes(normalizedSearch) || 
-                              normalizedSearch.includes(normalizedPhone)
-                            );
-                            
-                            // Match if any of: individual name, company name, or phone number
-                            return individualNameMatch || companyMatch || phoneMatch;
-                          });
-                          
+                          const searchQuery = estimateCustomerSearch.trim();
+                          const filteredCustomers = customers.filter(customer => matchesCustomerLookup(customer, searchQuery));
+                          const hasExactMatch = filteredCustomers.some(customer => hasExactCustomerLookupMatch(customer, searchQuery));
+                          const isPhoneNumber = isPhoneSearchQuery(searchQuery);
+                          const shouldShowCreateOption = searchQuery.length > 0 && !hasExactMatch;
+
                           if (filteredCustomers.length === 0) {
-                            const searchQuery = estimateCustomerSearch.trim();
-                            const normalizePhoneForCreate = (p: string) => String(p || '').replace(/\D/g, '');
-                            const isPhoneNumber = normalizePhoneForCreate(searchQuery).length >= 7;
-                            
                             return (
                               <div className="px-4 py-3">
                                 <div className="text-sm text-gray-500 mb-3">No customers found</div>
                                 <button
                                   type="button"
-                                  onClick={(e) => {
+                                  onPointerDown={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
                                     setShowEstimateCustomerDropdown(false);
                                     setCreatingCustomerFromEstimate(true);
                                     if (isPhoneNumber) {
-                                      setCustomerForm(prev => ({ ...prev, phone: searchQuery }));
+                                      setCustomerForm(prev => ({ ...prev, name: '', phone: searchQuery }));
                                     } else {
-                                      setCustomerForm(prev => ({ ...prev, name: searchQuery }));
+                                      setCustomerForm(prev => ({ ...prev, phone: '', name: searchQuery }));
                                     }
                                     setShowAddCustomerModal(true);
                                   }}
                                   className="w-full px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
                                 >
                                   <UserPlus className="h-4 w-4" />
-                                  Create New Customer
+                                  {`Create new customer: ${searchQuery}`}
                                 </button>
                               </div>
                             );
                           }
-                          
-                          return filteredCustomers.map((customer) => {
+
+                          return (
+                            <>
+                              {filteredCustomers.map((customer) => {
                             // Display name: for individuals use first+last, for fleets use company
                             const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
                             const customerName = customer.company || individualName || 'Unknown';
@@ -24679,7 +24671,29 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 </div>
                               </div>
                             );
-                          });
+                          })}
+                              {shouldShowCreateOption && (
+                                <button
+                                  type="button"
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setShowEstimateCustomerDropdown(false);
+                                    setCreatingCustomerFromEstimate(true);
+                                    if (isPhoneNumber) {
+                                      setCustomerForm(prev => ({ ...prev, name: '', phone: searchQuery }));
+                                    } else {
+                                      setCustomerForm(prev => ({ ...prev, phone: '', name: searchQuery }));
+                                    }
+                                    setShowAddCustomerModal(true);
+                                  }}
+                                  className="w-full px-4 py-3 text-left text-primary-600 hover:bg-primary-50 border-t border-gray-100 text-sm font-medium"
+                                >
+                                  {`+ Create new customer: ${searchQuery}`}
+                                </button>
+                              )}
+                            </>
+                          );
                         })()}
                       </div>
                     )}
