@@ -165,18 +165,20 @@ import AppHeader from '@/components/AppHeader';
 import { useToast } from '@/components/ui/useToast';
 import ConfirmDeleteDialog from '@/components/ui/ConfirmDeleteDialog';
 import AnnualVehicleInspectionForm from '@/components/AnnualVehicleInspectionForm';
+import SubscriptionAccessCheck from '@/components/SubscriptionAccessCheck';
 
 export default function Dashboard() {
   const { isFounder, subscriptionBypass, simulatedTier, currentTier, canAccessFeature, getBayLimit, setSubscriptionBypass, setSimulatedTier } = useFounder();
   const { currentShopId: contextShopId, shops, setCurrentShopId, isLoading: shopLoading } = useShop();
   const { showToast } = useToast();
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
   const [activeTab, setActiveTab] = useState('overview');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [userPlanType, setUserPlanType] = useState<string | null>('starter'); // Track user's actual plan from database (null = no subscription)
   const [isVerifyingCheckout, setIsVerifyingCheckout] = useState(false); // Track if we're verifying a checkout session
   const [cachedShopId, setCachedShopId] = useState<string | null>(null); // Cache shopId to avoid repeated getShopId() calls
   const hasLoggedNoUserRef = useRef(false); // Log "No user found" at most once to avoid 9 duplicate issues from multiple getShopId() callers
-
   // Use simulated tier if active, otherwise use actual plan from database
   // When 'real' is selected and bypass is active, use 'enterprise' (bypass mode)
   // If userPlanType is null, treat as 'starter' for UI purposes (but access is blocked)
@@ -771,9 +773,14 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     state: '',
     zip_code: '',
     phone: '',
-    email: '' // Will use user email as fallback
+    email: '',
+    tax_id: '',
+    website: '',
+    labor_rate: '' as string | number,
   });
   const [shopInfoLoading, setShopInfoLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const shopInfoLoadedForShopRef = useRef<string | null>(null);
   
   // User profile state for Profile settings tab
   const [userProfile, setUserProfile] = useState({
@@ -1028,243 +1035,6 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     
     handleCheckoutSession();
   }, []);
-
-  // Check if user has active subscription and block access if not
-  useEffect(() => {
-    const checkSubscriptionAccess = async () => {
-      // Don't check subscription if we're currently verifying a checkout session
-      if (isVerifyingCheckout) {
-        console.log('[Dashboard] Skipping subscription check - verifying checkout');
-        return;
-      }
-
-      try {
-        const { data: userData } = await supabase.auth.getUser();
-        if (!userData?.user?.id) {
-          return;
-        }
-
-        const userId = userData.user.id;
-        const userEmail = userData.user.email?.toLowerCase() || '';
-        
-        // Founders are exempt from this check
-        const founderEmails = ['acostaelianis@yahoo.com', 'founder@ez2invoice.com', 'admin@ez2invoice.com'];
-        const isFounder = founderEmails.includes(userEmail);
-        
-        if (isFounder) {
-          console.log('[Dashboard] Founder access - skipping subscription check');
-          return;
-        }
-
-        // Check if user just came from checkout (within grace window)
-        // Check localStorage for recent checkout completion timestamp
-        const recentCheckoutTimestamp = typeof window !== 'undefined' 
-          ? localStorage.getItem('recent_checkout_timestamp')
-          : null;
-        
-        const gracePeriodMs = 30 * 1000; // 30 seconds grace period
-        const isWithinGracePeriod = recentCheckoutTimestamp 
-          ? (Date.now() - parseInt(recentCheckoutTimestamp)) < gracePeriodMs
-          : false;
-
-        // Get user record from database
-        // VERIFICATION: This queries the same table/fields that the webhook upserts
-        // Table: users
-        // Fields: plan_type, stripe_customer_id, updated_at
-        console.log(`[Dashboard] Querying subscription status for user ${userId}:`, {
-          table: 'users',
-          fields: ['plan_type', 'stripe_customer_id', 'updated_at'],
-          query: { id: userId },
-        });
-        
-        const { data: userRecord } = await supabase
-          .from('users')
-          .select('plan_type, stripe_customer_id, updated_at')
-          .eq('id', userId)
-          .maybeSingle();
-        
-        const hasStripeCustomerId = !!userRecord?.stripe_customer_id;
-        const planType = userRecord?.plan_type;
-        const hasActivePlan = planType !== null && planType !== undefined;
-
-        console.log('[Dashboard] Subscription status read from DB:', {
-          userId,
-          userEmail,
-          table: 'users',
-          fieldsRead: {
-            stripe_customer_id: hasStripeCustomerId ? 'SET' : 'NULL',
-            plan_type: planType || 'NULL',
-            updated_at: userRecord?.updated_at || 'NULL',
-          },
-          hasStripeCustomerId,
-          planType,
-          hasActivePlan,
-          isWithinGracePeriod,
-          recentCheckoutTimestamp,
-        });
-
-        // If user has active plan, verify it's truly active (not expired)
-        if (hasActivePlan) {
-          console.log('[Dashboard] User has plan_type in DB, verifying subscription status');
-          
-          // Verify with Stripe to check if subscription is truly active
-          try {
-            const { data: { session } } = await supabase.auth.getSession();
-            if (session?.access_token && hasStripeCustomerId) {
-              const verifyResponse = await fetch('/api/stripe/verify-subscription', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  accessToken: session.access_token,
-                }),
-              });
-
-              if (verifyResponse.ok) {
-                const verifyData = await verifyResponse.json();
-                console.log('[Dashboard] Stripe verification result - Status read:', {
-                  subscriptionStatus: verifyData.subscriptionStatus,
-                  hasActiveSubscription: verifyData.hasActiveSubscription,
-                  planType: verifyData.planType,
-                  currentPeriodEnd: verifyData.currentPeriodEnd,
-                  isActiveOrTrialing: verifyData.subscriptionStatus === 'active' || verifyData.subscriptionStatus === 'trialing',
-                });
-                
-                // Only show "ended" if status is canceled/unpaid/past_due AND period_end < now
-                if (verifyData.hasActiveSubscription && (verifyData.subscriptionStatus === 'active' || verifyData.subscriptionStatus === 'trialing')) {
-                  // Update local state if different
-                  if (verifyData.planType !== planType) {
-                    setUserPlanType(verifyData.planType);
-                  }
-                  console.log('[Dashboard] ✅ Redirect decision: ALLOW ACCESS - Status:', verifyData.subscriptionStatus, 'Plan:', verifyData.planType);
-                  // Clear grace period timestamp if subscription is confirmed
-                  if (typeof window !== 'undefined' && recentCheckoutTimestamp) {
-                    localStorage.removeItem('recent_checkout_timestamp');
-                  }
-                  return; // User has active subscription, allow access
-                } else if (verifyData.subscriptionStatus === 'canceled' || verifyData.subscriptionStatus === 'unpaid' || verifyData.subscriptionStatus === 'past_due') {
-                  const now = Math.floor(Date.now() / 1000);
-                  if (verifyData.currentPeriodEnd && verifyData.currentPeriodEnd < now) {
-                    // Subscription truly ended - redirect to pricing
-                    console.log('[Dashboard] ❌ Redirect decision: REDIRECT TO PRICING - Status:', verifyData.subscriptionStatus, 'period_end:', verifyData.currentPeriodEnd, 'now:', now, 'reason: subscription_ended');
-                    showToast({
-                      type: 'error',
-                      message: 'Your subscription has ended. Please subscribe to continue using EZ2Invoice.'
-                    });
-                    setTimeout(() => {
-                      window.location.href = '/pricing';
-                    }, 2000);
-                    return;
-                  } else {
-                    // Still within period, grant access
-                    console.log('[Dashboard] ✅ Redirect decision: ALLOW ACCESS - Status:', verifyData.subscriptionStatus, 'reason: within_period');
-                    return;
-                  }
-                }
-              }
-            }
-          } catch (verifyError) {
-            console.error('[Dashboard] Error verifying subscription:', verifyError);
-            // If verification fails but we have plan_type, allow access (trust DB)
-            if (hasActivePlan) {
-              console.log('[Dashboard] ✅ Verification failed but plan_type exists, allowing access');
-              return;
-            }
-          }
-        }
-
-        // If user has stripe_customer_id but no plan_type, verify with Stripe
-        // This handles cases where webhook hasn't fired yet or DB is out of sync
-        if (hasStripeCustomerId && !hasActivePlan) {
-          console.log('[Dashboard] User has Stripe customer ID but no plan_type - verifying with Stripe');
-          
-          try {
-            const { data: { session } } = await supabase.auth.getSession();
-            if (session?.access_token) {
-              const verifyResponse = await fetch('/api/stripe/verify-subscription', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  accessToken: session.access_token,
-                }),
-              });
-
-              if (verifyResponse.ok) {
-                const verifyData = await verifyResponse.json();
-                console.log('[Dashboard] Stripe verification result:', verifyData);
-                
-                if (verifyData.hasActiveSubscription && (verifyData.subscriptionStatus === 'active' || verifyData.subscriptionStatus === 'trialing')) {
-                  // Update local state
-                  setUserPlanType(verifyData.planType);
-                  console.log('[Dashboard] ✅ Subscription verified from Stripe, plan:', verifyData.planType);
-                  return; // User has active subscription, allow access
-                }
-              }
-            }
-          } catch (verifyError) {
-            console.error('[Dashboard] Error verifying subscription:', verifyError);
-          }
-        }
-
-        // If no subscription found, poll DB for up to 30 seconds
-        const shouldPoll = isWithinGracePeriod || recentCheckoutTimestamp || hasStripeCustomerId;
-        const pollStartTime = recentCheckoutTimestamp ? parseInt(recentCheckoutTimestamp) : Date.now();
-        const pollDurationMs = 30 * 1000; // 30 seconds
-        const timeSinceCheckout = Date.now() - pollStartTime;
-        const isWithinPollWindow = timeSinceCheckout < pollDurationMs;
-
-        if (shouldPoll && isWithinPollWindow) {
-          console.log(`[Dashboard] ⏳ No subscription found, polling DB (${Math.ceil((pollDurationMs - timeSinceCheckout) / 1000)}s remaining)`);
-          showToast({
-            type: 'info',
-            message: 'Setting up your subscription... Please wait.',
-          });
-          
-          // Retry after a delay (poll every 2 seconds)
-          setTimeout(() => {
-            checkSubscriptionAccess();
-          }, 2000);
-          return;
-        }
-
-        // No active subscription found after 30 second polling window - redirect to pricing
-        if (!hasStripeCustomerId) {
-          console.log('[Dashboard] ❌ Redirect decision: REDIRECT TO PRICING - Status: NO_STRIPE_CUSTOMER_ID, reason: no_subscription');
-          showToast({
-            type: 'error',
-            message: 'Please subscribe to continue using EZ2Invoice.'
-          });
-          setTimeout(() => {
-            window.location.href = '/pricing';
-          }, 2000);
-        } else {
-          // User has Stripe customer but no plan after polling - subscription may have ended
-          console.log('[Dashboard] ❌ Redirect decision: REDIRECT TO PRICING - Status: NO_PLAN_TYPE, reason: polling_timeout, hasStripeCustomerId:', hasStripeCustomerId);
-          showToast({
-            type: 'error',
-            message: 'Your subscription has ended. Please subscribe to continue using EZ2Invoice.',
-          });
-          setTimeout(() => {
-            window.location.href = '/pricing';
-          }, 2000);
-        }
-      } catch (error) {
-        console.error('[Dashboard] Error checking subscription access:', error);
-      }
-    };
-    
-    // Add a delay to ensure checkout verification completes first
-    const delay = isVerifyingCheckout ? 4000 : 1000;
-    
-    const timer = setTimeout(() => {
-      checkSubscriptionAccess();
-    }, delay);
-    
-    return () => clearTimeout(timer);
-  }, [isVerifyingCheckout, userPlanType, showToast]);
 
   // Ensure shop exists for the user (create if it doesn't exist)
   useEffect(() => {
@@ -2787,7 +2557,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const handleSendInvoice = async (invoice: Invoice) => {
     if (!invoice?.id) return;
     try {
-      // Get customer email
       const customer = customers.find(c => c.id === invoice.customer_id);
       if (!customer || !customer.email) {
         alert('Customer email not found. Cannot send invoice.');
@@ -2797,12 +2566,29 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       const confirmed = confirm(`Send ${formatInvoiceNumber(invoice.invoice_number)} to ${customer.email}?`);
       if (!confirmed) return;
 
-      // Generate email HTML + PDF attachment so customer can print directly.
+      showToast({ type: 'info', message: 'Preparing invoice PDF…' });
+
       const emailHTML = await generateInvoiceEmailHTML(invoice);
-      const invoicePdfBase64 = await generateInvoicePdfBase64(invoice);
+      const pdfResult = await generateInvoicePdfBase64(invoice);
       const invoiceNumber = formatInvoiceNumber(invoice.invoice_number);
-      
-      // Send email via API
+
+      let attachments: { filename: string; content: string }[] = [];
+      if (pdfResult.ok) {
+        attachments = [{
+          filename: `${invoiceNumber.replace(/[^a-zA-Z0-9-_]/g, '_')}.pdf`,
+          content: pdfResult.base64,
+        }];
+      } else {
+        const sendWithoutPdf = confirm(
+          `Could not generate the invoice PDF (${pdfResult.error}). Send the email without a PDF attachment?`
+        );
+        if (!sendWithoutPdf) return;
+        showToast({
+          type: 'info',
+          message: 'Email will be sent without PDF attachment.',
+        });
+      }
+
       const response = await fetch('/api/send-email', {
         method: 'POST',
         headers: {
@@ -2814,12 +2600,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           html: emailHTML,
           type: 'invoice',
           invoiceId: invoice.id,
-          attachments: invoicePdfBase64
-            ? [{
-                filename: `${invoiceNumber.replace(/[^a-zA-Z0-9-_]/g, '_')}.pdf`,
-                content: invoicePdfBase64,
-              }]
-            : [],
+          attachments,
         }),
       });
 
@@ -2829,18 +2610,19 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         throw new Error(result.error || 'Failed to send email');
       }
 
-      // Update invoice status
       const { error } = await supabase
         .from('invoices')
         .update({ status: 'sent', updated_at: new Date().toISOString() })
         .eq('id', invoice.id);
-      
+
       if (error) {
         console.error('Error updating invoice status:', error);
-        // Email was sent but status update failed - still show success
       }
-      
-      showToast({ type: 'success', message: 'Invoice sent successfully!' });
+
+      const successMessage = attachments.length > 0
+        ? 'Invoice sent successfully with PDF attachment!'
+        : 'Invoice email sent (no PDF attachment).';
+      showToast({ type: 'success', message: successMessage });
       await fetchInvoices();
     } catch (err: any) {
       console.error('Error sending invoice:', err);
@@ -3078,106 +2860,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     }
   };
 
-  const generateInvoicePdfBase64 = async (invoice: Invoice): Promise<string | null> => {
-    try {
-      const { default: jsPDF } = await import('jspdf');
-      const { data: lineItems } = await supabase
-        .from('invoice_line_items')
-        .select('*')
-        .eq('invoice_id', invoice.id)
-        .order('created_at', { ascending: true });
-
-      const customerName = getInvoiceCustomerName(invoice);
-      const invoiceNumber = formatInvoiceNumber(invoice.invoice_number);
-      const invoiceDate = invoice.created_at
-        ? formatDateInTimezone(invoice.created_at, { month: 'short', day: 'numeric', year: 'numeric' })
-        : 'N/A';
-      const dueDate = invoice.due_date
-        ? formatDateOnly(invoice.due_date, { month: 'short', day: 'numeric', year: 'numeric' })
-        : 'No due date';
-
-      const subtotal = Number(invoice.subtotal) || 0;
-      const discountAmount = Number((invoice as any).discount_amount) || 0;
-      const taxRate = Number(invoice.tax_rate) || 0;
-      const taxAmount = Number(invoice.tax_amount) || 0;
-      const baseTotal = Number(invoice.total_amount) || 0;
-      const paidAmount = Number(invoice.paid_amount) || 0;
-      const cardFeeAmount = Number((invoice as any).card_fee_amount) || 0;
-      const totalInclFee = baseTotal + cardFeeAmount;
-      const balanceDue = invoice.balance_due != null
-        ? Math.max(0, Number(invoice.balance_due))
-        : Math.max(0, totalInclFee - paidAmount);
-
-      const doc = new jsPDF({ unit: 'pt', format: 'letter' });
-      let y = 42;
-      doc.setFontSize(20);
-      doc.text('INVOICE', 42, y);
-      y += 24;
-      doc.setFontSize(11);
-      doc.text(`Invoice #: ${invoiceNumber}`, 42, y);
-      y += 16;
-      doc.text(`Date: ${invoiceDate}`, 42, y);
-      y += 16;
-      doc.text(`Due Date: ${dueDate}`, 42, y);
-      y += 22;
-      doc.setFontSize(12);
-      doc.text(`Bill To: ${customerName}`, 42, y);
-      y += 20;
-
-      doc.setFontSize(10);
-      doc.text('Description', 42, y);
-      doc.text('Qty', 330, y, { align: 'right' });
-      doc.text('Unit Price', 430, y, { align: 'right' });
-      doc.text('Total', 550, y, { align: 'right' });
-      y += 10;
-      doc.line(42, y, 550, y);
-      y += 14;
-
-      for (const item of (lineItems || [])) {
-        const description = String(item.description || '—').slice(0, 60);
-        doc.text(description, 42, y);
-        doc.text(`${Number(item.quantity) || 0}`, 330, y, { align: 'right' });
-        doc.text(`$${(Number(item.unit_price) || 0).toFixed(2)}`, 430, y, { align: 'right' });
-        doc.text(`$${(Number(item.total_price) || 0).toFixed(2)}`, 550, y, { align: 'right' });
-        y += 16;
-        if (y > 700) {
-          doc.addPage();
-          y = 42;
-        }
-      }
-
-      y += 8;
-      doc.line(320, y, 550, y);
-      y += 16;
-      doc.text(`Subtotal: $${subtotal.toFixed(2)}`, 550, y, { align: 'right' });
-      y += 14;
-      if (discountAmount > 0) {
-        doc.text(`Discount: -$${discountAmount.toFixed(2)}`, 550, y, { align: 'right' });
-        y += 14;
-      }
-      doc.text(`Tax (${(taxRate * 100).toFixed(2)}%): $${taxAmount.toFixed(2)}`, 550, y, { align: 'right' });
-      y += 14;
-      if (cardFeeAmount > 0) {
-        doc.text(`Card Processing Fee: $${cardFeeAmount.toFixed(2)}`, 550, y, { align: 'right' });
-        y += 14;
-      }
-      doc.setFontSize(12);
-      doc.text(`Total (incl. card fee): $${totalInclFee.toFixed(2)}`, 550, y, { align: 'right' });
-      y += 16;
-      doc.setFontSize(10);
-      if (paidAmount > 0) {
-        doc.text(`Paid: $${paidAmount.toFixed(2)}`, 550, y, { align: 'right' });
-        y += 14;
-      }
-      doc.text(`Balance Due: $${balanceDue.toFixed(2)}`, 550, y, { align: 'right' });
-
-      const dataUri = doc.output('datauristring');
-      const base64 = dataUri.split(',')[1] || '';
-      return base64 || null;
-    } catch (error) {
-      console.error('Could not generate invoice PDF attachment:', error);
-      return null;
-    }
+  const generateInvoicePdfBase64 = async (invoice: Invoice) => {
+    const { generateInvoicePdfBase64: buildPdf } = await import('@/lib/invoices/generateInvoicePdfBase64');
+    return buildPdf(supabase, invoice.id);
   };
 
   // Function to generate estimate email HTML
@@ -5869,64 +5554,183 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   useEffect(() => {
     if (activeTab === 'dot-inspections' && !canAccessFeature('dot_inspections')) {
       setActiveTab('overview');
-      showToast({ 
+      showToastRef.current({ 
         type: 'error', 
         message: 'DOT Inspections is only available for Professional and Enterprise plans. Please upgrade to access this feature.' 
       });
     }
-  }, [activeTab, canAccessFeature, showToast]);
+  }, [activeTab, canAccessFeature]);
 
   // Redirect from Vendors/Bills/Accounts Payable if not Professional or above
   const canAccessVendors = effectivePlanType === 'professional' || effectivePlanType === 'enterprise';
   useEffect(() => {
     if ((activeTab === 'vendors' || activeTab === 'bills' || activeTab === 'accounts-payable') && !canAccessVendors) {
       setActiveTab('overview');
-      showToast({
+      showToastRef.current({
         type: 'error',
         message: 'Vendors and Accounts Payable are available on Professional and Enterprise plans. Please upgrade to access.'
       });
     }
-  }, [activeTab, canAccessVendors, showToast]);
+  }, [activeTab, canAccessVendors]);
+
+  const applyShopDataToState = (shopData: Record<string, unknown>, userEmailFallback = '') => {
+    setShopInfo({
+      shop_name: String(shopData.shop_name || ''),
+      address: String(shopData.address || ''),
+      city: String(shopData.city || ''),
+      state: String(shopData.state || ''),
+      zip_code: String(shopData.zip_code || ''),
+      phone: String(shopData.phone || ''),
+      email: String(shopData.email || userEmailFallback),
+      tax_id: String(shopData.tax_id || ''),
+      website: String(shopData.website || ''),
+      labor_rate: shopData.labor_rate != null ? String(shopData.labor_rate) : '',
+    });
+    if (shopData.default_tax_rate != null) {
+      setDefaultTaxRate(Number(shopData.default_tax_rate));
+    }
+    if (shopData.card_processing_fee_percentage != null) {
+      setCardProcessingFeePercentage(Number(shopData.card_processing_fee_percentage));
+    }
+    if (shopData.invoice_terms) {
+      setInvoiceTerms(String(shopData.invoice_terms));
+    }
+  };
+
+  const loadOrganizationSettingsFromClient = async (shopId: string) => {
+    const shopFields =
+      'shop_name, address, city, state, zip_code, phone, email, tax_id, website, labor_rate, default_tax_rate, card_processing_fee_percentage, invoice_terms';
+    const fullResult = await supabase
+      .from('truck_shops')
+      .select(shopFields)
+      .eq('id', shopId)
+      .single();
+
+    let shopData: Record<string, unknown> | null = fullResult.data;
+    let error = fullResult.error;
+
+    if (error) {
+      const fallback = await supabase
+        .from('truck_shops')
+        .select('shop_name, address, city, state, zip_code, phone')
+        .eq('id', shopId)
+        .single();
+      shopData = fallback.data;
+      error = fallback.error;
+    }
+
+    if (error || !shopData) return false;
+
+    const { data: userData } = await supabase.auth.getUser();
+    applyShopDataToState(shopData, userData?.user?.email || '');
+    shopInfoLoadedForShopRef.current = shopId;
+    return true;
+  };
+
+  const saveOrganizationSettingsToClient = async (shopId: string) => {
+    const laborRate =
+      shopInfo.labor_rate === '' || shopInfo.labor_rate == null
+        ? null
+        : Number(shopInfo.labor_rate);
+
+    const payload = {
+      shop_name: shopInfo.shop_name,
+      address: shopInfo.address || null,
+      city: shopInfo.city || null,
+      state: shopInfo.state || null,
+      zip_code: shopInfo.zip_code || null,
+      phone: shopInfo.phone || null,
+      email: shopInfo.email || null,
+      tax_id: shopInfo.tax_id || null,
+      website: shopInfo.website || null,
+      labor_rate: laborRate != null && !Number.isNaN(laborRate) ? laborRate : null,
+      default_tax_rate: defaultTaxRate,
+      card_processing_fee_percentage: cardProcessingFeePercentage,
+      invoice_terms: invoiceTerms,
+      updated_at: new Date().toISOString(),
+    };
+
+    let { data, error } = await supabase
+      .from('truck_shops')
+      .update(payload)
+      .eq('id', shopId)
+      .select('id')
+      .single();
+
+    if (error) {
+      const basic = {
+        shop_name: shopInfo.shop_name,
+        address: shopInfo.address || null,
+        city: shopInfo.city || null,
+        state: shopInfo.state || null,
+        zip_code: shopInfo.zip_code || null,
+        phone: shopInfo.phone || null,
+        updated_at: new Date().toISOString(),
+      };
+      const fallback = await supabase
+        .from('truck_shops')
+        .update(basic)
+        .eq('id', shopId)
+        .select('id')
+        .single();
+      data = fallback.data;
+      error = fallback.error;
+    }
+
+    return !error && !!data;
+  };
+
+  const fetchOrganizationSettings = async (shopId: string, options?: { force?: boolean }) => {
+    if (!options?.force && shopInfoLoadedForShopRef.current === shopId) return;
+
+    setShopInfoLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      let token = session?.access_token;
+      if (!token) {
+        const { data: refreshed } = await supabase.auth.refreshSession();
+        token = refreshed.session?.access_token;
+      }
+
+      if (!token) {
+        await loadOrganizationSettingsFromClient(shopId);
+        return;
+      }
+
+      const res = await fetch(`/api/shop/settings?shopId=${encodeURIComponent(shopId)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const result = await res.json();
+
+      if (!res.ok || !result.shop) {
+        const loaded = await loadOrganizationSettingsFromClient(shopId);
+        if (!loaded) {
+          console.error('Error loading shop settings:', result.error || res.status);
+        }
+        return;
+      }
+
+      const { data: userData } = await supabase.auth.getUser();
+      applyShopDataToState(result.shop, userData?.user?.email || '');
+      shopInfoLoadedForShopRef.current = shopId;
+    } catch (error) {
+      console.error('Error loading shop settings:', error);
+      await loadOrganizationSettingsFromClient(shopId);
+    } finally {
+      setShopInfoLoading(false);
+    }
+  };
 
   // Load shop information when Organization settings tab is opened
   useEffect(() => {
-    const loadShopInfo = async () => {
-      if (activeTab === 'settings' && settingsSubTab === 'organization') {
-        setShopInfoLoading(true);
-        try {
-          const shopId = await getShopId();
-          if (shopId) {
-            const { data: shopData, error } = await supabase
-              .from('truck_shops')
-              .select('shop_name, address, city, state, zip_code, phone')
-              .eq('id', shopId)
-              .single();
-            
-            if (!error && shopData) {
-              // Get user email as fallback for shop email
-              const { data: userData } = await supabase.auth.getUser();
-              const userEmail = userData?.user?.email || '';
-              
-              setShopInfo({
-                shop_name: shopData.shop_name || '',
-                address: shopData.address || '',
-                city: shopData.city || '',
-                state: shopData.state || '',
-                zip_code: shopData.zip_code || '',
-                phone: shopData.phone || '',
-                email: userEmail // Use user email as shop email
-              });
-            }
-          }
-        } catch (error) {
-          console.error('Error loading shop info:', error);
-        } finally {
-          setShopInfoLoading(false);
-        }
-      }
+    if (activeTab !== 'settings' || settingsSubTab !== 'organization') return;
+    const load = async () => {
+      const shopId = await getShopId();
+      if (!shopId) return;
+      await fetchOrganizationSettings(shopId);
     };
-    loadShopInfo();
-  }, [activeTab, settingsSubTab]);
+    load();
+  }, [activeTab, settingsSubTab, contextShopId]);
 
   // Load user profile when Profile settings tab is opened
   useEffect(() => {
@@ -5993,6 +5797,130 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     };
     loadUserProfile();
   }, [activeTab, settingsSubTab]);
+
+  const handleSaveSettings = async () => {
+    setSettingsSaving(true);
+    try {
+      if (settingsSubTab === 'organization') {
+        const shopId = await getShopId();
+        if (!shopId) {
+          showToast({ type: 'error', message: 'Unable to save settings. Please try again.' });
+          return;
+        }
+
+        const { data: { session } } = await supabase.auth.getSession();
+        let token = session?.access_token;
+        if (!token) {
+          const { data: refreshed } = await supabase.auth.refreshSession();
+          token = refreshed.session?.access_token;
+        }
+
+        if (!token) {
+          const saved = await saveOrganizationSettingsToClient(shopId);
+          if (saved) {
+            saveInvoiceSettings();
+            shopInfoLoadedForShopRef.current = null;
+            await fetchOrganizationSettings(shopId, { force: true });
+            showToast({ type: 'success', message: 'Settings saved successfully.' });
+          } else {
+            showToast({ type: 'error', message: 'Unable to save settings. Please try again.' });
+          }
+          return;
+        }
+
+        const res = await fetch('/api/shop/settings', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            shopId,
+            shop_name: shopInfo.shop_name,
+            address: shopInfo.address,
+            city: shopInfo.city,
+            state: shopInfo.state,
+            zip_code: shopInfo.zip_code,
+            phone: shopInfo.phone,
+            email: shopInfo.email,
+            tax_id: shopInfo.tax_id,
+            website: shopInfo.website,
+            labor_rate: shopInfo.labor_rate,
+            default_tax_rate: defaultTaxRate,
+            card_processing_fee_percentage: cardProcessingFeePercentage,
+            invoice_terms: invoiceTerms,
+          }),
+        });
+
+        const result = await res.json();
+        if (!res.ok || !result.shop) {
+          const saved = await saveOrganizationSettingsToClient(shopId);
+          if (!saved) {
+            console.error('Error saving shop settings:', result.error);
+            showToast({ type: 'error', message: 'Unable to save settings. Please try again.' });
+            return;
+          }
+          saveInvoiceSettings();
+          shopInfoLoadedForShopRef.current = null;
+          await fetchOrganizationSettings(shopId, { force: true });
+          showToast({ type: 'success', message: 'Settings saved successfully.' });
+          return;
+        }
+
+        saveInvoiceSettings();
+        const { data: userData } = await supabase.auth.getUser();
+        applyShopDataToState(result.shop, userData?.user?.email || '');
+        shopInfoLoadedForShopRef.current = shopId;
+        showToast({ type: 'success', message: 'Settings saved successfully.' });
+        return;
+      }
+
+      if (settingsSubTab === 'profile') {
+        const { data: { user: currentUser } } = await supabase.auth.getUser();
+        if (!currentUser?.id) {
+          showToast({ type: 'error', message: 'Not authenticated' });
+          return;
+        }
+
+        const { data: updatedUser, error } = await supabase
+          .from('users')
+          .update({
+            first_name: userProfile.first_name || null,
+            last_name: userProfile.last_name || null,
+            email: userProfile.email,
+            phone: userProfile.phone || null,
+            company: userProfile.company || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', currentUser.id)
+          .select('id')
+          .single();
+
+        if (error || !updatedUser) {
+          console.error('Error saving profile:', error);
+          showToast({ type: 'error', message: 'Unable to save settings. Please try again.' });
+          return;
+        }
+
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('userTimezone', timezone);
+        }
+
+        showToast({ type: 'success', message: 'Settings saved successfully.' });
+        return;
+      }
+
+      showToast({
+        type: 'info',
+        message: 'No settings to save on this tab yet. Use Organization or Profile to save your changes.',
+      });
+    } catch (error) {
+      console.error('Error saving settings:', error);
+      showToast({ type: 'error', message: 'Unable to save settings. Please try again.' });
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
 
   // Fetch team members when User Permissions tab is active
   const fetchTeamMembers = async () => {
@@ -10131,6 +10059,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
   return (
     <div className="min-h-screen bg-gray-50 overflow-x-hidden">
+      <SubscriptionAccessCheck
+        isVerifyingCheckout={isVerifyingCheckout}
+        userPlanType={userPlanType}
+        onPlanTypeChange={setUserPlanType}
+      />
       <AppHeader />
       
       {/* Founder Mode Banner */}
@@ -18446,68 +18379,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               <div className="flex items-center justify-between">
                 <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
                 <button 
-                  onClick={async () => {
-                    try {
-                      // Save shop information if on Organization tab
-                      if (settingsSubTab === 'organization') {
-                        const shopId = await getShopId();
-                        if (shopId) {
-                          // Parse address into components if it's a single string
-                          let address = shopInfo.address;
-                          let city = shopInfo.city;
-                          let state = shopInfo.state;
-                          let zip_code = shopInfo.zip_code;
-                          
-                          // If address contains multiple lines or comma-separated values, try to parse
-                          if (address && !city && address.includes(',')) {
-                            const parts = address.split(',').map(p => p.trim());
-                            if (parts.length >= 2) {
-                              address = parts[0];
-                              const cityStateZip = parts[parts.length - 1];
-                              // Try to extract city, state, zip from last part
-                              const cityStateZipMatch = cityStateZip.match(/(.+?)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)/);
-                              if (cityStateZipMatch) {
-                                city = cityStateZipMatch[1];
-                                state = cityStateZipMatch[2];
-                                zip_code = cityStateZipMatch[3];
-                              } else {
-                                city = cityStateZip;
-                              }
-                            }
-                          }
-                          
-                          const { error } = await supabase
-                            .from('truck_shops')
-                            .update({
-                              shop_name: shopInfo.shop_name,
-                              address: address,
-                              city: city,
-                              state: state,
-                              zip_code: zip_code,
-                              phone: shopInfo.phone,
-                              updated_at: new Date().toISOString()
-                            })
-                            .eq('id', shopId);
-                          
-                          if (error) {
-                            console.error('Error saving shop info:', error);
-                            showToast({ type: 'error', message: 'Failed to save shop information. Please try again.' });
-                            return;
-                          }
-                        }
-                      }
-                      
-                      // Settings (tax rate, card fee, terms) are already saved automatically via useEffect hooks
-                      showToast({ type: 'success', message: 'Settings saved successfully!' });
-                    } catch (error) {
-                      console.error('Error saving settings:', error);
-                      showToast({ type: 'error', message: 'Failed to save settings. Please try again.' });
-                    }
-                  }}
-                  className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2"
+                  onClick={handleSaveSettings}
+                  disabled={settingsSaving || shopInfoLoading || userProfileLoading}
+                  className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <FileText className="h-4 w-4" />
-                  <span>Save Changes</span>
+                  <span>{settingsSaving ? 'Saving...' : 'Save Changes'}</span>
                 </button>
               </div>
 
@@ -18707,7 +18584,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         <label className="block text-sm font-medium text-gray-700 mb-2">Tax ID</label>
                         <input
                           type="text"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          value={shopInfo.tax_id}
+                          onChange={(e) => setShopInfo(prev => ({ ...prev, tax_id: e.target.value }))}
+                          disabled={shopInfoLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                           placeholder="Optional"
                         />
                       </div>
@@ -18777,14 +18657,22 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         <label className="block text-sm font-medium text-gray-700 mb-2">Website</label>
                         <input
                           type="url"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          value={shopInfo.website}
+                          onChange={(e) => setShopInfo(prev => ({ ...prev, website: e.target.value }))}
+                          disabled={shopInfoLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                         />
                       </div>
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Labor Rate ($/hour)</label>
                         <input
                           type="number"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          min="0"
+                          step="0.01"
+                          value={shopInfo.labor_rate}
+                          onChange={(e) => setShopInfo(prev => ({ ...prev, labor_rate: e.target.value }))}
+                          disabled={shopInfoLoading}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                         />
                       </div>
                     </div>
@@ -18840,20 +18728,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     {/* Save Button */}
                     <div className="pt-4 border-t border-gray-200">
                       <button
-                        onClick={() => {
-                          const saved = saveInvoiceSettings();
-                          if (saved) {
-                            showToast({ type: 'success', message: 'Invoice settings saved successfully!' });
-                          } else {
-                            showToast({ type: 'error', message: 'Failed to save settings. Please try again.' });
-                          }
-                        }}
-                        className="w-full bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors flex items-center justify-center space-x-2"
+                        onClick={handleSaveSettings}
+                        disabled={settingsSaving}
+                        className="w-full bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-colors flex items-center justify-center space-x-2 disabled:opacity-60"
                       >
                         <FileText className="h-4 w-4" />
-                        <span>Save Settings</span>
+                        <span>{settingsSaving ? 'Saving...' : 'Save Settings'}</span>
                       </button>
-                      <p className="text-xs text-gray-500 mt-2 text-center">Settings are automatically saved as you type, but you can click here to explicitly save them.</p>
+                      <p className="text-xs text-gray-500 mt-2 text-center">Saves to your shop account (same as Save Changes above).</p>
                     </div>
                   </div>
                 </div>

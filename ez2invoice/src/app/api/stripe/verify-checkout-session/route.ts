@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { stripe } from '@/lib/stripe';
+import { getAuthenticatedSupabase, isSslFetchError } from '@/lib/supabase-server';
 
 export async function POST(req: NextRequest) {
   try {
@@ -21,19 +21,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Create Supabase client and verify the user
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
+    const { user, admin, error: authError } = await getAuthenticatedSupabase(accessToken);
 
-    // Verify the user's session
-    const { data: { user }, error: authError } = await supabase.auth.getUser(accessToken);
-    
     if (authError || !user) {
       return NextResponse.json(
-        { error: 'Unauthorized - Invalid session' },
-        { status: 401 }
+        {
+          error: isSslFetchError(authError)
+            ? 'Unable to reach authentication service (SSL). Set SUPABASE_DEV_RELAX_SSL=true in .env.local and restart.'
+            : 'Unauthorized - Invalid session',
+        },
+        { status: isSslFetchError(authError) ? 503 : 401 }
       );
     }
 
@@ -106,13 +103,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const supabaseAdmin = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
-    );
+    if (!admin) {
+      return NextResponse.json(
+        { error: 'Server configuration error: SUPABASE_SERVICE_ROLE_KEY is required' },
+        { status: 500 }
+      );
+    }
+
+    const db = admin;
 
     // Update user record with stripe_customer_id and plan_type
-    const { data: updateResult, error: updateError } = await supabaseAdmin
+    const { data: updateResult, error: updateError } = await db
       .from('users')
       .update({
         stripe_customer_id: customerId,
@@ -140,7 +141,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Verify the update actually worked
-    const { data: verifyData, error: verifyError } = await supabaseAdmin
+    const { data: verifyData, error: verifyError } = await db
       .from('users')
       .select('stripe_customer_id, plan_type')
       .eq('id', user.id)
@@ -166,14 +167,14 @@ export async function POST(req: NextRequest) {
     }
 
     // Also update truck_shops if it exists for this user
-    const { data: shopRecord } = await supabaseAdmin
+    const { data: shopRecord } = await db
       .from('truck_shops')
       .select('id')
       .eq('user_id', user.id)
       .maybeSingle();
 
     if (shopRecord) {
-      await supabaseAdmin
+      await db
         .from('truck_shops')
         .update({
           plan_type: planType,

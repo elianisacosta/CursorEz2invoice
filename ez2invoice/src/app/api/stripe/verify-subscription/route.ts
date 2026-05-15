@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { stripe } from '@/lib/stripe';
+import { getAuthenticatedSupabase, isSslFetchError } from '@/lib/supabase-server';
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,22 +14,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
+    const { user, supabase, admin, error: authError } =
+      await getAuthenticatedSupabase(accessToken);
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser(accessToken);
-    
     if (authError || !user) {
+      const status = isSslFetchError(authError) ? 503 : 401;
       return NextResponse.json(
-        { error: 'Unauthorized - Invalid session' },
-        { status: 401 }
+        {
+          error: isSslFetchError(authError)
+            ? 'Unable to reach authentication service (SSL). Set SUPABASE_DEV_RELAX_SSL=true in .env.local and restart the dev server.'
+            : 'Unauthorized - Invalid session',
+        },
+        { status }
       );
     }
 
+    const db = admin ?? supabase;
+
     // Get user's stripe_customer_id from database
-    let { data: userRecord, error: userError } = await supabase
+    let { data: userRecord, error: userError } = await db
       .from('users')
       .select('stripe_customer_id, plan_type')
       .eq('id', user.id)
@@ -56,7 +59,7 @@ export async function POST(req: NextRequest) {
           const customer = customers.data[0];
 
           // Update database with stripe_customer_id
-          await supabase
+          await db
             .from('users')
             .update({
               stripe_customer_id: customer.id,
@@ -107,7 +110,7 @@ export async function POST(req: NextRequest) {
       if (subscriptions.data.length === 0) {
         // No subscriptions found in Stripe
         // Update database to reflect this
-        await supabase
+        await db
           .from('users')
           .update({
             plan_type: null,
@@ -162,7 +165,7 @@ export async function POST(req: NextRequest) {
 
           // Update database if it's out of sync
           if (userRecord.plan_type !== planType) {
-            await supabase
+            await db
               .from('users')
               .update({
                 plan_type: planType,
@@ -171,14 +174,14 @@ export async function POST(req: NextRequest) {
               .eq('id', user.id);
 
             // Also update shop
-            const { data: shopRecord } = await supabase
+            const { data: shopRecord } = await db
               .from('truck_shops')
               .select('id')
               .eq('user_id', user.id)
               .maybeSingle();
 
             if (shopRecord) {
-              await supabase
+              await db
                 .from('truck_shops')
                 .update({
                   plan_type: planType,
@@ -196,7 +199,7 @@ export async function POST(req: NextRequest) {
         
         // No active subscriptions found
         // Update database to reflect this
-        await supabase
+        await db
           .from('users')
           .update({
             plan_type: null,
@@ -205,14 +208,14 @@ export async function POST(req: NextRequest) {
           .eq('id', user.id);
 
         // Also update shop
-        const { data: shopRecord } = await supabase
+        const { data: shopRecord } = await db
           .from('truck_shops')
           .select('id')
           .eq('user_id', user.id)
           .maybeSingle();
 
         if (shopRecord) {
-          await supabase
+          await db
             .from('truck_shops')
             .update({
               plan_type: null,
@@ -252,7 +255,7 @@ export async function POST(req: NextRequest) {
 
         // Update database if it's out of sync
         if (userRecord.plan_type !== planType) {
-          await supabase
+          await db
             .from('users')
             .update({
               plan_type: planType,
@@ -261,14 +264,14 @@ export async function POST(req: NextRequest) {
             .eq('id', user.id);
 
           // Also update shop
-          const { data: shopRecord } = await supabase
+          const { data: shopRecord } = await db
             .from('truck_shops')
             .select('id')
             .eq('user_id', user.id)
             .maybeSingle();
 
           if (shopRecord) {
-            await supabase
+            await db
               .from('truck_shops')
               .update({
                 plan_type: planType,
@@ -287,7 +290,7 @@ export async function POST(req: NextRequest) {
       } else {
         // Subscription is canceled, past_due, etc. - no active subscription
         // Update database to reflect this
-        await supabase
+        await db
           .from('users')
           .update({
             plan_type: null,
@@ -296,14 +299,14 @@ export async function POST(req: NextRequest) {
           .eq('id', user.id);
 
         // Also update shop
-        const { data: shopRecord } = await supabase
+        const { data: shopRecord } = await db
           .from('truck_shops')
           .select('id')
           .eq('user_id', user.id)
           .maybeSingle();
 
         if (shopRecord) {
-          await supabase
+          await db
             .from('truck_shops')
             .update({
               plan_type: null,

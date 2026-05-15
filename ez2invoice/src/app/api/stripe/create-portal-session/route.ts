@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { stripe } from '@/lib/stripe';
+import { getAuthenticatedSupabase, isSslFetchError } from '@/lib/supabase-server';
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,19 +15,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Create Supabase client and verify the user
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
+    const { user, supabase, admin, error: authError } = await getAuthenticatedSupabase(accessToken);
+    const db = admin ?? supabase;
 
-    // Verify the user's session
-    const { data: { user }, error: authError } = await supabase.auth.getUser(accessToken);
-    
     if (authError || !user) {
       return NextResponse.json(
-        { error: 'Unauthorized - Invalid session' },
-        { status: 401 }
+        {
+          error: isSslFetchError(authError)
+            ? 'Unable to reach authentication service (SSL). Set SUPABASE_DEV_RELAX_SSL=true in .env.local and restart.'
+            : 'Unauthorized - Invalid session',
+        },
+        { status: isSslFetchError(authError) ? 503 : 401 }
       );
     }
 
@@ -36,7 +34,7 @@ export async function POST(req: NextRequest) {
     const isFounder = user.email ? founderEmails.includes(user.email.toLowerCase()) : false;
 
     // Get the user's stripe_customer_id from the users table
-    const { data: userRecord, error: userError } = await supabase
+    const { data: userRecord, error: userError } = await db
       .from('users')
       .select('stripe_customer_id, email')
       .eq('id', user.id)
@@ -75,7 +73,7 @@ export async function POST(req: NextRequest) {
           stripeCustomerId = customers.data[0].id;
           
           // Update user record with the found customer ID
-          await supabase
+          await db
             .from('users')
             .update({
               stripe_customer_id: stripeCustomerId,
@@ -99,7 +97,7 @@ export async function POST(req: NextRequest) {
               stripeCustomerId = newCustomer.id;
               
               // Update user record with the new customer ID
-              await supabase
+              await db
                 .from('users')
                 .update({
                   stripe_customer_id: stripeCustomerId,
