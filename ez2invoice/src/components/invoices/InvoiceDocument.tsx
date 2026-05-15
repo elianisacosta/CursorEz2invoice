@@ -40,12 +40,8 @@ export default function InvoiceDocument({
 }: InvoiceDocumentProps) {
   const customerName = formatCustomerName({ invoice, lineItems, payments, shop, invoiceTerms, model });
   const customerAddress = formatCustomerAddress({ invoice, lineItems, payments, shop, invoiceTerms, model });
-  const invoiceDate = invoice.created_at
-    ? new Date(invoice.created_at).toISOString().split('T')[0]
-    : 'N/A';
-  const dueDate = invoice.due_date
-    ? new Date(invoice.due_date).toISOString().split('T')[0]
-    : 'N/A';
+  const invoiceDate = formatInvoiceDate(invoice.created_at);
+  const dueDate = formatInvoiceDate(invoice.due_date);
 
   return (
     <>

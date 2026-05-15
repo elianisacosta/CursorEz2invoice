@@ -1,49 +1,62 @@
 'use client';
 
+const LETTER_WIDTH_PT = 612;
+const LETTER_HEIGHT_PT = 792;
+
 /**
- * Renders shared invoice HTML/DOM to a PDF base64 string (client-only).
+ * Capture a visible invoice element and build a multi-page letter PDF.
+ * Uses html2canvas directly — jsPDF's .html() often returns blank pages for off-screen nodes.
  */
 async function elementToPdfBase64(element: HTMLElement): Promise<string | null> {
+  const html2canvas = (await import('html2canvas')).default;
   const { default: jsPDF } = await import('jspdf');
 
+  const canvas = await html2canvas(element, {
+    scale: 2,
+    useCORS: true,
+    logging: false,
+    backgroundColor: '#ffffff',
+    width: element.scrollWidth || 820,
+    height: element.scrollHeight,
+    windowWidth: element.scrollWidth || 820,
+    windowHeight: element.scrollHeight,
+    scrollX: 0,
+    scrollY: -window.scrollY,
+    onclone: (clonedDoc) => {
+      const clonedPage = clonedDoc.querySelector('.print-page') as HTMLElement | null;
+      if (clonedPage) {
+        clonedPage.style.background = '#ffffff';
+        clonedPage.style.color = '#1f2937';
+      }
+    },
+  });
+
+  if (canvas.width === 0 || canvas.height === 0) {
+    return null;
+  }
+
+  const imgData = canvas.toDataURL('image/jpeg', 0.92);
   const pdf = new jsPDF({
     unit: 'pt',
     format: 'letter',
     orientation: 'portrait',
   });
 
-  const pdfWithHtml = pdf as typeof pdf & {
-    html: (
-      element: HTMLElement,
-      options: {
-        callback: () => void;
-        x: number;
-        y: number;
-        width: number;
-        windowWidth: number;
-        autoPaging: string;
-        html2canvas: { scale: number; useCORS: boolean; logging: boolean };
-      }
-    ) => Promise<void>;
-  };
+  const imgWidth = LETTER_WIDTH_PT;
+  const imgHeight = (canvas.height * imgWidth) / canvas.width;
 
-  await new Promise<void>((resolve, reject) => {
-    pdfWithHtml
-      .html(element, {
-        callback: () => resolve(),
-        x: 0,
-        y: 0,
-        width: 612,
-        windowWidth: 820,
-        autoPaging: 'text',
-        html2canvas: {
-          scale: 0.75,
-          useCORS: true,
-          logging: false,
-        },
-      })
-      .catch(reject);
-  });
+  let heightLeft = imgHeight;
+  let position = 0;
+
+  pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+  heightLeft -= LETTER_HEIGHT_PT;
+
+  while (heightLeft > 0) {
+    position -= LETTER_HEIGHT_PT;
+    pdf.addPage();
+    pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+    heightLeft -= LETTER_HEIGHT_PT;
+  }
 
   const dataUri = pdf.output('datauristring');
   const base64 = dataUri.split(',')[1] || '';
@@ -57,38 +70,5 @@ export async function invoiceElementToPdfBase64(element: HTMLElement): Promise<s
   } catch (error) {
     console.error('invoiceElementToPdfBase64:', error);
     return null;
-  }
-}
-
-export async function invoiceHtmlToPdfBase64(html: string): Promise<string | null> {
-  if (typeof window === 'undefined' || typeof document === 'undefined') {
-    return null;
-  }
-
-  const iframe = document.createElement('iframe');
-  iframe.setAttribute('aria-hidden', 'true');
-  iframe.style.cssText =
-    'position:fixed;left:-10000px;top:0;width:820px;height:1200px;border:0;visibility:hidden;';
-  document.body.appendChild(iframe);
-
-  try {
-    const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
-    if (!frameDoc) return null;
-
-    frameDoc.open();
-    frameDoc.write(html);
-    frameDoc.close();
-
-    await new Promise((resolve) => setTimeout(resolve, 350));
-
-    const body = frameDoc.body;
-    if (!body) return null;
-
-    return await elementToPdfBase64(body);
-  } catch (error) {
-    console.error('invoiceHtmlToPdfBase64:', error);
-    return null;
-  } finally {
-    document.body.removeChild(iframe);
   }
 }

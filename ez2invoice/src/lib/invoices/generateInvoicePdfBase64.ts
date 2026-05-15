@@ -12,6 +12,26 @@ export type InvoicePdfResult =
   | { ok: true; base64: string }
   | { ok: false; error: string };
 
+/** Mount invoice on-screen (invisible) so html2canvas can capture it. */
+function createPdfCaptureHost(): HTMLDivElement {
+  const host = document.createElement('div');
+  host.setAttribute('data-invoice-pdf-capture', 'true');
+  host.style.cssText = [
+    'position:fixed',
+    'left:0',
+    'top:0',
+    'width:820px',
+    'max-width:100vw',
+    'background:#fff',
+    'opacity:0.01',
+    'pointer-events:none',
+    'z-index:2147483646',
+    'overflow:visible',
+  ].join(';');
+  document.body.appendChild(host);
+  return host;
+}
+
 export async function generateInvoicePdfBase64(
   supabase: SupabaseClient,
   invoiceId: string
@@ -34,17 +54,25 @@ export async function generateInvoicePdfBase64(
     if (localTerms) data.invoiceTerms = localTerms;
   }
 
-  const container = document.createElement('div');
-  container.style.cssText =
-    'position:fixed;left:-10000px;top:0;width:820px;background:#fff;z-index:-1;';
-  document.body.appendChild(container);
+  const host = createPdfCaptureHost();
+  const root = createRoot(host);
 
-  const root = createRoot(container);
   try {
     root.render(createElement(InvoiceDocument, data));
-    await waitForInvoiceRender(container);
+    await waitForInvoiceRender(host, 6000);
 
-    const base64 = await invoiceElementToPdfBase64(container);
+    const printPage = host.querySelector('.print-page') as HTMLElement | null;
+    if (!printPage) {
+      return { ok: false, error: 'Invoice layout did not render.' };
+    }
+
+    // Extra frame for styles/layout to settle before canvas capture
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const base64 = await invoiceElementToPdfBase64(printPage);
     if (!base64) {
       return {
         ok: false,
@@ -60,8 +88,8 @@ export async function generateInvoicePdfBase64(
     return { ok: false, error: message };
   } finally {
     root.unmount();
-    if (container.parentNode) {
-      document.body.removeChild(container);
+    if (host.parentNode) {
+      document.body.removeChild(host);
     }
   }
 }
