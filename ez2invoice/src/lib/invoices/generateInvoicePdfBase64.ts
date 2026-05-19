@@ -9,17 +9,20 @@ export type InvoicePdfResult =
   | { ok: true; base64: string }
   | { ok: false; error: string };
 
+const USER_FACING_PDF_ERROR =
+  'Invoice PDF could not be generated. Please try again.';
+
 export async function generateInvoicePdfBase64(
   supabase: SupabaseClient,
   invoiceId: string
 ): Promise<InvoicePdfResult> {
   if (typeof window === 'undefined') {
-    return { ok: false, error: 'PDF generation is only available in the browser.' };
+    return { ok: false, error: USER_FACING_PDF_ERROR };
   }
 
   const data = await loadInvoiceDocumentData(supabase, invoiceId);
   if (!data) {
-    return { ok: false, error: 'Invoice data could not be loaded.' };
+    return { ok: false, error: USER_FACING_PDF_ERROR };
   }
 
   if (!data.invoiceTerms.trim()) {
@@ -28,27 +31,21 @@ export async function generateInvoicePdfBase64(
   }
 
   try {
-    // Primary: same React print route as the website (old + new invoices)
-    let base64 = await captureInvoicePdfFromPrintPage(invoiceId);
+    // Primary: static HTML using the same styles as the print view (works without opening print)
+    let base64 = await captureInvoicePdfFromData(data);
 
-    // Fallback: static HTML snapshot if print route capture fails
+    // Fallback: live React print route for parity with the website print page
     if (!base64) {
-      base64 = await captureInvoicePdfFromData(data);
+      base64 = await captureInvoicePdfFromPrintPage(invoiceId);
     }
 
     if (!base64) {
-      return {
-        ok: false,
-        error:
-          'PDF capture failed. Open Print on the invoice to verify it loads, then try sending again.',
-      };
+      return { ok: false, error: USER_FACING_PDF_ERROR };
     }
 
     return { ok: true, base64 };
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : 'Unexpected error during PDF generation.';
     console.error('generateInvoicePdfBase64:', error);
-    return { ok: false, error: message };
+    return { ok: false, error: USER_FACING_PDF_ERROR };
   }
 }

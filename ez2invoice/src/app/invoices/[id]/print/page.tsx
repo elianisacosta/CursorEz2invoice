@@ -60,7 +60,15 @@ export default function InvoicePrintPage() {
   useEffect(() => {
     if (!loading && !error && documentData) {
       if (embedMode) {
-        window.__INVOICE_PRINT_READY__ = true;
+        const markReady = () => {
+          window.__INVOICE_PRINT_READY__ = true;
+        };
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            markReady();
+            window.setTimeout(markReady, 300);
+          });
+        });
         return;
       }
       if (!hasPrintedRef.current) {

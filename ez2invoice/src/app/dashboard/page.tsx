@@ -2567,35 +2567,29 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     try {
       const customer = customers.find(c => c.id === invoice.customer_id);
       if (!customer || !customer.email) {
-        alert('Customer email not found. Cannot send invoice.');
+        showToast({ type: 'error', message: 'Customer email not found. Cannot send invoice.' });
         return;
       }
 
-      const confirmed = confirm(`Send ${formatInvoiceNumber(invoice.invoice_number)} to ${customer.email}?`);
-      if (!confirmed) return;
-
+      const invoiceNumber = formatInvoiceNumber(invoice.invoice_number);
       showToast({ type: 'info', message: 'Preparing invoice PDF…' });
 
-      const emailHTML = await generateInvoiceEmailHTML(invoice);
       const pdfResult = await generateInvoicePdfBase64(invoice);
-      const invoiceNumber = formatInvoiceNumber(invoice.invoice_number);
-
-      let attachments: { filename: string; content: string }[] = [];
-      if (pdfResult.ok) {
-        attachments = [{
-          filename: `${invoiceNumber.replace(/[^a-zA-Z0-9-_]/g, '_')}.pdf`,
-          content: pdfResult.base64,
-        }];
-      } else {
-        const sendWithoutPdf = confirm(
-          `Could not generate the invoice PDF (${pdfResult.error}). Send the email without a PDF attachment?`
-        );
-        if (!sendWithoutPdf) return;
+      if (!pdfResult.ok) {
         showToast({
-          type: 'info',
-          message: 'Email will be sent without PDF attachment.',
+          type: 'error',
+          message: 'Invoice PDF could not be generated. Please try again.',
         });
+        return;
       }
+
+      const emailHTML = await generateInvoiceEmailHTML(invoice);
+      const attachments: { filename: string; content: string }[] = [{
+        filename: `${invoiceNumber.replace(/[^a-zA-Z0-9-_]/g, '_')}.pdf`,
+        content: pdfResult.base64,
+      }];
+
+      showToast({ type: 'info', message: `Sending ${invoiceNumber} to ${customer.email}…` });
 
       const response = await fetch('/api/send-email', {
         method: 'POST',
@@ -2627,14 +2621,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         console.error('Error updating invoice status:', error);
       }
 
-      const successMessage = attachments.length > 0
-        ? 'Invoice sent successfully with PDF attachment!'
-        : 'Invoice email sent (no PDF attachment).';
-      showToast({ type: 'success', message: successMessage });
+      showToast({ type: 'success', message: 'Invoice sent successfully with PDF attachment!' });
       await fetchInvoices();
     } catch (err: any) {
       console.error('Error sending invoice:', err);
-      alert(`Error sending invoice: ${err.message || 'Please try again.'}`);
+      showToast({
+        type: 'error',
+        message: err?.message ? `Error sending invoice: ${err.message}` : 'Error sending invoice. Please try again.',
+      });
     }
   };
 
