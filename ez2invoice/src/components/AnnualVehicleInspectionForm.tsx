@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { Printer, Save, X } from 'lucide-react';
+import { useLockBodyScroll } from '@/hooks/useLockBodyScroll';
 
 interface InspectionItem {
   name: string;
@@ -400,10 +401,12 @@ export default function AnnualVehicleInspectionForm({ initialData, onSave, onClo
     }, 500);
   };
 
+  useLockBodyScroll(true);
+
   return (
-    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 overflow-y-auto print:fixed print:top-0 print:left-0 print:right-0 print:bottom-auto print:bg-white print:z-auto print:overflow-visible print:m-0 print:p-0 print:h-auto">
-      <div className="dot-inspection-print-wrapper min-h-full flex items-start justify-center p-4 print:block print:p-0 print:m-0 print:min-h-0 print:w-full print:h-auto">
-        <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full my-4 print:shadow-none print:max-w-none print:my-0 print:w-full print:rounded-none print:m-0 print:p-0 print:block print:min-h-0 print:h-auto">
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 overflow-hidden print:fixed print:top-0 print:left-0 print:right-0 print:bottom-auto print:bg-white print:z-auto print:overflow-visible print:m-0 print:p-0 print:h-auto">
+      <div className="dot-inspection-print-wrapper h-full flex items-start justify-center p-4 overflow-y-auto overscroll-contain print:block print:p-0 print:m-0 print:min-h-0 print:w-full print:h-auto print:overflow-visible">
+        <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full my-4 max-h-[calc(100vh-2rem)] overflow-y-auto overscroll-contain print:shadow-none print:max-w-none print:my-0 print:w-full print:rounded-none print:m-0 print:p-0 print:block print:min-h-0 print:h-auto print:max-h-none print:overflow-visible">
           {/* Header - Hidden when printing */}
           <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between print:hidden sticky top-0 bg-white z-10">
             <h3 className="text-lg font-semibold text-gray-900">Annual Vehicle Inspection Report</h3>

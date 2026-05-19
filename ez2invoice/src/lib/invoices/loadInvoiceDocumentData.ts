@@ -1,10 +1,14 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { buildInvoiceDocumentModel } from './buildInvoiceDocumentModel';
+import {
+  ensureLegacyPayments,
+  normalizeInvoiceRecord,
+  normalizeLineItems,
+  normalizePayments,
+} from './normalizeInvoiceDocumentData';
 import type {
   InvoiceDocumentData,
   InvoiceDocumentInvoice,
-  InvoiceDocumentLineItem,
-  InvoiceDocumentPayment,
   InvoiceDocumentShop,
 } from './invoiceDocumentTypes';
 
@@ -44,6 +48,19 @@ export type LoadInvoiceDocumentOptions = {
   userEmail?: string;
 };
 
+async function loadCustomerFallback(
+  supabase: SupabaseClient,
+  customerId: string | null | undefined
+): Promise<InvoiceDocumentInvoice['customer']> {
+  if (!customerId) return null;
+  const { data } = await supabase
+    .from('customers')
+    .select('first_name,last_name,company,email,phone,address,city,state,zip_code')
+    .eq('id', customerId)
+    .maybeSingle();
+  return (data as InvoiceDocumentInvoice['customer']) || null;
+}
+
 export async function loadInvoiceDocumentData(
   supabase: SupabaseClient,
   invoiceId: string,
@@ -64,7 +81,7 @@ export async function loadInvoiceDocumentData(
     return null;
   }
 
-  const [{ data: lineData }, { data: paymentData }, userResult] = await Promise.all([
+  const [{ data: lineData }, paymentResult, userResult] = await Promise.all([
     supabase
       .from('invoice_line_items')
       .select('*')
@@ -78,12 +95,28 @@ export async function loadInvoiceDocumentData(
     supabase.auth.getUser(),
   ]);
 
-  const userEmail = options.userEmail || userResult.data.user?.email || '';
-  const lineItems = (lineData || []) as InvoiceDocumentLineItem[];
-  const payments = (paymentData || []) as InvoiceDocumentPayment[];
-  const invoice = invoiceData as InvoiceDocumentInvoice;
+  const paymentData = paymentResult.error ? [] : paymentResult.data || [];
+  if (paymentResult.error) {
+    console.warn('[loadInvoiceDocumentData] invoice_payments:', paymentResult.error.message);
+  }
 
-  let shopId = (invoiceData as { shop_id?: string | null }).shop_id || null;
+  const userEmail = options.userEmail || userResult.data.user?.email || '';
+  const rawInvoice = invoiceData as Record<string, unknown>;
+  let invoice = normalizeInvoiceRecord(rawInvoice);
+
+  if (!invoice.customer) {
+    const customerId = rawInvoice.customer_id as string | undefined;
+    invoice = {
+      ...invoice,
+      customer: await loadCustomerFallback(supabase, customerId),
+    };
+  }
+
+  let lineItems = normalizeLineItems(lineData || []);
+  let payments = normalizePayments(paymentData);
+  payments = ensureLegacyPayments(invoice, payments);
+
+  let shopId = (rawInvoice.shop_id as string | null) || null;
   if (!shopId && userResult.data.user?.id) {
     const { data: fallbackShop } = await supabase
       .from('truck_shops')
@@ -139,7 +172,7 @@ export async function loadInvoiceDocumentData(
     invoiceTerms = options.invoiceTermsOverride;
   }
 
-  const model = buildInvoiceDocumentModel(invoice, payments);
+  const model = buildInvoiceDocumentModel(invoice, payments, lineItems);
 
   return {
     invoice,

@@ -1,7 +1,13 @@
 'use client';
 
+declare global {
+  interface Window {
+    __INVOICE_PRINT_READY__?: boolean;
+  }
+}
+
 import { useEffect, useRef, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import InvoiceDocument from '@/components/invoices/InvoiceDocument';
 import { loadInvoiceDocumentData } from '@/lib/invoices/loadInvoiceDocumentData';
@@ -9,7 +15,9 @@ import type { InvoiceDocumentData } from '@/lib/invoices/invoiceDocumentTypes';
 
 export default function InvoicePrintPage() {
   const params = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
   const invoiceId = String(params?.id || '');
+  const embedMode = searchParams.get('embed') === '1';
   const hasPrintedRef = useRef(false);
 
   const [loading, setLoading] = useState(true);
@@ -50,11 +58,22 @@ export default function InvoicePrintPage() {
   }, [invoiceId]);
 
   useEffect(() => {
-    if (!loading && !error && documentData && !hasPrintedRef.current) {
-      hasPrintedRef.current = true;
-      setTimeout(() => window.print(), 200);
+    if (!loading && !error && documentData) {
+      if (embedMode) {
+        window.__INVOICE_PRINT_READY__ = true;
+        return;
+      }
+      if (!hasPrintedRef.current) {
+        hasPrintedRef.current = true;
+        setTimeout(() => window.print(), 200);
+      }
     }
-  }, [loading, error, documentData]);
+    return () => {
+      if (embedMode) {
+        window.__INVOICE_PRINT_READY__ = false;
+      }
+    };
+  }, [loading, error, documentData, embedMode]);
 
   if (loading) return <div style={{ padding: 24 }}>Loading invoice...</div>;
   if (error || !documentData) {

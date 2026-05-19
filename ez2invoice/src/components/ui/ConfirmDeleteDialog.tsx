@@ -1,6 +1,7 @@
 'use client';
 
 import { X } from 'lucide-react';
+import { useLockBodyScroll } from '@/hooks/useLockBodyScroll';
 
 interface ConfirmDeleteDialogProps {
   isOpen: boolean;
@@ -17,6 +18,8 @@ export default function ConfirmDeleteDialog({
   onCancel,
   onConfirm,
 }: ConfirmDeleteDialogProps) {
+  useLockBodyScroll(isOpen);
+
   if (!isOpen) return null;
 
   const handleConfirm = async () => {

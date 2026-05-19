@@ -3,6 +3,14 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { WheelSafeNumberInput } from '@/components/ui/WheelSafeNumberInput';
+import {
+  DUPLICATE_LINE_ITEM_TOAST,
+  laborLineItemSelection,
+  mergeDuplicateLineItem,
+  partLineItemSelection,
+} from '@/lib/lineItems/mergeDuplicateLineItemSelection';
+import { useLockBodyScroll } from '@/hooks/useLockBodyScroll';
 
 // Type definitions
 interface WorkOrder {
@@ -10057,6 +10065,49 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     };
   }, [showDateRangeDropdown]);
 
+  const isAnyModalOpen =
+    showCreateInvoiceModal ||
+    showNewOrderModal ||
+    showAddBayModal ||
+    showAddToWaitlistModal ||
+    showInviteModal ||
+    showWorkOrderHistoryModal ||
+    showMoveWorkOrderModal ||
+    showAssignMechanicModal ||
+    showAddCustomerModal ||
+    !!showEditCustomerModal ||
+    showAddNoteModal ||
+    !!showFleetModal ||
+    showAddTruckModal ||
+    showAddDiscountModal ||
+    showAddEmployeeModal ||
+    showLogTimeModal ||
+    showWeekSettingsModal ||
+    showAddLaborModal ||
+    !!editLaborItem ||
+    showAddInventoryModal ||
+    !!showAdjustModal ||
+    !!showHistoryModal ||
+    showRecordPaymentModal ||
+    showCreateEstimateModal ||
+    showViewEstimateModal ||
+    showAddDotInspectionModal ||
+    showAddVendorModal ||
+    showCreateBillModal ||
+    !!selectedBill ||
+    showViewWorkOrderModal ||
+    showCameraModal ||
+    !!selectedDotInspection ||
+    !!invoiceToDelete ||
+    !!workOrderToDelete ||
+    !!inventoryItemToDelete ||
+    !!estimateToDelete ||
+    !!dotInspectionToDelete ||
+    !!employeeToDelete ||
+    !!bayToClear;
+
+  useLockBodyScroll(isAnyModalOpen);
+
   return (
     <div className="min-h-screen bg-gray-50 overflow-x-hidden">
       <SubscriptionAccessCheck
@@ -10943,8 +10994,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
               {/* View Inspection Modal */}
               {selectedDotInspection && (
-                <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-40">
-                  <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full mx-4">
+                <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-40 overflow-hidden">
+                  <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto overscroll-contain">
                     <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
                       <h3 className="text-lg font-semibold text-gray-900">
                         Inspection {selectedDotInspection.inspection_id || `INS-${selectedDotInspection.id.slice(0, 8).toUpperCase()}`}
@@ -14680,7 +14731,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
           {/* Invite User Modal */}
           {showInviteModal && (
-            <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+            <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
               <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Invite Team Member</h3>
                 <div className="space-y-4">
@@ -19823,8 +19874,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Record Payment Modal */}
       {showRecordPaymentModal && invoiceForPayment && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-[60]">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-[60] overflow-hidden">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto overscroll-contain">
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
                 <div>
@@ -20020,7 +20071,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Create/Edit Invoice - right-side panel (drawer) */}
       {showCreateInvoiceModal && (
-        <div className="fixed inset-0 z-50">
+        <div className="fixed inset-0 z-50 overflow-hidden">
           <div
             className="absolute inset-0 bg-black/50"
             aria-hidden
@@ -20045,7 +20096,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               setInvoiceCustomerDiscounts([]);
             }}
           />
-          <div className="absolute inset-y-0 right-0 w-full max-w-6xl bg-white shadow-2xl overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+          <div className="absolute inset-y-0 right-0 w-full max-w-6xl bg-white shadow-2xl overflow-y-auto overscroll-contain" onClick={(e) => e.stopPropagation()}>
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
                 <div>
@@ -20558,39 +20609,75 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                               finalPrice = Math.max(0, finalPrice - discount.fixed_amount);
                                             }
                                           }
-                                          setInvoiceLineItems((prev) =>
-                                            prev.map((p, i) =>
-                                              i === idx
-                                                ? withComputedLineItemTotals({
-                                                    ...p,
-                                                    item_type: 'labor',
-                                                    reference_id: li.id,
-                                                    description: li?.description || li?.service_name || '',
-                                                    unit_price: finalPrice,
-                                                  })
-                                                : p
-                                            )
-                                          );
-                                          setInvoiceItemSearch((prev) => ({ ...prev, [idx]: li?.service_name || '' }));
-                                        } else {
-                                          const pi = row.option;
-                                          setInvoiceLineItems((prev) =>
-                                            prev.map((p, i) =>
-                                              i === idx
-                                                ? withComputedLineItemTotals({
-                                                    ...p,
-                                                    item_type: 'part',
-                                                    reference_id: pi.id,
-                                                    description: pi?.part_name || pi?.description || '',
-                                                    unit_price: pi ? Number(pi.selling_price) || 0 : 0,
-                                                  })
-                                                : p
-                                            )
-                                          );
+                                          let mergedLabor = false;
+                                          setInvoiceLineItems((prev) => {
+                                            const { items, merged } = mergeDuplicateLineItem(
+                                              prev,
+                                              idx,
+                                              laborLineItemSelection(li),
+                                              {
+                                                withTotals: withComputedLineItemTotals,
+                                                createBlank: (itemType, base) => ({
+                                                  ...createBlankInvoiceLineItem(itemType),
+                                                  ...(base?.lineId ? { lineId: base.lineId } : {}),
+                                                }),
+                                                applySelection: (p) => ({
+                                                  ...p,
+                                                  item_type: 'labor',
+                                                  reference_id: li.id,
+                                                  description: li?.description || li?.service_name || '',
+                                                  unit_price: finalPrice,
+                                                }),
+                                              }
+                                            );
+                                            mergedLabor = merged;
+                                            return ensureInvoiceLineItemPadding(items);
+                                          });
                                           setInvoiceItemSearch((prev) => ({
                                             ...prev,
-                                            [idx]: pi?.part_number || pi?.part_name || '',
+                                            [idx]: mergedLabor ? '' : li?.service_name || '',
                                           }));
+                                          if (mergedLabor) {
+                                            showToast({ type: 'info', message: DUPLICATE_LINE_ITEM_TOAST });
+                                          }
+                                        } else {
+                                          const pi = row.option;
+                                          let mergedPart = false;
+                                          setInvoiceLineItems((prev) => {
+                                            const { items, merged } = mergeDuplicateLineItem(
+                                              prev,
+                                              idx,
+                                              partLineItemSelection({
+                                                id: pi.id,
+                                                part_name: pi.part_name,
+                                                part_number: pi.part_number,
+                                                description: pi.description,
+                                              }),
+                                              {
+                                                withTotals: withComputedLineItemTotals,
+                                                createBlank: (itemType, base) => ({
+                                                  ...createBlankInvoiceLineItem(itemType),
+                                                  ...(base?.lineId ? { lineId: base.lineId } : {}),
+                                                }),
+                                                applySelection: (p) => ({
+                                                  ...p,
+                                                  item_type: 'part',
+                                                  reference_id: pi.id,
+                                                  description: pi?.part_name || pi?.description || '',
+                                                  unit_price: pi ? Number(pi.selling_price) || 0 : 0,
+                                                }),
+                                              }
+                                            );
+                                            mergedPart = merged;
+                                            return ensureInvoiceLineItemPadding(items);
+                                          });
+                                          setInvoiceItemSearch((prev) => ({
+                                            ...prev,
+                                            [idx]: mergedPart ? '' : pi?.part_number || pi?.part_name || '',
+                                          }));
+                                          if (mergedPart) {
+                                            showToast({ type: 'info', message: DUPLICATE_LINE_ITEM_TOAST });
+                                          }
                                         }
                                       }}
                                       className="px-3 py-2 hover:bg-gray-100 cursor-pointer"
@@ -20687,8 +20774,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             onChange={(e) => setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, description: e.target.value } : p))}
                             className="w-full min-w-0 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                           />
-                          <input
-                            type="number"
+                          <WheelSafeNumberInput
                             value={item.quantity}
                             onChange={(e) => {
                               const q = Number(e.target.value) || 0;
@@ -20701,8 +20787,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           />
                           <div className="relative">
                             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">$</span>
-                            <input
-                              type="number"
+                            <WheelSafeNumberInput
                               value={item.unit_price}
                               onChange={(e) => {
                                 const u = Number(e.target.value) || 0;
@@ -21863,8 +21948,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* New Work Order Modal */}
       {showNewOrderModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto overscroll-contain">
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-bold text-gray-900">Create New Work Order</h2>
@@ -22675,7 +22760,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Add Employee Modal */}
       {showAddEmployeeModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
           <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
@@ -22965,7 +23050,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Week Settings Modal */}
       {showWeekSettingsModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
@@ -23062,7 +23147,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Log Time Modal */}
       {showLogTimeModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-[100]" onClick={(e) => {
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-[100] overflow-hidden" onClick={(e) => {
           if (e.target === e.currentTarget) {
             setShowLogTimeModal(false);
             setEditingTimesheet(null);
@@ -23331,7 +23416,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Add Bay Modal */}
       {showAddBayModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
@@ -23385,7 +23470,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Add Labor Item Modal */}
       {showAddLaborModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 overflow-y-auto p-2 sm:p-4">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 overflow-hidden p-2 sm:p-4">
           <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[90dvh] flex flex-col min-w-0 my-auto">
             <div className="p-4 sm:p-6 border-b border-gray-200 flex items-center justify-between flex-shrink-0">
               <h2 className="text-lg sm:text-xl font-bold text-gray-900 truncate pr-2">Add Labor Item</h2>
@@ -23628,26 +23713,38 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     }
 
                     const lineIndex = creatingLaborForLineItem;
-                    setInvoiceLineItems(prev =>
-                      prev.map((line, i) => {
-                        if (i !== lineIndex) return line;
-                        const quantity = line.quantity || 1;
-                        const totalPrice = +(quantity * finalRate).toFixed(2);
-                        return {
-                          ...line,
-                          item_type: 'labor',
-                          reference_id: newLabor.id,
-                          description: newLabor.description || newLabor.service_name || '',
-                          unit_price: finalRate,
-                          total_price: totalPrice,
-                        };
-                      })
-                    );
+                    let mergedNewLabor = false;
+                    setInvoiceLineItems((prev) => {
+                      const { items, merged } = mergeDuplicateLineItem(
+                        prev,
+                        lineIndex,
+                        laborLineItemSelection(newLabor),
+                        {
+                          withTotals: withComputedLineItemTotals,
+                          createBlank: (itemType, base) => ({
+                            ...createBlankInvoiceLineItem(itemType),
+                            ...(base?.lineId ? { lineId: base.lineId } : {}),
+                          }),
+                          applySelection: (line) => ({
+                            ...line,
+                            item_type: 'labor',
+                            reference_id: newLabor.id,
+                            description: newLabor.description || newLabor.service_name || '',
+                            unit_price: finalRate,
+                          }),
+                        }
+                      );
+                      mergedNewLabor = merged;
+                      return ensureInvoiceLineItemPadding(items);
+                    });
 
-                    setInvoiceItemSearch(prev => ({
+                    setInvoiceItemSearch((prev) => ({
                       ...prev,
-                      [lineIndex]: newLabor.service_name || '',
+                      [lineIndex]: mergedNewLabor ? '' : newLabor.service_name || '',
                     }));
+                    if (mergedNewLabor) {
+                      showToast({ type: 'info', message: DUPLICATE_LINE_ITEM_TOAST });
+                    }
                   }
 
                   setShowAddLaborModal(false);
@@ -23666,7 +23763,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Add Inventory Item Modal */}
       {showAddInventoryModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 overflow-y-auto p-2 sm:p-4" onClick={(e) => {
+        <div className="fixed inset-0 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 overflow-hidden p-2 sm:p-4" onClick={(e) => {
           if (e.target === e.currentTarget) {
             setShowAddInventoryModal(false);
             setCreatingPartFromInvoice(false);
@@ -24019,17 +24116,39 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       setCreatingPartFromInvoice(false);
                       setCreatingPartForLineItem(null);
                       
-                      // Auto-select the new part in the invoice line item
-                      setInvoiceLineItems(prev => prev.map((p, i) => i === lineItemIdx ? {
-                        ...p,
-                        reference_id: newPart.id,
-                        description: newPart.part_name || newPart.description || '',
-                        unit_price: newPart.selling_price || 0,
-                        total_price: +(p.quantity * (newPart.selling_price || 0)).toFixed(2)
-                      } : p));
-                      
-                      // Set the input to show the part number
-                      setInvoiceItemSearch(prev => ({ ...prev, [lineItemIdx]: newPart.part_number || newPart.part_name || '' }));
+                      let mergedNewPart = false;
+                      setInvoiceLineItems((prev) => {
+                        const { items, merged } = mergeDuplicateLineItem(
+                          prev,
+                          lineItemIdx,
+                          partLineItemSelection(newPart),
+                          {
+                            withTotals: withComputedLineItemTotals,
+                            createBlank: (itemType, base) => ({
+                              ...createBlankInvoiceLineItem(itemType),
+                              ...(base?.lineId ? { lineId: base.lineId } : {}),
+                            }),
+                            applySelection: (p) => ({
+                              ...p,
+                              reference_id: newPart.id,
+                              description: newPart.part_name || newPart.description || '',
+                              unit_price: newPart.selling_price || 0,
+                            }),
+                          }
+                        );
+                        mergedNewPart = merged;
+                        return ensureInvoiceLineItemPadding(items);
+                      });
+
+                      setInvoiceItemSearch((prev) => ({
+                        ...prev,
+                        [lineItemIdx]: mergedNewPart
+                          ? ''
+                          : newPart.part_number || newPart.part_name || '',
+                      }));
+                      if (mergedNewPart) {
+                        showToast({ type: 'info', message: DUPLICATE_LINE_ITEM_TOAST });
+                      }
                     }
                   }
                 }} 
@@ -24322,7 +24441,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Edit Labor Item Modal */}
       {editLaborItem && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
           <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <h2 className="text-xl font-bold text-gray-900">Edit Labor Item</h2>
@@ -24384,8 +24503,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Create Estimate Modal */}
       {showCreateEstimateModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
+          <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full mx-4 max-h-[90vh] overflow-y-auto overscroll-contain">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-bold text-gray-900">Create New Estimate</h2>
@@ -24686,30 +24805,71 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                         e.preventDefault(); // Prevent blur event
                                         if (row.source === 'labor') {
                                           const li = row.option;
-                                          setEstimateItems(prev => ensureEstimateLineItemPadding(prev.map((p, i) => i === idx
-                                            ? withComputedEstimateLineTotals({
-                                                ...p,
-                                                item_type: 'labor',
-                                                reference_id: li.id,
-                                                description: li?.service_name || '',
-                                                unit_price: li ? li.rate : 0,
-                                              })
-                                            : p
-                                          )));
-                                          setEstimateItemSearch(prev => ({ ...prev, [idx]: li?.service_name || '' }));
+                                          let mergedLabor = false;
+                                          setEstimateItems((prev) => {
+                                            const { items, merged } = mergeDuplicateLineItem(
+                                              prev,
+                                              idx,
+                                              laborLineItemSelection(li),
+                                              {
+                                                withTotals: withComputedEstimateLineTotals,
+                                                createBlank: (itemType) =>
+                                                  createBlankEstimateLineItem(itemType),
+                                                applySelection: (p) => ({
+                                                  ...p,
+                                                  item_type: 'labor',
+                                                  reference_id: li.id,
+                                                  description: li?.service_name || '',
+                                                  unit_price: li ? li.rate : 0,
+                                                }),
+                                              }
+                                            );
+                                            mergedLabor = merged;
+                                            return ensureEstimateLineItemPadding(items);
+                                          });
+                                          setEstimateItemSearch((prev) => ({
+                                            ...prev,
+                                            [idx]: mergedLabor ? '' : li?.service_name || '',
+                                          }));
+                                          if (mergedLabor) {
+                                            showToast({ type: 'info', message: DUPLICATE_LINE_ITEM_TOAST });
+                                          }
                                         } else {
                                           const pi = row.option;
-                                          setEstimateItems(prev => ensureEstimateLineItemPadding(prev.map((p, i) => i === idx
-                                            ? withComputedEstimateLineTotals({
-                                                ...p,
-                                                item_type: 'part',
-                                                reference_id: pi.id,
-                                                description: pi?.part_name || '',
-                                                unit_price: pi ? Number(pi.selling_price) || 0 : 0,
-                                              })
-                                            : p
-                                          )));
-                                          setEstimateItemSearch(prev => ({ ...prev, [idx]: pi?.part_name || '' }));
+                                          let mergedPart = false;
+                                          setEstimateItems((prev) => {
+                                            const { items, merged } = mergeDuplicateLineItem(
+                                              prev,
+                                              idx,
+                                              partLineItemSelection({
+                                                id: pi.id,
+                                                part_name: pi.part_name,
+                                                part_number: pi.part_number,
+                                                description: pi.description,
+                                              }),
+                                              {
+                                                withTotals: withComputedEstimateLineTotals,
+                                                createBlank: (itemType) =>
+                                                  createBlankEstimateLineItem(itemType),
+                                                applySelection: (p) => ({
+                                                  ...p,
+                                                  item_type: 'part',
+                                                  reference_id: pi.id,
+                                                  description: pi?.part_name || '',
+                                                  unit_price: pi ? Number(pi.selling_price) || 0 : 0,
+                                                }),
+                                              }
+                                            );
+                                            mergedPart = merged;
+                                            return ensureEstimateLineItemPadding(items);
+                                          });
+                                          setEstimateItemSearch((prev) => ({
+                                            ...prev,
+                                            [idx]: mergedPart ? '' : pi?.part_name || '',
+                                          }));
+                                          if (mergedPart) {
+                                            showToast({ type: 'info', message: DUPLICATE_LINE_ITEM_TOAST });
+                                          }
                                         }
                                         setEstimateItemSearchOpen(prev=> ({...prev, [idx]: false}));
                                       }}
@@ -24740,10 +24900,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             <input value={item.description} onChange={(e)=> setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, description:e.target.value }: p)))} placeholder="Description" className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
                           </td>
                           <td className="px-4 py-3">
-                            <input type="number" value={item.quantity} onChange={(e)=>{ const q = Number(e.target.value)||0; setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, quantity:q, total_price: +(q*(p.unit_price||0)).toFixed(2) }: p))); }} className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                            <WheelSafeNumberInput value={item.quantity} onChange={(e)=>{ const q = Number(e.target.value)||0; setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, quantity:q, total_price: +(q*(p.unit_price||0)).toFixed(2) }: p))); }} className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
                           </td>
                           <td className="px-4 py-3">
-                            <input type="number" value={item.unit_price} onChange={(e)=>{ const u = Number(e.target.value)||0; setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, unit_price:u, total_price: +((p.quantity||0)*u).toFixed(2) }: p))); }} className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                            <WheelSafeNumberInput value={item.unit_price} onChange={(e)=>{ const u = Number(e.target.value)||0; setEstimateItems(prev=> ensureEstimateLineItemPadding(prev.map((p,i)=> i===idx? {...p, unit_price:u, total_price: +((p.quantity||0)*u).toFixed(2) }: p))); }} className="w-full px-2 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
                           </td>
                           <td className="px-4 py-3 text-right font-medium">${(item.total_price||0).toFixed(2)}</td>
                           <td className="px-4 py-3">
@@ -24913,8 +25073,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* View Estimate Modal */}
       {showViewEstimateModal && selectedEstimate && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto overscroll-contain">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <h2 className="text-xl font-bold text-gray-900">
                 Estimate {selectedEstimate.estimate_number || selectedEstimate.id.slice(0, 8)}
@@ -25114,8 +25274,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* View Work Order Modal */}
       {showViewWorkOrderModal && selectedWorkOrder && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto overscroll-contain">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <h2 className="text-xl font-bold text-gray-900">
                 Work Order {selectedWorkOrder.work_order_number || selectedWorkOrder.id.slice(0, 8)}
@@ -25354,8 +25514,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Camera Capture Modal */}
       {showCameraModal && selectedWorkOrder && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-[60]">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-[60] overflow-hidden">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto overscroll-contain">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-bold text-gray-900">Capture Photo</h2>
@@ -25459,7 +25619,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Add to Waitlist Modal */}
       {showAddToWaitlistModal && selectedBayForWaitlist && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
@@ -25550,12 +25710,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Add Customer Modal */}
       {showAddCustomerModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
-              <div>
-                <h2 className="text-xl font-bold text-gray-900">Add Customer</h2>
-                <p className="text-sm text-gray-600 mt-1">Manage your customers and their contact details.</p>
+        <div className="fixed inset-0 z-50 flex items-stretch justify-center overflow-hidden bg-black/40 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+          <div className="flex h-[100dvh] max-h-[100dvh] w-full max-w-5xl flex-col overflow-hidden rounded-none bg-white shadow-xl sm:mx-4 sm:h-auto sm:max-h-[min(90dvh,900px)] sm:rounded-lg">
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-200 bg-white px-4 py-4 sm:px-6">
+              <div className="min-w-0 pr-2">
+                <h2 className="text-lg font-bold text-gray-900 sm:text-xl">Add Customer</h2>
+                <p className="mt-1 text-sm text-gray-600">Manage your customers and their contact details.</p>
               </div>
               <button onClick={() => {
                 setShowAddCustomerModal(false);
@@ -25570,11 +25730,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <X className="h-6 w-6" />
               </button>
             </div>
-            <div className="p-6 space-y-6">
+            <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-4 py-4 sm:px-6 sm:py-6">
               {/* Customer Type Selection */}
               <div>
                 <p className="text-sm font-medium text-gray-900 mb-3">Customer Type</p>
-                <div className="flex items-center gap-6 text-sm text-gray-700">
+                <div className="flex flex-wrap items-center gap-4 text-sm text-gray-700 sm:gap-6">
                   <label className="inline-flex items-center gap-2">
                     <input
                       type="radio"
@@ -25616,7 +25776,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 )}
               </div>
               {/* Basic Customer Info */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     {customerForm.is_fleet ? 'Company Name *' : 'Name *'}
@@ -25738,7 +25898,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <label className="block text-sm font-medium text-gray-700 mb-2">Address</label>
                 <input value={customerForm.address} onChange={(e)=>setCustomerForm(prev=>({...prev,address:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" placeholder="Street address" />
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">City</label>
                   <input value={customerForm.city} onChange={(e)=>setCustomerForm(prev=>({...prev,city:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" placeholder="City" />
@@ -25786,7 +25946,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-1">Unit Number *</label>
                           <input value={t.unit_no || ''} readOnly className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50" />
@@ -25939,8 +26099,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 )}
               </div>
             </div>
-            <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
-              <button onClick={()=>{
+            <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-gray-200 bg-white px-4 py-3 sm:flex-row sm:justify-end sm:gap-3 sm:px-6 sm:py-4">
+              <button type="button" onClick={()=>{
                 setShowAddCustomerModal(false);
                 setCreatingCustomerFromInvoice(false);
                 setCreatingCustomerFromEstimate(false);
@@ -25951,8 +26111,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 setAddCustomerFleetDiscounts([]);
                 setDuplicatePhoneCustomer(null);
                 setCheckingPhone(false);
-              }} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
-              <button onClick={async ()=>{
+              }} className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-gray-700 hover:bg-gray-50 sm:w-auto sm:py-2">Cancel</button>
+              <button type="button" onClick={async ()=>{
                 // Check for duplicate phone before submitting
                 if (duplicatePhoneCustomer) {
                   showToast({ 
@@ -26209,7 +26369,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     }
                   }
                 }
-              }} className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600">Create Customer</button>
+              }} className="w-full rounded-lg bg-primary-500 px-4 py-2.5 text-white hover:bg-primary-600 sm:w-auto sm:py-2">Create Customer</button>
             </div>
           </div>
         </div>
@@ -26217,7 +26377,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Add Note Modal */}
       {showAddNoteModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-[60]">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-[60] overflow-hidden">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <h2 className="text-xl font-bold text-gray-900">{editingNote ? 'Edit Note' : 'Add Note'}</h2>
@@ -26325,7 +26485,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Add Truck Modal */}
       {showAddTruckModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <h2 className="text-xl font-bold text-gray-900">Truck Details</h2>
@@ -26401,7 +26561,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Add Discount Modal */}
       {showAddDiscountModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -26493,16 +26653,16 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Edit Customer Modal */}
       {showEditCustomerModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4">
-            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
-              <h2 className="text-xl font-bold text-gray-900">Edit Customer</h2>
+        <div className="fixed inset-0 z-50 flex items-stretch justify-center overflow-hidden bg-black/40 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+          <div className="flex h-[100dvh] max-h-[100dvh] w-full max-w-2xl flex-col overflow-hidden rounded-none bg-white shadow-xl sm:mx-4 sm:h-auto sm:max-h-[min(90dvh,900px)] sm:rounded-lg">
+            <div className="flex shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4 py-4 sm:px-6">
+              <h2 className="text-lg font-bold text-gray-900 sm:text-xl">Edit Customer</h2>
               <button onClick={() => setShowEditCustomerModal(null)} className="text-gray-400 hover:text-gray-600">
                 <X className="h-6 w-6" />
               </button>
             </div>
-            <div className="p-6 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-4 sm:px-6 sm:py-6">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Name *</label>
                   <input defaultValue={[showEditCustomerModal.first_name, showEditCustomerModal.last_name].filter(Boolean).join(' ')} onChange={(e)=>setCustomerForm(prev=>({...prev,name:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
@@ -26511,13 +26671,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
                   <input defaultValue={showEditCustomerModal.email || ''} onChange={(e)=>setCustomerForm(prev=>({...prev,email:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
                 </div>
-                <div>
-                  <p className="text-sm font-medium text-gray-900 mb-2">Customer Type</p>
-                  <div className="flex items-center gap-6 text-sm text-gray-700">
-                    <label className="inline-flex items-center gap-2">
-                      <input
-                        type="radio"
-                        name="customer-type-edit"
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-900 mb-2">Customer Type</p>
+                <div className="flex flex-wrap items-center gap-4 text-sm text-gray-700 sm:gap-6">
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="customer-type-edit"
                         defaultChecked={!Boolean(showEditCustomerModal.is_fleet)}
                         onChange={()=> setCustomerForm(prev=>({...prev, is_fleet:false}))}
                       />
@@ -26532,7 +26693,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       />
                       Fleet
                     </label>
-                  </div>
                 </div>
               </div>
               <div>
@@ -26543,7 +26703,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <label className="block text-sm font-medium text-gray-700 mb-2">Address</label>
                 <input defaultValue={showEditCustomerModal.address || ''} onChange={(e)=>setCustomerForm(prev=>({...prev,address:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">City</label>
                   <input defaultValue={showEditCustomerModal.city || ''} onChange={(e)=>setCustomerForm(prev=>({...prev,city:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
@@ -26639,16 +26799,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 )}
               </div>
             </div>
-            <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
-              <button onClick={()=>{
+            <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-gray-200 bg-white px-4 py-3 sm:flex-row sm:justify-end sm:gap-3 sm:px-6 sm:py-4">
+              <button type="button" onClick={()=>{
                 setShowEditCustomerModal(null);
                 setEditCustomerNotes([]);
-              }} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
-              <button onClick={async ()=>{
+              }} className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-gray-700 hover:bg-gray-50 sm:w-auto sm:py-2">Cancel</button>
+              <button type="button" onClick={async ()=>{
                 const name = customerForm.name.trim() || [showEditCustomerModal.first_name, showEditCustomerModal.last_name].filter(Boolean).join(' ');
                 const parts = name.split(/\s+/);
                 const first = parts.shift() || '';
-                // Use empty string instead of null for last_name to satisfy NOT NULL constraint
                 const last = parts.join(' ') || '';
                 const { error } = await supabase.from('customers').update({
                   first_name: first, last_name: last,
@@ -26663,7 +26822,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 if(error){ console.error('Update customer error:', error); return; }
                 setShowEditCustomerModal(null);
                 fetchCustomers();
-              }} className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600">Save</button>
+              }} className="w-full rounded-lg bg-primary-500 px-4 py-2.5 text-white hover:bg-primary-600 sm:w-auto sm:py-2">Save</button>
             </div>
           </div>
         </div>
@@ -26671,7 +26830,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Fleet Management Modal */}
       {showFleetModal && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
           <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <div>
@@ -26801,7 +26960,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Work Order History Modal */}
       {showWorkOrderHistoryModal && selectedWorkOrderForHistory && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
@@ -27006,7 +27165,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Move Work Order Modal */}
       {showMoveWorkOrderModal && selectedWorkOrderForMove && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
@@ -27133,7 +27292,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       {/* Assign Mechanic Modal */}
       {showAssignMechanicModal && selectedBayForMechanic && (
-        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50 overflow-hidden">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">

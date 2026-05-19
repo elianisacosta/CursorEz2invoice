@@ -1,34 +1,14 @@
-import type { InvoiceDocumentData, InvoiceDocumentShop } from '@/lib/invoices/invoiceDocumentTypes';
+import type { InvoiceDocumentData } from '@/lib/invoices/invoiceDocumentTypes';
 import { formatInvoiceDate } from '@/lib/invoices/formatInvoiceDate';
+import {
+  formatCompanyDetails,
+  formatCustomerAddress,
+  formatCustomerName,
+  getLineItemTypeLabel,
+} from '@/lib/invoices/invoiceDocumentFormatters';
 import { INVOICE_DOCUMENT_STYLES } from './invoiceDocumentStyles';
 
 type InvoiceDocumentProps = InvoiceDocumentData;
-
-function formatCustomerName(data: InvoiceDocumentData): string {
-  const c = data.invoice.customer;
-  if (!c) return 'Unknown';
-  return (
-    [c.first_name, c.last_name].filter(Boolean).join(' ') || c.company || 'Unknown'
-  );
-}
-
-function formatCustomerAddress(data: InvoiceDocumentData): string {
-  const c = data.invoice.customer;
-  if (!c?.address) return '';
-  return `${c.address}${c.city ? `, ${c.city}` : ''}${c.state ? `, ${c.state}` : ''}${c.zip_code ? ` ${c.zip_code}` : ''}`;
-}
-
-function formatCompanyDetails(shop: InvoiceDocumentShop): string {
-  return [
-    shop.addressLines,
-    shop.phone,
-    shop.email,
-    shop.website,
-    shop.tax_id ? `Tax ID: ${shop.tax_id}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
 
 export default function InvoiceDocument({
   invoice,
@@ -102,7 +82,7 @@ export default function InvoiceDocument({
             ) : (
               lineItems.map((item, idx) => (
                 <tr key={`${idx}-${item.reference_id || ''}`}>
-                  <td>{(item.item_type || 'labor').toLowerCase() === 'part' ? 'Part' : 'Labor'}</td>
+                  <td>{getLineItemTypeLabel(item.item_type)}</td>
                   <td>{item.description || 'Item'}</td>
                   <td>
                     {item.description || ''}
