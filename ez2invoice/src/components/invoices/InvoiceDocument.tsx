@@ -4,6 +4,8 @@ import {
   formatCompanyDetails,
   formatCustomerAddress,
   formatCustomerName,
+  formatLineItemDiscountText,
+  formatLineItemDisplayName,
   getLineItemTypeLabel,
 } from '@/lib/invoices/invoiceDocumentFormatters';
 import { INVOICE_DOCUMENT_STYLES } from './invoiceDocumentStyles';
@@ -66,39 +68,43 @@ export default function InvoiceDocument({
         <table className="table">
           <thead>
             <tr>
-              <th>TYPE</th>
-              <th>ITEM</th>
-              <th>DESCRIPTION</th>
               <th style={{ textAlign: 'right' }}>QTY</th>
-              <th style={{ textAlign: 'right' }}>PRICE</th>
+              <th>TYPE</th>
+              <th>ITEM / SERVICE</th>
+              <th style={{ textAlign: 'right' }}>UNIT PRICE</th>
               <th style={{ textAlign: 'right' }}>TOTAL</th>
             </tr>
           </thead>
           <tbody>
             {lineItems.length === 0 ? (
               <tr>
-                <td colSpan={6} style={{ textAlign: 'center', color: '#6b7280' }}>
+                <td colSpan={5} style={{ textAlign: 'center', color: '#6b7280' }}>
                   No line items
                 </td>
               </tr>
             ) : (
-              lineItems.map((item, idx) => (
+              lineItems.map((item, idx) => {
+                const discountText = formatLineItemDiscountText(item);
+                return (
                 <tr key={`${idx}-${item.reference_id || ''}`}>
+                  <td style={{ textAlign: 'right' }}>{Number(item.quantity) || 1}</td>
                   <td>{getLineItemTypeLabel(item.item_type)}</td>
-                  <td>{item.description || 'Item'}</td>
                   <td>
-                    {item.description || ''}
-                    {(Number(item.discount_amount) || 0) > 0 && (
+                    {formatLineItemDisplayName(item)}
+                    {item.invoice_note && (
+                      <div style={{ fontSize: 11, color: '#4b5563' }}>{item.invoice_note}</div>
+                    )}
+                    {discountText && (
                       <div style={{ fontSize: 11, color: '#b91c1c' }}>
-                        Discount: -${(Number(item.discount_amount) || 0).toFixed(2)}
+                        {discountText}
                       </div>
                     )}
                   </td>
-                  <td style={{ textAlign: 'right' }}>{Number(item.quantity) || 1}</td>
                   <td style={{ textAlign: 'right' }}>${(Number(item.unit_price) || 0).toFixed(2)}</td>
                   <td style={{ textAlign: 'right' }}>${(Number(item.total_price) || 0).toFixed(2)}</td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>
@@ -154,12 +160,14 @@ export default function InvoiceDocument({
                   className="payment-row"
                   style={{
                     fontWeight: 700,
-                    marginTop: 8,
-                    padding: '10px 12px',
+                    marginTop: 6,
+                    padding: '6px 10px',
                     border: '1px solid #bfdbfe',
-                    borderRadius: 6,
+                    borderRadius: 5,
                     background: '#eff6ff',
                     color: '#1d4ed8',
+                    fontSize: 10,
+                    lineHeight: 1.2,
                   }}
                 >
                   <strong>{model.cardFee > 0 ? 'Total Due Today' : 'Balance Due'}:</strong> ${model.balanceDue.toFixed(2)}

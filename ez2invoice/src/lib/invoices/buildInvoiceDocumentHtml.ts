@@ -6,6 +6,8 @@ import {
   formatCompanyDetails,
   formatCustomerAddress,
   formatCustomerName,
+  formatLineItemDiscountText,
+  formatLineItemDisplayName,
   getLineItemTypeLabel,
 } from './invoiceDocumentFormatters';
 
@@ -35,20 +37,22 @@ export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
 
   const lineRows =
     lineItems.length === 0
-      ? `<tr><td colspan="6" style="text-align:center;color:#6b7280">No line items</td></tr>`
+      ? `<tr><td colspan="5" style="text-align:center;color:#6b7280">No line items</td></tr>`
       : lineItems
           .map((item) => {
             const type = getLineItemTypeLabel(item.item_type);
-            const desc = escapeHtml(item.description || 'Item');
-            const discount =
-              (Number(item.discount_amount) || 0) > 0
-                ? `<div style="font-size:11px;color:#b91c1c">Discount: -$${(Number(item.discount_amount) || 0).toFixed(2)}</div>`
-                : '';
+            const displayName = escapeHtml(formatLineItemDisplayName(item));
+            const invoiceNote = item.invoice_note
+              ? `<div style="font-size:11px;color:#4b5563">${escapeHtml(item.invoice_note)}</div>`
+              : '';
+            const discountText = formatLineItemDiscountText(item);
+            const discount = discountText
+              ? `<div style="font-size:11px;color:#b91c1c">${escapeHtml(discountText)}</div>`
+              : '';
             return `<tr>
-              <td>${type}</td>
-              <td>${desc}</td>
-              <td>${desc}${discount}</td>
               <td style="text-align:right">${Number(item.quantity) || 1}</td>
+              <td>${type}</td>
+              <td>${displayName}${invoiceNote}${discount}</td>
               <td style="text-align:right">$${(Number(item.unit_price) || 0).toFixed(2)}</td>
               <td style="text-align:right">$${(Number(item.total_price) || 0).toFixed(2)}</td>
             </tr>`;
@@ -61,7 +65,7 @@ export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
           ${paidBlock}
           ${collectedFeeBlock}
           ${cardFeeBlock}
-          <div class="payment-row" style="font-weight:700;margin-top:8px;padding:10px 12px;border:1px solid #bfdbfe;border-radius:6px;background:#eff6ff;color:#1d4ed8">
+          <div class="payment-row" style="font-weight:700;margin-top:6px;padding:6px 10px;border:1px solid #bfdbfe;border-radius:5px;background:#eff6ff;color:#1d4ed8;font-size:10px;line-height:1.2">
             <strong>${model.cardFee > 0 ? 'Total Due Today' : 'Balance Due'}:</strong> $${model.balanceDue.toFixed(2)}
           </div>
           <div class="payments-title">PAYMENT HISTORY:</div>
@@ -141,9 +145,8 @@ export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
     <table class="table">
       <thead>
         <tr>
-          <th>TYPE</th><th>ITEM</th><th>DESCRIPTION</th>
-          <th style="text-align:right">QTY</th>
-          <th style="text-align:right">PRICE</th>
+          <th style="text-align:right">QTY</th><th>TYPE</th><th>ITEM / SERVICE</th>
+          <th style="text-align:right">UNIT PRICE</th>
           <th style="text-align:right">TOTAL</th>
         </tr>
       </thead>

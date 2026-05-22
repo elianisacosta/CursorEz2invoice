@@ -53,11 +53,16 @@ export function normalizeInvoiceLineItem(raw: RawRecord): InvoiceDocumentLineIte
 
   return {
     item_type,
-    description: pickString(raw.description, raw.name, raw.item_name, raw.title, 'Item'),
+    description: pickString(raw.description, raw.name, raw.item_name, raw.title) || '',
+    item_name: pickString(raw.item_name, raw.name) || null,
+    item_number: pickString(raw.item_number, raw.part_number, raw.sku) || null,
+    invoice_note: pickString(raw.invoice_note, raw.note) || null,
     quantity,
     unit_price,
     total_price,
     reference_id: pickString(raw.reference_id, raw.ref_id) || null,
+    discount_type: pickString(raw.discount_type) || null,
+    discount_value: pickNumber(raw.discount_value),
     discount_amount: pickNumber(raw.discount_amount, raw.discount, raw.line_discount),
   };
 }

@@ -27,7 +27,8 @@ export function isLineItemPopulated(item: LineItemMatchFields): boolean {
  */
 export function findExistingLineItemIndex<T extends LineItemMatchFields>(
   items: T[],
-  selection: LineItemSelection
+  selection: LineItemSelection,
+  excludeIndex?: number
 ): number {
   const selRef = selection.reference_id;
   const selType = selection.item_type;
@@ -37,6 +38,7 @@ export function findExistingLineItemIndex<T extends LineItemMatchFields>(
   const selPartNum = normalizeMatchKey(selection.partNumber || '');
 
   for (let i = 0; i < items.length; i++) {
+    if (i === excludeIndex) continue;
     const item = items[i];
     if (!isLineItemPopulated(item)) continue;
     if (item.item_type !== selType) continue;
@@ -74,7 +76,7 @@ export function mergeDuplicateLineItem<T extends LineItemMatchFields & { quantit
     applySelection: (item: T) => T;
   }
 ): { items: T[]; merged: boolean } {
-  const existingIdx = findExistingLineItemIndex(items, selection);
+  const existingIdx = findExistingLineItemIndex(items, selection, targetIndex);
 
   if (existingIdx >= 0) {
     const updated = items.map((item, i) => {

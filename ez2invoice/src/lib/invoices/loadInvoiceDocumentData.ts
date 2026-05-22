@@ -115,6 +115,54 @@ export async function loadInvoiceDocumentData(
   }
 
   let lineItems = normalizeLineItems(lineData || []);
+  const laborIds = lineItems
+    .filter((item) => item.item_type === 'labor' && item.reference_id)
+    .map((item) => item.reference_id as string);
+  const partIds = lineItems
+    .filter((item) => item.item_type === 'part' && item.reference_id)
+    .map((item) => item.reference_id as string);
+
+  const [laborResult, partResult] = await Promise.all([
+    laborIds.length > 0
+      ? supabase.from('labor_items').select('id,service_name,description').in('id', laborIds)
+      : Promise.resolve({ data: [] as any[] }),
+    partIds.length > 0
+      ? supabase.from('parts').select('id,part_name,part_number,description').in('id', partIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ]);
+
+  const laborById = new Map((laborResult.data || []).map((row: any) => [row.id, row]));
+  const partById = new Map((partResult.data || []).map((row: any) => [row.id, row]));
+  lineItems = lineItems.map((item) => {
+    const description = (item.description || '').trim();
+    if (item.item_type === 'labor' && item.reference_id) {
+      const labor = laborById.get(item.reference_id);
+      const autoText = [labor?.service_name, labor?.description].filter(Boolean).map((value) => String(value).trim().toLowerCase());
+      return {
+        ...item,
+        item_name: labor?.service_name || item.item_name || description || 'Labor',
+        invoice_note: labor && description && !autoText.includes(description.toLowerCase()) ? description : null,
+      };
+    }
+    if (item.item_type === 'part' && item.reference_id) {
+      const part = partById.get(item.reference_id);
+      const partDisplay = [part?.part_number, part?.part_name].filter(Boolean).join(' — ');
+      const autoText = [part?.part_name, part?.part_number, part?.description, partDisplay]
+        .filter(Boolean)
+        .map((value) => String(value).trim().toLowerCase());
+      return {
+        ...item,
+        item_name: part?.part_name || item.item_name || description || 'Part',
+        item_number: part?.part_number || item.item_number || null,
+        invoice_note: part && description && !autoText.includes(description.toLowerCase()) ? description : null,
+      };
+    }
+    return {
+      ...item,
+      item_name: item.item_name || description || 'Item',
+      invoice_note: item.invoice_note || null,
+    };
+  });
   let payments = normalizePayments(paymentData);
   payments = ensureLegacyPayments(invoice, payments);
 

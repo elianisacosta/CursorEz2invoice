@@ -32,10 +32,15 @@ export type InvoiceDocumentInvoice = {
 export type InvoiceDocumentLineItem = {
   item_type?: string | null;
   description?: string | null;
+  item_name?: string | null;
+  item_number?: string | null;
+  invoice_note?: string | null;
   quantity?: number | null;
   unit_price?: number | null;
   total_price?: number | null;
   reference_id?: string | null;
+  discount_type?: string | null;
+  discount_value?: number | null;
   discount_amount?: number | null;
 };
 
