@@ -91,6 +91,7 @@ export function normalizeInvoiceRecord(raw: RawRecord): InvoiceDocumentInvoice {
     tax_amount: pickNumber(raw.tax_amount, raw.tax),
     total_amount: pickNumber(raw.total_amount, raw.total, raw.grand_total),
     paid_amount: pickNumber(raw.paid_amount, raw.paid, raw.amount_paid),
+    apply_card_fee: raw.apply_card_fee === true,
     card_fee_amount: pickNumber(
       raw.card_fee_amount,
       raw.card_fee,
@@ -127,7 +128,7 @@ export function ensureLegacyPayments(
   return [
     {
       amount: paid,
-      card_fee: Number(invoice.card_fee_amount) || 0,
+      card_fee: 0,
       payment_method: 'Other',
       created_at: invoice.created_at || null,
     },

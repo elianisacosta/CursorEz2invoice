@@ -22,6 +22,8 @@ export default function InvoiceDocument({
   const customerAddress = formatCustomerAddress({ invoice, lineItems, payments, shop, invoiceTerms, model });
   const invoiceDate = formatInvoiceDate(invoice.created_at);
   const dueDate = formatInvoiceDate(invoice.due_date);
+  const invoiceTotal = Math.max(0, model.grandTotal - model.cardFee);
+  const balanceBeforeCardFee = Math.max(0, model.balanceDue - model.cardFee);
 
   return (
     <>
@@ -118,25 +120,49 @@ export default function InvoiceDocument({
             <div className="row">
               Tax ({(model.taxRate * 100).toFixed(0)}%): ${model.taxAmount.toFixed(2)}
             </div>
-            {model.cardFee > 0 && (
-              <div className="row">Card Processing Fee: ${model.cardFee.toFixed(2)}</div>
-            )}
-            <div className="row total">Total (incl. card fee): ${model.grandTotal.toFixed(2)}</div>
-            {(model.paidAmount > 0 || payments.length > 0) && (
+            <div className="row">
+              <strong>Invoice Total:</strong> ${invoiceTotal.toFixed(2)}
+            </div>
+            {(model.paidAmount > 0 || payments.length > 0 || model.cardFee > 0 || model.cardFeeCollected > 0) && (
               <div style={{ marginTop: 16 }}>
-                <div className="payment-row">
-                  <strong>Amount Paid:</strong> -${model.paidDisplay.toFixed(2)}
-                </div>
+                {model.paidDisplay > 0 && (
+                  <div className="payment-row">
+                    <strong>Paid Toward Invoice:</strong> -${model.paidDisplay.toFixed(2)}
+                  </div>
+                )}
+                {model.cardFeeCollected > 0 && (
+                  <>
+                    <div className="payment-row">
+                      <strong>Card Fee Collected:</strong> ${model.cardFeeCollected.toFixed(2)}
+                    </div>
+                    <div className="payment-row">
+                      <strong>Total Collected:</strong> ${model.totalCollected.toFixed(2)}
+                    </div>
+                  </>
+                )}
+                {model.cardFee > 0 && (
+                  <>
+                    <div className="payment-row">
+                      <strong>Balance Before Card Fee:</strong> ${balanceBeforeCardFee.toFixed(2)}
+                    </div>
+                    <div className="payment-row">
+                      <strong>Card Processing Fee ({(shop.cardProcessingFeePercentage || 0).toFixed(1)}%):</strong> ${model.cardFee.toFixed(2)}
+                    </div>
+                  </>
+                )}
                 <div
                   className="payment-row"
                   style={{
                     fontWeight: 700,
                     marginTop: 8,
-                    paddingTop: 8,
-                    borderTop: '1px solid #e5e7eb',
+                    padding: '10px 12px',
+                    border: '1px solid #bfdbfe',
+                    borderRadius: 6,
+                    background: '#eff6ff',
+                    color: '#1d4ed8',
                   }}
                 >
-                  <strong>Balance Due:</strong> ${model.balanceDue.toFixed(2)}
+                  <strong>{model.cardFee > 0 ? 'Total Due Today' : 'Balance Due'}:</strong> ${model.balanceDue.toFixed(2)}
                 </div>
                 <div className="payments-title">PAYMENT HISTORY:</div>
                 {payments.length > 0 ? (
@@ -154,8 +180,8 @@ export default function InvoiceDocument({
                     const base = amount - fee;
                     return (
                       <div key={`${idx}-${date}`} className="payment-history-row">
-                        {date} ({method}) ${base.toFixed(2)}
-                        {fee > 0 ? ` + $${fee.toFixed(2)} fee` : ''}
+                        {date} ({method}) ${amount.toFixed(2)}
+                        {fee > 0 ? ` (${base.toFixed(2)} applied + $${fee.toFixed(2)} fee)` : ''}
                       </div>
                     );
                   })

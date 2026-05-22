@@ -23,6 +23,7 @@ type ShopRow = {
   website?: string | null;
   tax_id?: string | null;
   invoice_terms?: string | null;
+  card_processing_fee_percentage?: number | null;
 };
 
 function buildShopAddressLines(shop: ShopRow): string {
@@ -40,6 +41,7 @@ function buildShopFromRow(shop: ShopRow, fallbackEmail: string): InvoiceDocument
     email: shop.email || fallbackEmail || '',
     website: shop.website || '',
     tax_id: shop.tax_id || '',
+    cardProcessingFeePercentage: Number(shop.card_processing_fee_percentage) || null,
   };
 }
 
@@ -140,7 +142,7 @@ export async function loadInvoiceDocumentData(
 
   if (shopId) {
     const extendedSelect =
-      'shop_name,address,city,state,zip_code,phone,email,website,tax_id,invoice_terms';
+      'shop_name,address,city,state,zip_code,phone,email,website,tax_id,invoice_terms,card_processing_fee_percentage';
     let shopData: ShopRow | null = null;
 
     const { data: extendedShop, error: extendedErr } = await supabase
@@ -172,7 +174,12 @@ export async function loadInvoiceDocumentData(
     invoiceTerms = options.invoiceTermsOverride;
   }
 
-  const model = buildInvoiceDocumentModel(invoice, payments, lineItems);
+  const model = buildInvoiceDocumentModel(
+    invoice,
+    payments,
+    lineItems,
+    shop.cardProcessingFeePercentage
+  );
 
   return {
     invoice,

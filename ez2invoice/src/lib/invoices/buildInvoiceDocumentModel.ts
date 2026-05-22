@@ -8,7 +8,8 @@ import type {
 export function buildInvoiceDocumentModel(
   invoice: InvoiceDocumentInvoice,
   payments: InvoiceDocumentPayment[],
-  lineItems: InvoiceDocumentLineItem[] = []
+  lineItems: InvoiceDocumentLineItem[] = [],
+  cardProcessingFeePercentage?: number | null
 ): InvoiceDocumentModel {
   const lineSubtotal = lineItems.reduce(
     (sum, item) => sum + (Number(item.total_price) || 0),
@@ -36,14 +37,45 @@ export function buildInvoiceDocumentModel(
     totalBase = Math.max(0, subtotal - discount + taxAmount);
   }
 
-  const paidAmount = Number(invoice.paid_amount) || 0;
-  const grossPaidFromPayments = payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
-  const paidDisplay = grossPaidFromPayments > 0 ? grossPaidFromPayments : paidAmount;
-  const paidCardFees = payments.reduce((sum, p) => sum + (Number(p.card_fee) || 0), 0);
   const fallbackCardFee = Number(invoice.card_fee_amount) || 0;
-  const cardFee = paidCardFees > 0 ? paidCardFees : fallbackCardFee;
+  let cardFeeRate = Number(cardProcessingFeePercentage) || 0;
+  if (cardFeeRate > 1) cardFeeRate = cardFeeRate / 100;
+  if (cardFeeRate <= 0 && fallbackCardFee > 0 && totalBase > 0) {
+    cardFeeRate = fallbackCardFee / totalBase;
+  }
+  const getPaymentCardFee = (payment: InvoiceDocumentPayment) => {
+    const explicitFee = Number(payment.card_fee) || 0;
+    if (explicitFee > 0) return Math.round(explicitFee * 100) / 100;
+    if (invoice.apply_card_fee !== true || payment.payment_method !== 'card' || cardFeeRate <= 0) {
+      return 0;
+    }
+    const amount = Number(payment.amount) || 0;
+    return Math.max(0, Math.round((amount - Math.round((amount / (1 + cardFeeRate)) * 100) / 100) * 100) / 100);
+  };
+  const paidAmount = Number(invoice.paid_amount) || 0;
+  const paidDisplay = payments.length > 0
+    ? payments.reduce((sum, p) => {
+        const amount = Number(p.amount) || 0;
+        const cardFee = getPaymentCardFee(p);
+        if (cardFee > 0) return sum + Math.max(0, amount - cardFee);
+        if (invoice.apply_card_fee === true && p.payment_method === 'card' && cardFeeRate > 0) {
+          return sum + Math.round((amount / (1 + cardFeeRate)) * 100) / 100;
+        }
+        return sum + amount;
+      }, 0)
+    : paidAmount;
+  const paidTowardInvoice = Math.min(totalBase, paidDisplay);
+  const cardFeeCollected = Math.round(
+    payments.reduce((sum, p) => sum + getPaymentCardFee(p), 0) * 100
+  ) / 100;
+  const totalCollected = Math.round((paidTowardInvoice + cardFeeCollected) * 100) / 100;
+  const baseBalance = Math.max(0, totalBase - paidTowardInvoice);
+  const cardFee =
+    invoice.apply_card_fee === true && cardFeeRate > 0
+      ? Math.round(baseBalance * cardFeeRate * 100) / 100
+      : 0;
   const grandTotal = totalBase + cardFee;
-  const balanceDue = Math.max(0, grandTotal - paidDisplay);
+  const balanceDue = Math.max(0, baseBalance + cardFee);
   const showSignature =
     (invoice.status || '').toLowerCase() === 'paid' || balanceDue <= 0.01;
 
@@ -53,9 +85,11 @@ export function buildInvoiceDocumentModel(
     taxRate,
     taxAmount,
     cardFee,
+    cardFeeCollected,
+    totalCollected,
     grandTotal,
     paidAmount,
-    paidDisplay,
+    paidDisplay: paidTowardInvoice,
     balanceDue,
     showSignature,
   };

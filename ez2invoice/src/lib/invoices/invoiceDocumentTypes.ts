@@ -23,6 +23,7 @@ export type InvoiceDocumentInvoice = {
   tax_amount?: number | null;
   total_amount?: number | null;
   paid_amount?: number | null;
+  apply_card_fee?: boolean | null;
   card_fee_amount?: number | null;
   notes?: string | null;
   customer?: InvoiceDocumentCustomer | null;
@@ -52,6 +53,7 @@ export type InvoiceDocumentShop = {
   email: string;
   website: string;
   tax_id: string;
+  cardProcessingFeePercentage?: number | null;
 };
 
 export type InvoiceDocumentModel = {
@@ -60,6 +62,8 @@ export type InvoiceDocumentModel = {
   taxRate: number;
   taxAmount: number;
   cardFee: number;
+  cardFeeCollected: number;
+  totalCollected: number;
   grandTotal: number;
   paidAmount: number;
   paidDisplay: number;

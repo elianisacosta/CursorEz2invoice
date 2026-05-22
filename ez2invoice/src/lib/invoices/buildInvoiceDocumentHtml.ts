@@ -16,6 +16,22 @@ export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
   const invoiceDate = formatInvoiceDate(invoice.created_at);
   const dueDate = formatInvoiceDate(invoice.due_date);
   const companyDetails = formatCompanyDetails(shop);
+  const invoiceTotal = Math.max(0, model.grandTotal - model.cardFee);
+  const balanceBeforeCardFee = Math.max(0, model.balanceDue - model.cardFee);
+  const paidBlock =
+    model.paidDisplay > 0
+      ? `<div class="payment-row"><strong>Paid Toward Invoice:</strong> -$${model.paidDisplay.toFixed(2)}</div>`
+      : '';
+  const collectedFeeBlock =
+    model.cardFeeCollected > 0
+      ? `<div class="payment-row"><strong>Card Fee Collected:</strong> $${model.cardFeeCollected.toFixed(2)}</div>
+         <div class="payment-row"><strong>Total Collected:</strong> $${model.totalCollected.toFixed(2)}</div>`
+      : '';
+  const cardFeeBlock =
+    model.cardFee > 0
+      ? `<div class="payment-row"><strong>Balance Before Card Fee:</strong> $${balanceBeforeCardFee.toFixed(2)}</div>
+         <div class="payment-row"><strong>Card Processing Fee (${Number(shop.cardProcessingFeePercentage || 0).toFixed(1)}%):</strong> $${model.cardFee.toFixed(2)}</div>`
+      : '';
 
   const lineRows =
     lineItems.length === 0
@@ -40,11 +56,13 @@ export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
           .join('');
 
   const paymentBlock =
-    model.paidAmount > 0 || payments.length > 0
+    model.paidAmount > 0 || payments.length > 0 || model.cardFee > 0 || model.cardFeeCollected > 0
       ? `<div style="margin-top:16px">
-          <div class="payment-row"><strong>Amount Paid:</strong> -$${model.paidDisplay.toFixed(2)}</div>
-          <div class="payment-row" style="font-weight:700;margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb">
-            <strong>Balance Due:</strong> $${model.balanceDue.toFixed(2)}
+          ${paidBlock}
+          ${collectedFeeBlock}
+          ${cardFeeBlock}
+          <div class="payment-row" style="font-weight:700;margin-top:8px;padding:10px 12px;border:1px solid #bfdbfe;border-radius:6px;background:#eff6ff;color:#1d4ed8">
+            <strong>${model.cardFee > 0 ? 'Total Due Today' : 'Balance Due'}:</strong> $${model.balanceDue.toFixed(2)}
           </div>
           <div class="payments-title">PAYMENT HISTORY:</div>
           ${
@@ -62,7 +80,7 @@ export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
                     const amount = Number(p.amount) || 0;
                     const fee = Number(p.card_fee) || 0;
                     const base = amount - fee;
-                    return `<div class="payment-history-row">${escapeHtml(date)} (${method}) $${base.toFixed(2)}${fee > 0 ? ` + $${fee.toFixed(2)} fee` : ''}</div>`;
+                    return `<div class="payment-history-row">${escapeHtml(date)} (${method}) $${amount.toFixed(2)}${fee > 0 ? ` ($${base.toFixed(2)} applied + $${fee.toFixed(2)} fee)` : ''}</div>`;
                   })
                   .join('')
               : '<div class="payment-history-row">No payment history</div>'
@@ -146,8 +164,7 @@ export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
         <div class="row">Subtotal: $${model.subtotal.toFixed(2)}</div>
         ${model.discount > 0 ? `<div class="row">Discount: -$${model.discount.toFixed(2)}</div>` : ''}
         <div class="row">Tax (${(model.taxRate * 100).toFixed(0)}%): $${model.taxAmount.toFixed(2)}</div>
-        ${model.cardFee > 0 ? `<div class="row">Card Processing Fee: $${model.cardFee.toFixed(2)}</div>` : ''}
-        <div class="row total">Total (incl. card fee): $${model.grandTotal.toFixed(2)}</div>
+        <div class="row"><strong>Invoice Total:</strong> $${invoiceTotal.toFixed(2)}</div>
         ${paymentBlock}
       </div>
     </div>

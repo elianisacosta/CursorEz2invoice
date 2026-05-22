@@ -2120,19 +2120,45 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     return round2(rows.reduce((s, p: any) => s + (Number(p.amount) || 0), 0));
   };
 
-  /** Sum of card_fee portions already allocated to payment rows. */
-  const getAllocatedCardFeesForInvoice = (invoiceId: string | undefined) => {
+  const isCardFeeEnabledForInvoice = (
+    inv?: Invoice | { apply_card_fee?: boolean | null } | null
+  ) => (inv as any)?.apply_card_fee === true;
+
+  const getCardFeeForBaseBalance = (baseBalance: number, feeEnabled: boolean) => {
+    const rate = (cardProcessingFeePercentage || 0) / 100;
+    return feeEnabled && rate > 0 ? round2(Math.max(0, baseBalance) * rate) : 0;
+  };
+
+  const getPaymentCardFeePortion = (
+    payment: { amount?: number | null; card_fee?: number | null; payment_method?: string | null },
+    inv?: Invoice | { apply_card_fee?: boolean | null } | null
+  ) => {
+    const explicitFee = Number(payment.card_fee) || 0;
+    if (explicitFee > 0) return round2(explicitFee);
+
+    const method = payment.payment_method === 'finance' ? 'financing' : payment.payment_method;
+    const rate = (cardProcessingFeePercentage || 0) / 100;
+    if (!isCardFeeEnabledForInvoice(inv) || method !== 'card' || rate <= 0) return 0;
+
+    const amount = Number(payment.amount) || 0;
+    return Math.max(0, round2(amount - round2(amount / (1 + rate))));
+  };
+
+  const getCardFeeCollectedForInvoice = (
+    invoiceId: string | undefined,
+    inv?: Invoice | { apply_card_fee?: boolean | null } | null
+  ) => {
     if (!invoiceId) return 0;
     return round2(
       invoicePayments
         .filter((p: any) => p.invoice_id === invoiceId)
-        .reduce((s, p: any) => s + (Number(p.card_fee) || 0), 0)
+        .reduce((sum, p: any) => sum + getPaymentCardFeePortion(p, inv), 0)
     );
   };
 
   /**
    * Base paid toward invoice (sum of base portions on payment rows). No rows → use invoices.paid_amount (base).
-   * If `card_fee` is missing on a row but the method is card and the invoice has a card fee, treat `amount` as gross
+   * If `card_fee` is missing on a row but the method is card and the invoice fee toggle is on, treat `amount` as gross
    * and split with the shop rate (same as insert path) so validation matches Balance Due / Pay Half.
    */
   const getBasePaidForInvoice = (
@@ -2143,8 +2169,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     if (!invoiceId) return round2(fallbackPaidFromInvoice);
     const rows = invoicePayments.filter((p: any) => p.invoice_id === invoiceId);
     if (rows.length === 0) return round2(fallbackPaidFromInvoice);
-    const feeOn =
-      (inv as any)?.apply_card_fee === true || (Number((inv as any)?.card_fee_amount) || 0) > 0;
+    const feeOn = isCardFeeEnabledForInvoice(inv);
     const rate = (cardProcessingFeePercentage || 0) / 100;
     return round2(
       rows.reduce((s, p: any) => {
@@ -2161,22 +2186,20 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     );
   };
 
+  const getBaseBalanceDueForInvoice = (inv: Invoice) => {
+    const baseTotal = Number(inv.total_amount) || 0;
+    const basePaid = getBasePaidForInvoice(inv.id, Number(inv.paid_amount) || 0, inv);
+    return Math.max(0, round2(baseTotal - basePaid));
+  };
+
   /**
-   * Balance due = invoice total (base + full invoice card fee) minus gross paid so far.
-   * This matches "two equal card payments" (each half of total incl. fee) when both are card.
+   * Balance due = unpaid base balance plus an optional fee on that unpaid balance.
+   * The fee toggle controls whether a card fee is shown/calculated; payment method alone never enables it.
    */
   const getBalanceDueFromPayments = (inv: Invoice) => {
-    const baseTotal = Number(inv.total_amount) || 0;
-    const fullCardFee = Number((inv as any).card_fee_amount) || 0;
-    const feeOn = (inv as any).apply_card_fee === true || fullCardFee > 0;
-    const totalInclFee = round2(baseTotal + (feeOn ? fullCardFee : 0));
-    const gross = getGrossPaidForInvoice(inv.id);
-    if (gross > 0) return Math.max(0, round2(totalInclFee - gross));
-    if (inv.balance_due != null && !Number.isNaN(Number(inv.balance_due))) {
-      return Math.max(0, Number(inv.balance_due));
-    }
-    const paidBase = Number(inv.paid_amount) || 0;
-    return Math.max(0, round2(totalInclFee - paidBase));
+    const baseBalance = getBaseBalanceDueForInvoice(inv);
+    const cardFee = getCardFeeForBaseBalance(baseBalance, isCardFeeEnabledForInvoice(inv));
+    return Math.max(0, round2(baseBalance + cardFee));
   };
 
   const updateWorkOrderSafely = async (workOrderId: string, updates: Record<string, unknown>, expectedUpdatedAt?: string | null) => {
@@ -2220,7 +2243,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       );
       const baseRemainingBefore = Math.max(0, invoiceBaseTotal - alreadyPaidBase);
       const cardFeeRate = (cardProcessingFeePercentage || 0) / 100;
-      const feeEnabledOnInvoice = (latestInvoice as any).apply_card_fee === true || (Number((latestInvoice as any).card_fee_amount) || 0) > 0;
+      const feeEnabledOnInvoice = (latestInvoice as any).apply_card_fee === true;
       const isCardPayment = normalizedMethod === 'card' && feeEnabledOnInvoice;
 
       // For card transactions, user-entered payment amount is gross (base + fee).
@@ -2247,6 +2270,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       const newPaidAmount = round2(alreadyPaidBase + paymentBasePortion);
       const remainingBase = Math.max(0, invoiceBaseTotal - newPaidAmount);
+      const nextCardFeeAmount = feeEnabledOnInvoice
+        ? getCardFeeForBaseBalance(remainingBase, true)
+        : 0;
 
       // Determine status based on remaining base amount (fees are per transaction only)
       let newStatus = latestInvoice.status;
@@ -2319,6 +2345,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       const invoiceUpdatePayload = {
         status: newStatus,
         paid_amount: newPaidAmount,
+        card_fee_amount: nextCardFeeAmount,
         paid_at: newStatus === 'paid' ? new Date().toISOString() : latestInvoice.paid_at,
         updated_at: new Date().toISOString(),
       };
@@ -2431,13 +2458,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       const { data: restRows } = await supabase
         .from('invoice_payments')
-        .select('amount, card_fee')
+        .select('amount, card_fee, payment_method')
         .eq('invoice_id', invoiceId);
-      const newPaid = round2((restRows || []).reduce((s, r: any) => s + ((Number(r.amount) || 0) - (Number((r as any).card_fee) || 0)), 0));
 
       const { data: invRow, error: invErr } = await supabase
         .from('invoices')
-        .select('total_amount, paid_at')
+        .select('total_amount, paid_at, apply_card_fee')
         .eq('id', invoiceId)
         .maybeSingle();
 
@@ -2450,7 +2476,20 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       }
 
       const invoiceTotal = Number((invRow as any).total_amount) || 0;
+      const feeEnabled = (invRow as any).apply_card_fee === true;
+      const rate = (cardProcessingFeePercentage || 0) / 100;
+      const newPaid = round2((restRows || []).reduce((s, r: any) => {
+        const amount = Number(r.amount) || 0;
+        const cardFee = Number((r as any).card_fee) || 0;
+        if (cardFee > 0) return s + (amount - cardFee);
+        const method = r.payment_method === 'finance' ? 'financing' : r.payment_method;
+        if (feeEnabled && method === 'card' && rate > 0) {
+          return s + round2(amount / (1 + rate));
+        }
+        return s + amount;
+      }, 0));
       const remaining = invoiceTotal - newPaid;
+      const nextCardFeeAmount = getCardFeeForBaseBalance(remaining, feeEnabled);
 
       let newStatus: string;
       if (remaining <= 0.01) {
@@ -2465,6 +2504,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         .from('invoices')
         .update({
           paid_amount: newPaid,
+          card_fee_amount: nextCardFeeAmount,
           status: newStatus,
           paid_at: newStatus === 'paid' ? new Date().toISOString() : null,
         })
@@ -2520,15 +2560,20 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     try {
       const { data: invRow } = await supabase
         .from('invoices')
-        .select('total_amount')
+        .select('total_amount, apply_card_fee')
         .eq('id', invoiceId)
         .maybeSingle();
       const invoiceTotal = Number((invRow as any)?.total_amount) || 0;
+      const nextCardFeeAmount = getCardFeeForBaseBalance(
+        invoiceTotal,
+        (invRow as any)?.apply_card_fee === true
+      );
 
       const { error } = await supabase
         .from('invoices')
         .update({
           paid_amount: 0,
+          card_fee_amount: nextCardFeeAmount,
           status: invoiceTotal > 0.01 ? 'unpaid' : 'pending',
           paid_at: null,
         })
@@ -3053,10 +3098,20 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     const taxRate = invoice.tax_rate || 0;
     const taxAmount = invoice.tax_amount || 0;
     const totalBase = invoice.total_amount || 0;
-    const paidAmount = invoice.paid_amount || 0;
-    const cardFeeAmount = Number((invoice as any).card_fee_amount) || 0;
-    const totalInclFee = totalBase + cardFeeAmount;
-    const balanceDue = invoice.balance_due != null ? Math.max(0, Number(invoice.balance_due)) : Math.max(0, totalInclFee - paidAmount);
+    const paidTowardInvoice = Math.min(
+      totalBase,
+      getBasePaidForInvoice(invoice.id, Number(invoice.paid_amount) || 0, invoice)
+    );
+    const cardFeeCollected = getCardFeeCollectedForInvoice(invoice.id, invoice);
+    const totalCollected = round2(paidTowardInvoice + cardFeeCollected);
+    const balanceBeforeCardFee = Math.max(0, round2(totalBase - paidTowardInvoice));
+    const cardFeeAmount = getCardFeeForBaseBalance(
+      balanceBeforeCardFee,
+      isCardFeeEnabledForInvoice(invoice)
+    );
+    const balanceDue = Math.max(0, round2(balanceBeforeCardFee + cardFeeAmount));
+    const showCurrentCardFee = isCardFeeEnabledForInvoice(invoice) && balanceBeforeCardFee > 0.005 && cardFeeAmount > 0.005;
+    const dueLabel = showCurrentCardFee ? 'Total Due Today:' : 'Balance Due:';
     const statusLabel = (invoice.computed_status || invoice.status || 'Pending').toString();
     const statusDisplay = statusLabel.charAt(0).toUpperCase() + statusLabel.slice(1).toLowerCase();
 
@@ -3127,26 +3182,40 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${taxAmount.toFixed(2)}</strong></td>
               </tr>
               ` : ''}
-              ${cardFeeAmount > 0 ? `
+              <tr style="background-color: #f9fafb; font-size: 14px;">
+                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Invoice Total:</strong></td>
+                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${totalBase.toFixed(2)}</strong></td>
+              </tr>
+              ${paidTowardInvoice > 0 ? `
+              <tr style="background-color: #f0fdf4;">
+                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Paid Toward Invoice:</strong></td>
+                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>-$${paidTowardInvoice.toFixed(2)}</strong></td>
+              </tr>
+              ` : ''}
+              ${cardFeeCollected > 0 ? `
+              <tr style="background-color: #fff7ed;">
+                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Card Fee Collected:</strong></td>
+                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${cardFeeCollected.toFixed(2)}</strong></td>
+              </tr>
+              <tr style="background-color: #f9fafb;">
+                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Total Collected:</strong></td>
+                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${totalCollected.toFixed(2)}</strong></td>
+              </tr>
+              ` : ''}
+              ${showCurrentCardFee ? `
+              <tr style="background-color: #f9fafb;">
+                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Balance Before Card Fee:</strong></td>
+                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${balanceBeforeCardFee.toFixed(2)}</strong></td>
+              </tr>
               <tr style="background-color: #f9fafb;">
                 <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Card Processing Fee:</strong></td>
                 <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${cardFeeAmount.toFixed(2)}</strong></td>
               </tr>
               ` : ''}
               <tr style="background-color: #dbeafe; font-size: 18px;">
-                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Total (incl. card fee):</strong></td>
-                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${totalInclFee.toFixed(2)}</strong></td>
+                <td colspan="3" style="padding: 14px; text-align: right; border: 1px solid #bfdbfe;"><strong>${dueLabel}</strong></td>
+                <td style="padding: 14px; text-align: right; border: 1px solid #bfdbfe; color: #1d4ed8;"><strong>$${balanceDue.toFixed(2)}</strong></td>
               </tr>
-              ${paidAmount > 0 ? `
-              <tr style="background-color: #f0fdf4;">
-                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Paid:</strong></td>
-                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${paidAmount.toFixed(2)}</strong></td>
-              </tr>
-              <tr style="background-color: #fef3c7;">
-                <td colspan="3" style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>Balance Due:</strong></td>
-                <td style="padding: 12px; text-align: right; border: 1px solid #e5e7eb;"><strong>$${balanceDue.toFixed(2)}</strong></td>
-              </tr>
-              ` : ''}
             </tbody>
           </table>
         </div>
@@ -4529,8 +4598,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         ? formatDateOnly(invoice.due_date, { month: 'short', day: 'numeric', year: 'numeric' })
         : '';
       const totalAmount = invoice.total_amount || 0;
-      const paidAmount = invoice.paid_amount || 0;
-      const balanceDue = invoice.balance_due != null ? Number(invoice.balance_due) : Math.max(0, totalAmount - paidAmount);
+      const paidAmount = getBasePaidForInvoice(invoice.id, Number(invoice.paid_amount) || 0, invoice);
+      const balanceDue = getInvoiceOutstandingAmount(invoice);
       // Use computed_status from view when present, else derive
       let status = (invoice.computed_status ?? '').toLowerCase() || invoice.status || 'pending';
       if (totalAmount === 0) {
@@ -6982,12 +7051,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   };
 
   const getInvoiceOutstandingAmount = (invoice: Invoice): number => {
-    if (invoice.balance_due != null && invoice.balance_due !== undefined) {
-      return Number(invoice.balance_due);
-    }
-    const total = invoice.total_amount || 0;
-    const paid = invoice.paid_amount || 0;
-    return Math.max(0, total - paid);
+    const baseTotal = Number(invoice.total_amount) || 0;
+    const basePaid = getBasePaidForInvoice(invoice.id, Number(invoice.paid_amount) || 0, invoice);
+    const baseBalance = Math.max(0, round2(baseTotal - basePaid));
+    return Math.max(
+      0,
+      round2(baseBalance + getCardFeeForBaseBalance(baseBalance, isCardFeeEnabledForInvoice(invoice)))
+    );
   };
 
   const getInvoiceAgingBucket = (invoice: Invoice): AgingBucket => {
@@ -7098,8 +7168,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       }
       const status = (invoice.computed_status ?? '').toLowerCase() || (() => {
         const total = invoice.total_amount || 0;
-        const paid = invoice.paid_amount || 0;
-        const bal = (invoice.balance_due != null ? Number(invoice.balance_due) : total - paid);
+        const paid = getBasePaidForInvoice(invoice.id, Number(invoice.paid_amount) || 0, invoice);
+        const bal = getInvoiceOutstandingAmount(invoice);
         if (total <= 0) return 'pending';
         if (bal <= 0.01) return 'paid';
         if (paid > 0.01) return 'partial';
@@ -12568,24 +12638,38 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               {/* Invoice stats (respects current search/status filter) */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                  <div className="text-sm font-medium text-gray-600">Total Due Today</div>
                   <div className="text-2xl font-bold text-gray-900">
-                    {formatCurrency(filteredInvoicesForList.reduce((sum, inv) => sum + (inv.total_amount || 0) + (Number((inv as any).card_fee_amount) || 0), 0))}
+                    {formatCurrency(filteredInvoicesForList.reduce((sum, inv) => {
+                      const baseTotal = Number(inv.total_amount) || 0;
+                      const baseBalance = getBaseBalanceDueForInvoice(inv);
+                      return sum + baseTotal + getCardFeeForBaseBalance(baseBalance, isCardFeeEnabledForInvoice(inv));
+                    }, 0))}
                   </div>
-                  <div className="text-sm text-gray-600">Total (incl. card fee)</div>
+                  <div className="text-sm text-gray-600">Incl. active card fees</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                  <div className="text-sm font-medium text-gray-600">Paid</div>
                   <div className="text-2xl font-bold text-green-700">
-                    {formatCurrency(filteredInvoicesForList.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0))}
+                    {formatCurrency(filteredInvoicesForList.reduce(
+                      (sum, inv) => sum + Math.min(
+                        Number(inv.total_amount) || 0,
+                        getBasePaidForInvoice(inv.id, Number(inv.paid_amount) || 0, inv)
+                      ),
+                      0
+                    ))}
                   </div>
-                  <div className="text-sm text-gray-600">Paid</div>
+                  <div className="text-sm text-gray-600">Invoice payments only</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                  <div className="text-sm font-medium text-gray-600">Outstanding</div>
                   <div className="text-2xl font-bold text-red-600">
                     {formatCurrency(filteredInvoicesForList.reduce((sum, inv) => sum + (getInvoiceOutstandingAmount(inv)), 0))}
                   </div>
-                  <div className="text-sm text-gray-600">Outstanding</div>
+                  <div className="text-sm text-gray-600">Incl. active card fees</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                  <div className="text-sm font-medium text-gray-600">Overdue</div>
                   <div className="text-2xl font-bold text-red-600">
                     {filteredInvoicesForList.filter(inv => {
                       const outstanding = getInvoiceOutstandingAmount(inv);
@@ -12594,7 +12678,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       return new Date(inv.due_date) < new Date();
                     }).length}
                   </div>
-                  <div className="text-sm text-gray-600">Overdue</div>
+                  <div className="text-sm text-gray-600">Invoices</div>
                 </div>
               </div>
 
@@ -12896,8 +12980,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     </div>
                   ) : (
                     <div className="min-w-0 overflow-x-hidden md:overflow-x-auto">
-                      {/* Table Header - Desktop Only (Total | Paid | Balance Due) */}
-                      <div className="hidden md:grid gap-2 text-xs font-medium text-gray-500 uppercase tracking-wider mb-3 min-w-0" style={{ gridTemplateColumns: 'minmax(110px, 1.1fr) minmax(130px, 1.35fr) minmax(90px, 0.95fr) minmax(84px, 0.8fr) minmax(84px, 0.8fr) minmax(90px, 0.9fr) minmax(80px, 0.8fr) minmax(95px, 0.9fr) minmax(170px, 1.25fr)' }}>
+                      {/* Table Header - Desktop Only */}
+                      <div className="hidden md:grid gap-2 text-xs font-medium text-gray-500 uppercase tracking-wider mb-3 min-w-0" style={{ gridTemplateColumns: 'minmax(110px, 1.1fr) minmax(150px, 1.5fr) minmax(100px, 1fr) minmax(120px, 1.05fr) minmax(90px, 0.85fr) minmax(105px, 0.95fr) minmax(170px, 1.25fr)' }}>
                         <button
                           type="button"
                           onClick={() => {
@@ -12907,7 +12991,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           }}
                           className="min-w-0 flex items-center gap-1 text-left hover:text-gray-900 focus:outline-none focus:ring-0"
                         >
-                          Invoice ID
+                          Invoice #
                           {invoiceSortDir === 'desc' ? (
                             <ChevronDown className="h-4 w-4 shrink-0" aria-hidden />
                           ) : (
@@ -12916,8 +13000,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         </button>
                         <div className="min-w-0">Customer</div>
                         <div className="min-w-0">Work Order</div>
-                        <div className="min-w-0 text-right">Total</div>
-                        <div className="min-w-0 text-right">Paid</div>
                         <div className="min-w-0 text-right">Balance Due</div>
                         <div className="min-w-0">Status</div>
                         <div className="min-w-0">Date</div>
@@ -12945,16 +13027,19 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             const customerName = getInvoiceCustomerName(invoice);
                             const customerPhone = invoice.customer?.phone || '';
                             const baseTotal = invoice.total_amount || 0;
-                            let cardFeeAmount = Number((invoice as any).card_fee_amount) || 0;
-                            if (cardFeeAmount <= 0 && ((invoice as any).apply_card_fee === true || (invoice.paid_amount || 0) > baseTotal)) {
-                              cardFeeAmount = Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100;
-                            }
-                            const totalAmount = baseTotal + cardFeeAmount;
-                            const paidAmount = invoice.paid_amount || 0;
-                            const balanceDue = invoice.balance_due != null ? Number(invoice.balance_due) : Math.max(0, totalAmount - paidAmount);
+                            const basePaidAmount = Math.min(
+                              baseTotal,
+                              getBasePaidForInvoice(invoice.id, Number(invoice.paid_amount) || 0, invoice)
+                            );
+                            const baseBalanceDue = Math.max(0, round2(baseTotal - basePaidAmount));
+                            const cardFeeAmount = getCardFeeForBaseBalance(
+                              baseBalanceDue,
+                              isCardFeeEnabledForInvoice(invoice)
+                            );
+                            const balanceDue = Math.max(0, round2(baseBalanceDue + cardFeeAmount));
                             // Use computed_status from view when present, else derive
                             const displayStatus = (invoice.computed_status ?? '').toLowerCase() || (
-                              totalAmount <= 0 ? 'pending' : balanceDue <= 0.01 ? 'paid' : paidAmount > 0 ? 'partial' : 'unpaid'
+                              baseTotal <= 0 ? 'pending' : balanceDue <= 0.01 ? 'paid' : basePaidAmount > 0 ? 'partial' : 'unpaid'
                             );
                             
                             const statusColors: { [key: string]: string } = {
@@ -12982,8 +13067,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     </div>
                                   </div>
                                   <div className="text-right">
-                                    <div className="text-xs text-gray-500 space-y-0.5 mb-1">
-                                      <div>Total {formatCurrency(totalAmount)} · Paid {formatCurrency(paidAmount)} · Due {formatCurrency(balanceDue)}</div>
+                                    <div className="text-xs text-gray-500 mb-1">
+                                      <div>Balance Due</div>
+                                      <div className="text-base font-semibold text-gray-900">{formatCurrency(balanceDue)}</div>
                                     </div>
                                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColors[displayStatus as keyof typeof statusColors] || 'bg-gray-100 text-gray-800'}`}>
                                       {displayStatus ? displayStatus.charAt(0).toUpperCase() + displayStatus.slice(1) : 'Pending'}
@@ -13062,10 +13148,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                         // Set up the edit modal
                                         setEditingInvoice(invoice);
                                         // Set card fee toggle immediately from invoice so modal shows correct state
-                                        const _s = invoice.subtotal || 0;
-                                        const _t = invoice.tax_amount || 0;
-                                        const _tot = invoice.total_amount || 0;
-                                        setApplyCardFee((invoice as any).apply_card_fee === true || (Number((invoice as any).card_fee_amount) || 0) > 0 || _tot > (_s + _t) * 1.001);
+                                        setApplyCardFee((invoice as any).apply_card_fee === true);
                                         // Format created_at date for the date input (YYYY-MM-DD)
                                         // Always ensure we have a valid date string - default to today
                                         let invoiceDate = getTodayDate();
@@ -13250,15 +13333,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                           }
                                         }
                                         setInvoiceItemSearch({});
-                                        // Use stored apply_card_fee when present; else infer from total > subtotal+tax (legacy)
-                                        const subtotal = invoice.subtotal || 0;
-                                        const tax = invoice.tax_amount || 0;
-                                        const total = invoice.total_amount || 0;
-                                        const expectedTotal = subtotal + tax;
+                                        // Respect the stored toggle only; stale card_fee_amount must not turn fees on.
                                         const applyFromInvoice = (invoice as any).apply_card_fee;
-                                        const cardFeeAmt = (invoice as any).card_fee_amount;
-                                        const inferred = total > expectedTotal * 1.001;
-                                        setApplyCardFee(applyFromInvoice === true || (Number(cardFeeAmt) || 0) > 0 || inferred);
+                                        setApplyCardFee(applyFromInvoice === true);
                                         setShowCreateInvoiceModal(true);
                                       } catch (error) {
                                         console.error('Error loading invoice for edit:', error);
@@ -13280,8 +13357,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 </div>
                               </div>
 
-                              {/* Desktop Table View (Total | Paid | Balance Due) */}
-                              <div className="hidden md:grid gap-2 items-center py-2 border-b border-gray-100 hover:bg-gray-50 min-w-0 text-sm" style={{ gridTemplateColumns: 'minmax(110px, 1.1fr) minmax(130px, 1.35fr) minmax(90px, 0.95fr) minmax(84px, 0.8fr) minmax(84px, 0.8fr) minmax(90px, 0.9fr) minmax(80px, 0.8fr) minmax(95px, 0.9fr) minmax(170px, 1.25fr)' }}>
+                              {/* Desktop Table View */}
+                              <div className="hidden md:grid gap-2 items-center py-2 border-b border-gray-100 hover:bg-gray-50 min-w-0 text-sm" style={{ gridTemplateColumns: 'minmax(110px, 1.1fr) minmax(150px, 1.5fr) minmax(100px, 1fr) minmax(120px, 1.05fr) minmax(90px, 0.85fr) minmax(105px, 0.95fr) minmax(170px, 1.25fr)' }}>
                                 <div className="font-medium text-gray-900 min-w-0 whitespace-nowrap" title={formatInvoiceNumber(invoice.invoice_number)}>
                                   {formatInvoiceNumber(invoice.invoice_number)}
                                 </div>
@@ -13291,12 +13368,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 </div>
                                 <div className="text-sm text-gray-600 min-w-0 truncate">
                                   {getWorkOrderNumber(invoice.work_order_id)}
-                                </div>
-                                <div className="font-medium text-gray-900 min-w-0 whitespace-nowrap text-right">
-                                  {formatCurrency(totalAmount)}
-                                </div>
-                                <div className="font-medium text-green-700 min-w-0 whitespace-nowrap text-right">
-                                  {formatCurrency(paidAmount)}
                                 </div>
                                 <div className="font-semibold text-gray-900 min-w-0 whitespace-nowrap text-right">
                                   {formatCurrency(balanceDue)}
@@ -13406,11 +13477,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                       // Set up the edit modal
                       setEditingInvoice(invoice);
                       // Set card fee toggle immediately from invoice so modal shows correct state (before any more async work)
-                      const _sub = invoice.subtotal || 0;
-                      const _tax = invoice.tax_amount || 0;
-                      const _total = invoice.total_amount || 0;
-                      const _expected = _sub + _tax;
-                      setApplyCardFee((invoice as any).apply_card_fee === true || (Number((invoice as any).card_fee_amount) || 0) > 0 || _total > _expected * 1.001);
+                      setApplyCardFee((invoice as any).apply_card_fee === true);
                       // Convert created_at to YYYY-MM-DD format for the date input
                       const invoiceDate = invoice.created_at 
                         ? new Date(invoice.created_at).toISOString().split('T')[0]
@@ -13529,15 +13596,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                         }
                                       }
                                       setInvoiceItemSearch({});
-                                      // Use invoice.apply_card_fee when present, else infer from total > subtotal+tax
-                                      const subtotal = invoice.subtotal || 0;
-                                      const tax = invoice.tax_amount || 0;
-                                      const total = invoice.total_amount || 0;
-                                      const expectedTotal = subtotal + tax;
+                                      // Respect the stored toggle only; stale card_fee_amount must not turn fees on.
                                       const applyFromInvoiceDesktop = (invoice as any).apply_card_fee;
-                                      const cardFeeAmtDesktop = (invoice as any).card_fee_amount;
-                                      const inferredDesktop = total > expectedTotal * 1.001;
-                                      setApplyCardFee(applyFromInvoiceDesktop === true || (Number(cardFeeAmtDesktop) || 0) > 0 || inferredDesktop);
+                                      setApplyCardFee(applyFromInvoiceDesktop === true);
                                       setShowCreateInvoiceModal(true);
                                     } catch (error) {
                                       console.error('Error loading invoice for edit:', error);
@@ -13701,7 +13762,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             {filteredOutstandingInvoices.map((invoice) => {
                               const bucket = getInvoiceAgingBucket(invoice);
                               const outstandingAmount = getInvoiceOutstandingAmount(invoice);
-                              const totalWithFee = (invoice.total_amount ?? 0) + (Number((invoice as any).card_fee_amount) || 0);
+                              const baseBalance = getBaseBalanceDueForInvoice(invoice);
+                              const totalWithFee =
+                                (invoice.total_amount ?? 0) +
+                                getCardFeeForBaseBalance(baseBalance, isCardFeeEnabledForInvoice(invoice));
                               return (
                                 <tr key={invoice.id} className="hover:bg-gray-50">
                                   <td className="px-6 py-4 font-medium text-gray-900">
@@ -19895,24 +19959,23 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
             </div>
 
             <div className="p-6">
-              {/* Invoice Summary: total incl. fee is fixed; balance = total - gross paid (card fee split across card payments). */}
+              {/* Invoice Summary: card fee is calculated from the current unpaid base balance only. */}
               {(() => {
                 const baseTotal = (invoiceForPayment.total_amount ?? 0);
-                const fullInvCardFee = Number((invoiceForPayment as any).card_fee_amount) || 0;
-                const feeEnabledOnInvoice =
-                  (invoiceForPayment as any).apply_card_fee === true || fullInvCardFee > 0;
-                const totalInclFee = round2(baseTotal + (feeEnabledOnInvoice ? fullInvCardFee : 0));
-                const grossPaid = getGrossPaidForInvoice(invoiceForPayment.id);
-                const paidDisplay =
-                  grossPaid > 0
-                    ? grossPaid
-                    : Number(invoiceForPayment.paid_amount) || 0;
-                const balanceDue = getBalanceDueFromPayments(invoiceForPayment);
-                const allocatedFee = getAllocatedCardFeesForInvoice(invoiceForPayment.id);
-                const remainingCardFee = Math.max(0, round2(fullInvCardFee - allocatedFee));
-                const payingByCard = paymentFormData.method === 'card';
-                const showFeeOnNext =
-                  feeEnabledOnInvoice && payingByCard && balanceDue > 0 && remainingCardFee > 0.005;
+                const feeEnabledOnInvoice = isCardFeeEnabledForInvoice(invoiceForPayment);
+                const paidDisplay = getBasePaidForInvoice(
+                  invoiceForPayment.id,
+                  Number(invoiceForPayment.paid_amount) || 0,
+                  invoiceForPayment
+                );
+                const paidTowardInvoice = Math.min(baseTotal, paidDisplay);
+                const cardFeeCollected = getCardFeeCollectedForInvoice(invoiceForPayment.id, invoiceForPayment);
+                const totalCollected = round2(paidTowardInvoice + cardFeeCollected);
+                const baseBalance = Math.max(0, round2(baseTotal - paidTowardInvoice));
+                const cardFee = getCardFeeForBaseBalance(baseBalance, feeEnabledOnInvoice);
+                const balanceDue = round2(baseBalance + cardFee);
+                const showCurrentCardFee = feeEnabledOnInvoice && baseBalance > 0.005 && cardFee > 0.005;
+                const dueLabel = showCurrentCardFee ? 'Total Due Today:' : 'Balance Due:';
                 return (
               <div className="bg-gray-50 rounded-lg p-4 mb-6">
                 <div className="space-y-2">
@@ -19924,35 +19987,41 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     <span className="text-gray-600">Tax (${(defaultTaxRate).toFixed(1)}%):</span>
                     <span className="font-medium">${(invoiceForPayment.tax_amount || 0).toFixed(2)}</span>
                   </div>
-                  {feeEnabledOnInvoice && fullInvCardFee > 0 && (
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Card Processing Fee ({cardProcessingFeePercentage}%, total):</span>
-                      <span className="font-medium text-orange-600">${fullInvCardFee.toFixed(2)}</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between border-t border-gray-300 pt-2">
-                    <span className="font-bold text-gray-900">Invoice Total (base):</span>
-                    <span className="font-bold text-gray-900">${baseTotal.toFixed(2)}</span>
+                  <div className="flex justify-between border-t border-gray-200 pt-2 text-sm">
+                    <span className="font-medium text-gray-700">Invoice Total:</span>
+                    <span className="font-medium text-gray-900">${baseTotal.toFixed(2)}</span>
                   </div>
-                  {feeEnabledOnInvoice && (
-                    <div className="flex justify-between">
-                      <span className="font-bold text-gray-900">Total (incl. card fee):</span>
-                      <span className="font-bold text-gray-900">${totalInclFee.toFixed(2)}</span>
-                    </div>
-                  )}
-                  {showFeeOnNext && (
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Card fee (this payment):</span>
-                      <span className="font-medium text-orange-600">${remainingCardFee.toFixed(2)}</span>
-                    </div>
-                  )}
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Already Paid (gross):</span>
-                    <span className="font-medium">${paidDisplay.toFixed(2)}</span>
+                    <span className="text-gray-600">Paid Toward Invoice:</span>
+                    <span className="font-medium text-green-700">-${paidTowardInvoice.toFixed(2)}</span>
                   </div>
-                  <div className="flex justify-between border-t border-gray-300 pt-2">
-                    <span className="font-bold text-gray-900">Balance Due:</span>
-                    <span className="font-bold text-gray-900">${balanceDue.toFixed(2)}</span>
+                  {cardFeeCollected > 0.005 && (
+                    <>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Card Fee Collected:</span>
+                        <span className="font-medium text-orange-600">${cardFeeCollected.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Total Collected:</span>
+                        <span className="font-medium text-gray-900">${totalCollected.toFixed(2)}</span>
+                      </div>
+                    </>
+                  )}
+                  {showCurrentCardFee && (
+                    <>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Balance Before Card Fee:</span>
+                        <span className="font-medium">${baseBalance.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Card Processing Fee ({cardProcessingFeePercentage}%):</span>
+                        <span className="font-medium text-orange-600">${cardFee.toFixed(2)}</span>
+                      </div>
+                    </>
+                  )}
+                  <div className="mt-3 flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+                    <span className="text-base font-bold text-blue-950">{dueLabel}</span>
+                    <span className="text-2xl font-bold text-blue-700">${balanceDue.toFixed(2)}</span>
                   </div>
                 </div>
               </div>
@@ -20957,21 +21026,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         const invoiceDiscountAmount = getInvoiceDiscountAmount(subtotal);
                         const tax = getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
                         const baseTotal = Math.max(0, subtotal - invoiceDiscountAmount) + tax;
-                        const cardFee = applyCardFee ? Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100 : 0;
-                        const totalWithFee = baseTotal + cardFee;
                         return (
-                          <>
-                            {applyCardFee && cardFee > 0 && (
-                              <div className="flex justify-between">
-                                <span className="text-gray-600">Card Processing Fee ({cardProcessingFeePercentage}%):</span>
-                                <span className="font-medium text-orange-600">${cardFee.toFixed(2)}</span>
-                              </div>
-                            )}
-                            <div className="flex justify-between text-lg font-semibold border-t border-gray-300 pt-2">
-                              <span>Total{applyCardFee && cardFee > 0 ? ' (incl. card fee)' : ''}:</span>
-                              <span>${totalWithFee.toFixed(2)}</span>
-                            </div>
-                          </>
+                          <div className="flex justify-between border-t border-gray-200 pt-2 text-sm">
+                            <span className="font-medium text-gray-700">Invoice Total:</span>
+                            <span className="font-medium text-gray-900">${baseTotal.toFixed(2)}</span>
+                          </div>
                         );
                       })()}
                     </div>
@@ -20986,31 +21045,55 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         const invoiceDiscountAmount = getInvoiceDiscountAmount(currentSubtotal);
                         const currentTax = getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
                         const currentBaseTotal = Math.max(0, currentSubtotal - invoiceDiscountAmount) + currentTax;
-                        const fullCardFeeOnInvoice = applyCardFee
-                          ? Math.round(currentBaseTotal * (cardProcessingFeePercentage / 100) * 100) / 100
-                          : 0;
-                        const totalInclFee = round2(currentBaseTotal + (applyCardFee ? fullCardFeeOnInvoice : 0));
-                        const grossPaid = getGrossPaidForInvoice(editingInvoice.id);
-                        const paidShown =
-                          grossPaid > 0 ? grossPaid : Number(editingInvoice.paid_amount) || 0;
-                        const balanceDue = Math.max(0, round2(totalInclFee - paidShown));
-                        const allocated = getAllocatedCardFeesForInvoice(editingInvoice.id);
-                        const remainingFee = Math.max(0, round2(fullCardFeeOnInvoice - allocated));
+                        const paidShown = getBasePaidForInvoice(
+                          editingInvoice.id,
+                          Number(editingInvoice.paid_amount) || 0,
+                          { ...editingInvoice, total_amount: currentBaseTotal, apply_card_fee: applyCardFee }
+                        );
+                        const paidTowardInvoice = Math.min(currentBaseTotal, paidShown);
+                        const cardFeeCollected = getCardFeeCollectedForInvoice(
+                          editingInvoice.id,
+                          { ...editingInvoice, apply_card_fee: applyCardFee }
+                        );
+                        const totalCollected = round2(paidTowardInvoice + cardFeeCollected);
+                        const baseBalance = Math.max(0, round2(currentBaseTotal - paidTowardInvoice));
+                        const cardFee = getCardFeeForBaseBalance(baseBalance, applyCardFee);
+                        const balanceDue = Math.max(0, round2(baseBalance + cardFee));
+                        const showCurrentCardFee = applyCardFee && baseBalance > 0.005 && cardFee > 0.005;
+                        const dueLabel = showCurrentCardFee ? 'Total Due Today:' : 'Balance Due:';
                         return (
                           <>
                             <div className="flex justify-between">
-                              <span className="text-gray-600">Amount Paid (gross):</span>
-                              <span className="font-medium text-green-600">-${paidShown.toFixed(2)}</span>
+                              <span className="text-gray-600">Paid Toward Invoice:</span>
+                              <span className="font-medium text-green-600">-${paidTowardInvoice.toFixed(2)}</span>
                             </div>
-                            {applyCardFee && fullCardFeeOnInvoice > 0 && grossPaid > 0 && balanceDue > 0.005 && (
-                              <div className="flex justify-between">
-                                <span className="text-gray-600">Card fee remaining (of total {fullCardFeeOnInvoice.toFixed(2)}):</span>
-                                <span className="font-medium text-orange-600">${remainingFee.toFixed(2)}</span>
-                              </div>
+                            {cardFeeCollected > 0.005 && (
+                              <>
+                                <div className="flex justify-between">
+                                  <span className="text-gray-600">Card Fee Collected:</span>
+                                  <span className="font-medium text-orange-600">${cardFeeCollected.toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-gray-600">Total Collected:</span>
+                                  <span className="font-medium text-gray-900">${totalCollected.toFixed(2)}</span>
+                                </div>
+                              </>
                             )}
-                            <div className="flex justify-between">
-                              <span className="text-gray-600">Balance Due:</span>
-                              <span className="font-medium text-blue-600">${balanceDue.toFixed(2)}</span>
+                            {showCurrentCardFee && (
+                              <>
+                                <div className="flex justify-between">
+                                  <span className="text-gray-600">Balance Before Card Fee:</span>
+                                  <span className="font-medium text-gray-900">${baseBalance.toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-gray-600">Card Processing Fee ({cardProcessingFeePercentage}%):</span>
+                                  <span className="font-medium text-orange-600">${cardFee.toFixed(2)}</span>
+                                </div>
+                              </>
+                            )}
+                            <div className="mt-3 flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+                              <span className="text-base font-bold text-blue-950">{dueLabel}</span>
+                              <span className="text-2xl font-bold text-blue-700">${balanceDue.toFixed(2)}</span>
                             </div>
                           </>
                         );
@@ -21029,9 +21112,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           const invoiceDiscountAmount = getInvoiceDiscountAmount(currentSubtotal);
                           const currentTax = getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
                           const baseTotal = Math.max(0, currentSubtotal - invoiceDiscountAmount) + currentTax;
-                          const cardFeeAmount = applyCardFee ? Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100 : 0;
-                          const paid = editingInvoice.paid_amount ?? 0;
-                          const balanceDue = Math.max(0, baseTotal + cardFeeAmount - paid);
+                          const paid = getBasePaidForInvoice(
+                            editingInvoice.id,
+                            Number(editingInvoice.paid_amount) || 0,
+                            { ...editingInvoice, total_amount: baseTotal, apply_card_fee: applyCardFee }
+                          );
+                          const baseBalance = Math.max(0, round2(baseTotal - paid));
+                          const cardFeeAmount = getCardFeeForBaseBalance(baseBalance, applyCardFee);
+                          const balanceDue = Math.max(0, round2(baseBalance + cardFeeAmount));
                           
                           const updatedInvoice = {
                             ...editingInvoice,
@@ -21076,19 +21164,22 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       ) : paymentsForThisInvoice.length > 0 ? (
                       <div className="space-y-3">
                         {paymentsSortedOldestFirst.map((payment: any, index: number) => {
-                          const paymentAmount = payment.amount || 0;
+                          const paymentAmount = Number(payment.amount) || 0;
                           const rawPaymentMethod = payment.payment_method || 'unknown';
                           // Normalize payment method for display (handle both 'finance' and 'financing')
                           const paymentMethod = rawPaymentMethod === 'finance' ? 'financing' : rawPaymentMethod;
-                          const cardFee = payment.card_fee || 0;
-                          const baseAmount = paymentAmount - cardFee;
+                          const cardFee = getPaymentCardFeePortion(payment, editingInvoice);
+                          const baseAmount = Math.max(0, round2(paymentAmount - cardFee));
                           
                           // Determine payment type based on cumulative payments up to this point
                           const invoiceTotal = editingInvoice?.total_amount || 0;
                           // Calculate cumulative paid amount up to and including this payment
                           const cumulativePaid = paymentsSortedOldestFirst
                             .slice(0, index + 1)
-                            .reduce((sum: number, p: any) => sum + ((p.amount || 0) - (p.card_fee || 0)), 0);
+                            .reduce((sum: number, p: any) => {
+                              const amount = Number(p.amount) || 0;
+                              return sum + Math.max(0, round2(amount - getPaymentCardFeePortion(p, editingInvoice)));
+                            }, 0);
                           const isFullPayment = cumulativePaid >= invoiceTotal - 0.01; // Account for rounding
                           const paymentType = isFullPayment ? 'Full payment' : 'Partial payment';
                           
@@ -21115,14 +21206,16 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 </span>
                               </div>
                               <div className="flex items-center gap-2 flex-shrink-0">
-                                <span className="text-sm font-semibold text-gray-900">
-                                  ${baseAmount.toFixed(2)}
-                                </span>
-                                {cardFee > 0 && (
-                                  <span className="text-sm text-orange-600">
-                                    + ${cardFee.toFixed(2)} fee
-                                  </span>
-                                )}
+                                <div className="text-right">
+                                  <div className="text-sm font-semibold text-gray-900">
+                                    ${paymentAmount.toFixed(2)}
+                                  </div>
+                                  {cardFee > 0 && (
+                                    <div className="text-xs text-gray-500">
+                                      ${baseAmount.toFixed(2)} applied + ${cardFee.toFixed(2)} fee
+                                    </div>
+                                  )}
+                                </div>
                                 {payment.id && editingInvoice?.id && (
                                   <button
                                     type="button"
@@ -21146,18 +21239,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       (() => {
                         const invoiceTotal = editingInvoice.total_amount || 0;
                         const paidAmount = editingInvoice.paid_amount || 0;
-                        const subtotal = editingInvoice.subtotal || 0;
-                        const tax = editingInvoice.tax_amount || 0;
-                        const expectedTotal = subtotal + tax;
-                        const applyFee =
-                          (editingInvoice as any).apply_card_fee === true ||
-                          (Number((editingInvoice as any).card_fee_amount) || 0) > 0;
-                        const hasCardFee =
-                          applyFee || invoiceTotal > expectedTotal * 1.001;
+                        const applyFee = (editingInvoice as any).apply_card_fee === true;
                         let paymentMethod = 'cash';
                         if (applyFee) {
-                          paymentMethod = 'card';
-                        } else if (hasCardFee) {
                           paymentMethod = 'card';
                         } else if (paymentsForThisInvoice.length > 0) {
                           const latestPayment = paymentsForThisInvoice[0];
@@ -21400,15 +21484,23 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     if (editingInvoice) {
                       // total_amount = base only (subtotal + tax). Card fee is stored separately and never doubled.
                       const totalAmount = baseTotal;
-                      const cardFeeAmount = applyCardFee ? Math.round(baseTotal * (cardProcessingFeePercentage / 100) * 100) / 100 : 0;
+                      const paidAmountForUpdatedTotal = getBasePaidForInvoice(
+                        editingInvoice.id,
+                        Number(editingInvoice.paid_amount) || 0,
+                        { ...editingInvoice, total_amount: totalAmount, apply_card_fee: applyCardFee }
+                      );
+                      const remainingBaseForUpdatedTotal = Math.max(0, round2(totalAmount - paidAmountForUpdatedTotal));
+                      const cardFeeAmount = getCardFeeForBaseBalance(remainingBaseForUpdatedTotal, applyCardFee);
                       
-                      // Determine invoice status: 'unpaid' if total > 0 and not fully paid, otherwise keep current status or set to 'pending'
-                      // If invoice is already paid, don't change status
-                      let invoiceStatus = editingInvoice.status;
-                      if (editingInvoice.status !== 'paid') {
-                        // Only update status if not already paid
-                        invoiceStatus = totalAmount > 0 ? 'unpaid' : 'pending';
-                      }
+                      // Determine status from the base invoice balance. Card fees are only applied to unpaid balance.
+                      let invoiceStatus =
+                        totalAmount <= 0
+                          ? 'pending'
+                          : remainingBaseForUpdatedTotal <= 0.01
+                            ? 'paid'
+                            : paidAmountForUpdatedTotal > 0
+                              ? 'partial'
+                              : 'unpaid';
                       
                       // Update existing invoice
                       // Convert invoice_date to ISO string for created_at if it was changed
@@ -21658,9 +21750,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         }
                       })();
 
-                      // Optimistic update: merge saved invoice (incl. card fee) into list so Total/Balance Due update immediately
-                      const paidAmount = editingInvoice.paid_amount ?? 0;
-                      const newBalanceDue = Math.max(0, totalAmount + cardFeeAmount - paidAmount);
+                      // Optimistic update: merge saved invoice (incl. fee on remaining balance) into list immediately.
+                      const newBalanceDue = Math.max(0, round2(remainingBaseForUpdatedTotal + cardFeeAmount));
                       lastOptimisticInvoiceRef.current = {
                         id: editingInvoice.id,
                         total_amount: totalAmount,
