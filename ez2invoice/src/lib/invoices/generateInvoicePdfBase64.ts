@@ -20,32 +20,35 @@ export async function generateInvoicePdfBase64(
     return { ok: false, error: USER_FACING_PDF_ERROR };
   }
 
-  const data = await loadInvoiceDocumentData(supabase, invoiceId);
-  if (!data) {
-    return { ok: false, error: USER_FACING_PDF_ERROR };
-  }
-
-  if (!data.invoiceTerms.trim()) {
-    const localTerms = localStorage.getItem('ez2invoice-invoice-terms') || '';
-    if (localTerms) data.invoiceTerms = localTerms;
-  }
-
   try {
+    const data = await loadInvoiceDocumentData(supabase, invoiceId);
+    if (!data) {
+      console.error('PDF generation failed:', new Error(`Invoice data not found for ${invoiceId}`));
+      return { ok: false, error: USER_FACING_PDF_ERROR };
+    }
+
+    if (!data.invoiceTerms.trim()) {
+      const localTerms = localStorage.getItem('ez2invoice-invoice-terms') || '';
+      if (localTerms) data.invoiceTerms = localTerms;
+    }
+
     // Primary: static HTML using the same styles as the print view (works without opening print)
     let base64 = await captureInvoicePdfFromData(data);
 
     // Fallback: live React print route for parity with the website print page
     if (!base64) {
+      console.warn('[generateInvoicePdfBase64] Static invoice PDF capture failed. Trying print route fallback.');
       base64 = await captureInvoicePdfFromPrintPage(invoiceId);
     }
 
     if (!base64) {
+      console.error('PDF generation failed:', new Error(`No PDF content was captured for ${invoiceId}`));
       return { ok: false, error: USER_FACING_PDF_ERROR };
     }
 
     return { ok: true, base64 };
   } catch (error) {
-    console.error('generateInvoicePdfBase64:', error);
+    console.error('PDF generation failed:', error);
     return { ok: false, error: USER_FACING_PDF_ERROR };
   }
 }

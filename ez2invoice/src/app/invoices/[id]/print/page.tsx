@@ -49,6 +49,7 @@ export default function InvoicePrintPage() {
         setDocumentData(data);
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : 'Failed to load invoice';
+        console.error('Invoice print view failed:', e);
         setError(message);
       } finally {
         setLoading(false);

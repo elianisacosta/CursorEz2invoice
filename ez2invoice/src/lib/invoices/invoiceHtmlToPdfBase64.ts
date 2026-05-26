@@ -3,6 +3,7 @@
 const LETTER_WIDTH_PT = 612;
 const LETTER_HEIGHT_PT = 792;
 const CAPTURE_WIDTH_PX = 816;
+const MAX_CAPTURE_PIXELS = 16_000_000;
 
 /** Sample canvas pixels to detect a failed (all-white) capture. */
 export function isCanvasBlank(canvas: HTMLCanvasElement): boolean {
@@ -38,12 +39,15 @@ async function renderElementToCanvas(
   options: CaptureOptions = {}
 ): Promise<HTMLCanvasElement | null> {
   const html2canvas = (await import('html2canvas')).default;
-  const width = element.scrollWidth || CAPTURE_WIDTH_PX;
+  const width = CAPTURE_WIDTH_PX;
   const height = Math.max(element.scrollHeight, 200);
+  const requestedScale = options.scale ?? 2;
+  const maxSafeScale = Math.sqrt(MAX_CAPTURE_PIXELS / Math.max(width * height, 1));
+  const scale = Math.max(0.9, Math.min(requestedScale, maxSafeScale));
 
   try {
     return await html2canvas(element, {
-      scale: options.scale ?? 2,
+      scale,
       useCORS: true,
       allowTaint: false,
       logging: false,
@@ -59,15 +63,20 @@ async function renderElementToCanvas(
       onclone: (clonedDoc) => {
         const clonedPage = clonedDoc.querySelector('.print-page') as HTMLElement | null;
         if (clonedPage) {
+          clonedPage.style.width = `${CAPTURE_WIDTH_PX}px`;
+          clonedPage.style.maxWidth = `${CAPTURE_WIDTH_PX}px`;
           clonedPage.style.background = '#ffffff';
           clonedPage.style.color = '#1f2937';
           clonedPage.style.opacity = '1';
           clonedPage.style.visibility = 'visible';
+          clonedPage.style.overflowWrap = 'anywhere';
+          clonedPage.style.wordBreak = 'break-word';
         }
         const body = clonedDoc.body;
         if (body) {
           body.style.background = '#ffffff';
           body.style.margin = '0';
+          body.style.overflow = 'visible';
         }
       },
     });
@@ -78,33 +87,38 @@ async function renderElementToCanvas(
 }
 
 async function canvasToPdfBase64(canvas: HTMLCanvasElement): Promise<string | null> {
-  const { default: jsPDF } = await import('jspdf');
-  const imgData = canvas.toDataURL('image/jpeg', 0.92);
-  const pdf = new jsPDF({
-    unit: 'pt',
-    format: 'letter',
-    orientation: 'portrait',
-  });
+  try {
+    const { default: jsPDF } = await import('jspdf');
+    const imgData = canvas.toDataURL('image/jpeg', 0.92);
+    const pdf = new jsPDF({
+      unit: 'pt',
+      format: 'letter',
+      orientation: 'portrait',
+    });
 
-  const imgWidth = LETTER_WIDTH_PT;
-  const imgHeight = (canvas.height * imgWidth) / canvas.width;
+    const imgWidth = LETTER_WIDTH_PT;
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
 
-  let heightLeft = imgHeight;
-  let position = 0;
+    let heightLeft = imgHeight;
+    let position = 0;
 
-  pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
-  heightLeft -= LETTER_HEIGHT_PT;
-
-  while (heightLeft > 0) {
-    position -= LETTER_HEIGHT_PT;
-    pdf.addPage();
     pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
     heightLeft -= LETTER_HEIGHT_PT;
-  }
 
-  const dataUri = pdf.output('datauristring');
-  const base64 = dataUri.split(',')[1] || '';
-  return base64 || null;
+    while (heightLeft > 0) {
+      position -= LETTER_HEIGHT_PT;
+      pdf.addPage();
+      pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+      heightLeft -= LETTER_HEIGHT_PT;
+    }
+
+    const dataUri = pdf.output('datauristring');
+    const base64 = dataUri.split(',')[1] || '';
+    return base64 || null;
+  } catch (error) {
+    console.error('[invoiceHtmlToPdfBase64] PDF conversion failed:', error);
+    return null;
+  }
 }
 
 async function elementToPdfBase64(
@@ -116,8 +130,12 @@ async function elementToPdfBase64(
     { scale: 2, foreignObjectRendering: true, captureWindow },
     { scale: 1.5, captureWindow },
     { scale: 1.5, foreignObjectRendering: true, captureWindow },
+    { scale: 1.25, captureWindow },
+    { scale: 1, captureWindow },
     { scale: 2 },
     { scale: 1.5, foreignObjectRendering: true },
+    { scale: 1.25 },
+    { scale: 1 },
   ];
 
   for (const attempt of attempts) {

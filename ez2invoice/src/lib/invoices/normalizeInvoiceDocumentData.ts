@@ -19,7 +19,7 @@ function pickNumber(...values: unknown[]): number {
   for (const v of values) {
     if (v == null || v === '') continue;
     const n = Number(v);
-    if (!Number.isNaN(n)) return n;
+    if (Number.isFinite(n)) return n;
   }
   return 0;
 }

@@ -2658,6 +2658,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       const pdfResult = await generateInvoicePdfBase64(invoice);
       if (!pdfResult.ok) {
+        console.error('PDF generation failed:', pdfResult.error);
         showToast({
           type: 'error',
           message: 'Invoice PDF could not be generated. Please try again.',

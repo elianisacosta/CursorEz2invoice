@@ -4,6 +4,7 @@ import type {
   InvoiceDocumentModel,
   InvoiceDocumentPayment,
 } from './invoiceDocumentTypes';
+import { toCurrencyNumber, toFiniteNumber } from './sanitizeInvoiceDocumentData';
 
 export function buildInvoiceDocumentModel(
   invoice: InvoiceDocumentInvoice,
@@ -12,50 +13,50 @@ export function buildInvoiceDocumentModel(
   cardProcessingFeePercentage?: number | null
 ): InvoiceDocumentModel {
   const lineSubtotal = lineItems.reduce(
-    (sum, item) => sum + (Number(item.total_price) || 0),
+    (sum, item) => sum + toCurrencyNumber(item.total_price),
     0
   );
 
-  let subtotal = Number(invoice.subtotal) || 0;
+  let subtotal = toCurrencyNumber(invoice.subtotal);
   if (subtotal <= 0 && lineSubtotal > 0) {
     subtotal = lineSubtotal;
   }
 
-  const discount = Number(invoice.discount_amount) || 0;
-  let taxRate = Number(invoice.tax_rate) || 0;
+  const discount = toCurrencyNumber(invoice.discount_amount);
+  let taxRate = toFiniteNumber(invoice.tax_rate);
   if (taxRate > 1) {
     taxRate = taxRate / 100;
   }
 
-  let taxAmount = Number(invoice.tax_amount) || 0;
+  let taxAmount = toCurrencyNumber(invoice.tax_amount);
   if (taxAmount <= 0 && taxRate > 0 && subtotal > 0) {
     taxAmount = Math.round(subtotal * taxRate * 100) / 100;
   }
 
-  let totalBase = Number(invoice.total_amount) || 0;
+  let totalBase = toCurrencyNumber(invoice.total_amount);
   if (totalBase <= 0 && subtotal > 0) {
     totalBase = Math.max(0, subtotal - discount + taxAmount);
   }
 
-  const fallbackCardFee = Number(invoice.card_fee_amount) || 0;
-  let cardFeeRate = Number(cardProcessingFeePercentage) || 0;
+  const fallbackCardFee = toCurrencyNumber(invoice.card_fee_amount);
+  let cardFeeRate = toFiniteNumber(cardProcessingFeePercentage);
   if (cardFeeRate > 1) cardFeeRate = cardFeeRate / 100;
   if (cardFeeRate <= 0 && fallbackCardFee > 0 && totalBase > 0) {
     cardFeeRate = fallbackCardFee / totalBase;
   }
   const getPaymentCardFee = (payment: InvoiceDocumentPayment) => {
-    const explicitFee = Number(payment.card_fee) || 0;
+    const explicitFee = toCurrencyNumber(payment.card_fee);
     if (explicitFee > 0) return Math.round(explicitFee * 100) / 100;
     if (invoice.apply_card_fee !== true || payment.payment_method !== 'card' || cardFeeRate <= 0) {
       return 0;
     }
-    const amount = Number(payment.amount) || 0;
+    const amount = toCurrencyNumber(payment.amount);
     return Math.max(0, Math.round((amount - Math.round((amount / (1 + cardFeeRate)) * 100) / 100) * 100) / 100);
   };
-  const paidAmount = Number(invoice.paid_amount) || 0;
+  const paidAmount = toCurrencyNumber(invoice.paid_amount);
   const paidDisplay = payments.length > 0
     ? payments.reduce((sum, p) => {
-        const amount = Number(p.amount) || 0;
+        const amount = toCurrencyNumber(p.amount);
         const cardFee = getPaymentCardFee(p);
         if (cardFee > 0) return sum + Math.max(0, amount - cardFee);
         if (invoice.apply_card_fee === true && p.payment_method === 'card' && cardFeeRate > 0) {

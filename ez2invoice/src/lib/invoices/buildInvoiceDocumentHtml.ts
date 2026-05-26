@@ -10,8 +10,10 @@ import {
   formatLineItemDisplayName,
   getLineItemTypeLabel,
 } from './invoiceDocumentFormatters';
+import { sanitizeInvoiceDocumentData, toCurrencyNumber } from './sanitizeInvoiceDocumentData';
 
-export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
+export function buildInvoiceDocumentHtml(rawData: InvoiceDocumentData): string {
+  const data = sanitizeInvoiceDocumentData(rawData);
   const { invoice, lineItems, payments, shop, invoiceTerms, model } = data;
   const customerName = formatCustomerName(data);
   const customerAddress = formatCustomerAddress(data);
@@ -40,10 +42,10 @@ export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
       ? `<tr><td colspan="5" style="text-align:center;color:#6b7280">No line items</td></tr>`
       : lineItems
           .map((item) => {
-            const type = getLineItemTypeLabel(item.item_type);
+            const type = escapeHtml(getLineItemTypeLabel(item.item_type));
             const displayName = escapeHtml(formatLineItemDisplayName(item));
             const invoiceNote = item.invoice_note
-              ? `<div style="font-size:11px;color:#4b5563">${escapeHtml(item.invoice_note)}</div>`
+              ? `<div class="line-note" style="font-size:11px;color:#4b5563">${escapeHtml(item.invoice_note)}</div>`
               : '';
             const discountText = formatLineItemDiscountText(item);
             const discount = discountText
@@ -53,8 +55,8 @@ export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
               <td style="text-align:right">${Number(item.quantity) || 1}</td>
               <td>${type}</td>
               <td>${displayName}${invoiceNote}${discount}</td>
-              <td style="text-align:right">$${(Number(item.unit_price) || 0).toFixed(2)}</td>
-              <td style="text-align:right">$${(Number(item.total_price) || 0).toFixed(2)}</td>
+              <td style="text-align:right">$${toCurrencyNumber(item.unit_price).toFixed(2)}</td>
+              <td style="text-align:right">$${toCurrencyNumber(item.total_price).toFixed(2)}</td>
             </tr>`;
           })
           .join('');
@@ -81,9 +83,9 @@ export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
                         : p.payment_method === 'cash'
                           ? 'Cash'
                           : escapeHtml(p.payment_method || 'Other');
-                    const amount = Number(p.amount) || 0;
-                    const fee = Number(p.card_fee) || 0;
-                    const base = amount - fee;
+                    const amount = toCurrencyNumber(p.amount);
+                    const fee = toCurrencyNumber(p.card_fee);
+                    const base = Math.max(0, amount - fee);
                     return `<div class="payment-history-row">${escapeHtml(date)} (${method}) $${amount.toFixed(2)}${fee > 0 ? ` ($${base.toFixed(2)} applied + $${fee.toFixed(2)} fee)` : ''}</div>`;
                   })
                   .join('')
@@ -113,7 +115,7 @@ export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
     invoiceTerms.trim().length > 0
       ? `<div class="terms-section">
           <div class="section-title">TERMS AND CONDITIONS</div>
-          <div style="white-space:pre-wrap">${escapeHtml(invoiceTerms)}</div>
+          <div class="terms-text">${escapeHtml(invoiceTerms)}</div>
         </div>`
       : '';
 
@@ -158,7 +160,7 @@ export function buildInvoiceDocumentHtml(data: InvoiceDocumentData): string {
           invoice.notes
             ? `<div style="margin-bottom:20px">
                 <div class="section-title">NOTES:</div>
-                <div>${escapeHtml(invoice.notes)}</div>
+                <div class="notes-text">${escapeHtml(invoice.notes)}</div>
               </div>`
             : ''
         }

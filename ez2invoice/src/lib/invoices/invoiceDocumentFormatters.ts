@@ -1,8 +1,8 @@
 import type { InvoiceDocumentData, InvoiceDocumentLineItem, InvoiceDocumentShop } from './invoiceDocumentTypes';
 export { getLineItemTypeLabel } from './normalizeInvoiceDocumentData';
 
-export function escapeHtml(value: string): string {
-  return value
+export function escapeHtml(value: unknown): string {
+  return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -38,18 +38,26 @@ export function formatCompanyDetails(shop: InvoiceDocumentShop): string {
 export function formatLineItemDisplayName(item: InvoiceDocumentLineItem): string {
   const type = String(item.item_type || '').toLowerCase();
   if (type === 'part') {
-    const partDisplay = [item.item_number, item.item_name].filter(Boolean).join(' — ');
-    return partDisplay || item.description || 'Part';
+    const partDisplay = [item.item_number, item.item_name]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .join(' — ');
+    return partDisplay || String(item.description || '').trim() || 'Part';
   }
-  return item.item_name || item.description || 'Item';
+  return String(item.item_name || item.description || '').trim() || 'Item';
 }
 
 export function formatLineItemDiscountText(item: InvoiceDocumentLineItem): string {
-  const discountAmount = Number(item.discount_amount) || 0;
+  const discountAmount = Number.isFinite(Number(item.discount_amount))
+    ? Number(item.discount_amount)
+    : 0;
   if (discountAmount <= 0) return '';
 
-  if (item.discount_type === 'percentage' && Number(item.discount_value) > 0) {
-    return `Discount applied: ${Number(item.discount_value)}% (-$${discountAmount.toFixed(2)})`;
+  const discountValue = Number.isFinite(Number(item.discount_value))
+    ? Number(item.discount_value)
+    : 0;
+  if (item.discount_type === 'percentage' && discountValue > 0) {
+    return `Discount applied: ${discountValue}% (-$${discountAmount.toFixed(2)})`;
   }
 
   return `Discount applied: -$${discountAmount.toFixed(2)}`;

@@ -57,7 +57,7 @@ function loadHtmlInIframe(html: string): Promise<HTMLIFrameElement> {
     const timeout = window.setTimeout(() => {
       if (iframe.parentNode) document.body.removeChild(iframe);
       reject(new Error('Timed out loading invoice for PDF capture.'));
-    }, 15000);
+    }, 30000);
 
     iframe.onload = () => {
       window.clearTimeout(timeout);
@@ -81,6 +81,10 @@ async function prepareIframeForCapture(
   const doc = iframe.contentDocument;
   if (!doc) return;
 
+  printPage.style.width = '816px';
+  printPage.style.maxWidth = '816px';
+  printPage.style.overflowWrap = 'anywhere';
+  printPage.style.wordBreak = 'break-word';
   const contentHeight = Math.max(printPage.scrollHeight, printPage.offsetHeight, 400);
   iframe.style.height = `${Math.min(contentHeight + 48, 12000)}px`;
 
@@ -104,10 +108,10 @@ async function prepareIframeForCapture(
 export async function captureInvoicePdfFromData(
   data: InvoiceDocumentData
 ): Promise<string | null> {
-  const html = buildInvoiceDocumentHtml(data);
   let iframe: HTMLIFrameElement | null = null;
 
   try {
+    const html = buildInvoiceDocumentHtml(data);
     iframe = await loadHtmlInIframe(html);
     const printPage = await waitForIframeContent(iframe);
     await prepareIframeForCapture(iframe, printPage);

@@ -11,6 +11,7 @@ import type {
   InvoiceDocumentInvoice,
   InvoiceDocumentShop,
 } from './invoiceDocumentTypes';
+import { sanitizeInvoiceDocumentData } from './sanitizeInvoiceDocumentData';
 
 type ShopRow = {
   shop_name?: string | null;
@@ -229,12 +230,12 @@ export async function loadInvoiceDocumentData(
     shop.cardProcessingFeePercentage
   );
 
-  return {
+  return sanitizeInvoiceDocumentData({
     invoice,
     lineItems,
     payments,
     shop,
     invoiceTerms,
     model,
-  };
+  });
 }

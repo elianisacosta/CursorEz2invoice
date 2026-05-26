@@ -8,18 +8,14 @@ import {
   formatLineItemDisplayName,
   getLineItemTypeLabel,
 } from '@/lib/invoices/invoiceDocumentFormatters';
+import { sanitizeInvoiceDocumentData, toCurrencyNumber } from '@/lib/invoices/sanitizeInvoiceDocumentData';
 import { INVOICE_DOCUMENT_STYLES } from './invoiceDocumentStyles';
 
 type InvoiceDocumentProps = InvoiceDocumentData;
 
-export default function InvoiceDocument({
-  invoice,
-  lineItems,
-  payments,
-  shop,
-  invoiceTerms,
-  model,
-}: InvoiceDocumentProps) {
+export default function InvoiceDocument(props: InvoiceDocumentProps) {
+  const { invoice, lineItems, payments, shop, invoiceTerms, model } =
+    sanitizeInvoiceDocumentData(props);
   const customerName = formatCustomerName({ invoice, lineItems, payments, shop, invoiceTerms, model });
   const customerAddress = formatCustomerAddress({ invoice, lineItems, payments, shop, invoiceTerms, model });
   const invoiceDate = formatInvoiceDate(invoice.created_at);
@@ -92,7 +88,9 @@ export default function InvoiceDocument({
                   <td>
                     {formatLineItemDisplayName(item)}
                     {item.invoice_note && (
-                      <div style={{ fontSize: 11, color: '#4b5563' }}>{item.invoice_note}</div>
+                      <div className="line-note" style={{ fontSize: 11, color: '#4b5563' }}>
+                        {item.invoice_note}
+                      </div>
                     )}
                     {discountText && (
                       <div style={{ fontSize: 11, color: '#b91c1c' }}>
@@ -100,8 +98,8 @@ export default function InvoiceDocument({
                       </div>
                     )}
                   </td>
-                  <td style={{ textAlign: 'right' }}>${(Number(item.unit_price) || 0).toFixed(2)}</td>
-                  <td style={{ textAlign: 'right' }}>${(Number(item.total_price) || 0).toFixed(2)}</td>
+                  <td style={{ textAlign: 'right' }}>${toCurrencyNumber(item.unit_price).toFixed(2)}</td>
+                  <td style={{ textAlign: 'right' }}>${toCurrencyNumber(item.total_price).toFixed(2)}</td>
                 </tr>
                 );
               })
@@ -114,7 +112,7 @@ export default function InvoiceDocument({
             {invoice.notes && (
               <div style={{ marginBottom: 20 }}>
                 <div className="section-title">NOTES:</div>
-                <div>{invoice.notes}</div>
+                <div className="notes-text">{invoice.notes}</div>
               </div>
             )}
           </div>
@@ -183,9 +181,9 @@ export default function InvoiceDocument({
                         : p.payment_method === 'cash'
                           ? 'Cash'
                           : p.payment_method || 'Other';
-                    const amount = Number(p.amount) || 0;
-                    const fee = Number(p.card_fee) || 0;
-                    const base = amount - fee;
+                    const amount = toCurrencyNumber(p.amount);
+                    const fee = toCurrencyNumber(p.card_fee);
+                    const base = Math.max(0, amount - fee);
                     return (
                       <div key={`${idx}-${date}`} className="payment-history-row">
                         {date} ({method}) ${amount.toFixed(2)}
@@ -204,7 +202,7 @@ export default function InvoiceDocument({
         {invoiceTerms.trim().length > 0 && (
           <div className="terms-section">
             <div className="section-title">TERMS AND CONDITIONS</div>
-            <div>{invoiceTerms}</div>
+            <div className="terms-text">{invoiceTerms}</div>
           </div>
         )}
 

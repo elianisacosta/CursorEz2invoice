@@ -73,6 +73,10 @@ async function prepareIframeForCapture(
   const doc = iframe.contentDocument;
   if (!doc) return;
 
+  printPage.style.width = '816px';
+  printPage.style.maxWidth = '816px';
+  printPage.style.overflowWrap = 'anywhere';
+  printPage.style.wordBreak = 'break-word';
   const contentHeight = Math.max(printPage.scrollHeight, printPage.offsetHeight, 400);
   iframe.style.height = `${Math.min(contentHeight + 48, 12000)}px`;
 
@@ -111,8 +115,17 @@ export async function captureInvoicePdfFromPrintPage(
 
   try {
     await new Promise<void>((resolve, reject) => {
-      iframe.onload = () => resolve();
-      iframe.onerror = () => reject(new Error('Failed to load invoice print view.'));
+      const timeout = window.setTimeout(() => {
+        reject(new Error('Timed out loading invoice print view.'));
+      }, 30000);
+      iframe.onload = () => {
+        window.clearTimeout(timeout);
+        resolve();
+      };
+      iframe.onerror = () => {
+        window.clearTimeout(timeout);
+        reject(new Error('Failed to load invoice print view.'));
+      };
       iframe.src = url;
     });
 
