@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { WheelSafeNumberInput } from '@/components/ui/WheelSafeNumberInput';
@@ -90,6 +90,17 @@ interface Employee {
   notes: string;
   is_active: boolean;
   created_at?: string;
+}
+
+function useDebouncedValue<T>(value: T, delayMs = 300): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedValue(value), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [value, delayMs]);
+
+  return debouncedValue;
 }
 
 interface Timesheet {
@@ -322,6 +333,8 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     item_type: 'labor' | 'part';
     reference_id?: string | null;
     description: string;
+    item_name?: string | null;
+    item_number?: string | null;
     quantity: number;
     unit_price: number;
     total_price: number;
@@ -342,6 +355,8 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     quantity: 1,
     unit_price: 0,
     total_price: 0,
+    item_name: null,
+    item_number: null,
     discount_type: 'none',
     discount_value: 0,
     discount_amount: 0,
@@ -418,13 +433,26 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   };
   const formatPartDisplayName = (part?: { part_number?: string | null; part_name?: string | null }) =>
     [part?.part_number, part?.part_name].filter(Boolean).join(' — ');
+  const getCustomerDisplayName = (customer?: Partial<Customer> | null) => {
+    if (!customer) return '';
+    const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ').trim();
+    return customer.is_fleet
+      ? customer.company || individualName || 'Unknown'
+      : individualName || customer.company || 'Unknown';
+  };
   const getInvoiceLineItemDisplayName = (item: InvoiceLineItem) => {
     if (item.reference_id) {
       if (item.item_type === 'labor') {
-        return laborItems.find((labor) => labor.id === item.reference_id)?.service_name || item.description || '';
+        return (
+          item.item_name ||
+          laborItemsById.get(String(item.reference_id))?.service_name ||
+          item.description ||
+          'Labor'
+        );
       }
-      const part = inventory.find((p) => p.id === item.reference_id);
-      return formatPartDisplayName(part) || item.description || '';
+      const part = inventoryById.get(String(item.reference_id));
+      const hydratedPartDisplay = [item.item_number, item.item_name].filter(Boolean).join(' — ');
+      return formatPartDisplayName(part) || hydratedPartDisplay || item.description || 'Part';
     }
     return item.description || '';
   };
@@ -434,19 +462,22 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     if (!normalizedNote || !item.reference_id) return '';
 
     if (item.item_type === 'labor') {
-      const labor = laborItems.find((l) => l.id === item.reference_id);
+      const labor = laborItemsById.get(String(item.reference_id));
       if (!labor) return '';
-      const autoText = [labor?.service_name, labor?.description].filter(Boolean);
+      const autoText = [item.item_name, labor?.service_name, labor?.description].filter(Boolean);
       return autoText.some((value) => value?.trim().toLowerCase() === normalizedNote.toLowerCase()) ? '' : rawNote;
     }
 
-    const part = inventory.find((p) => p.id === item.reference_id);
+    const part = inventoryById.get(String(item.reference_id));
     if (!part) return '';
     const autoText = [
       part?.part_name,
       part?.part_number,
       part?.description,
       formatPartDisplayName(part),
+      item.item_name,
+      item.item_number,
+      [item.item_number, item.item_name].filter(Boolean).join(' — '),
     ].filter(Boolean);
     return autoText.some((value) => value?.trim().toLowerCase() === normalizedNote.toLowerCase()) ? '' : rawNote;
   };
@@ -1204,10 +1235,7 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     if (invoiceFormData.customer_id && customers.length > 0) {
       const selectedCustomer = customers.find(c => c.id === invoiceFormData.customer_id);
       if (selectedCustomer) {
-        const individualName = [selectedCustomer.first_name, selectedCustomer.last_name].filter(Boolean).join(' ');
-        const displayName = selectedCustomer.is_fleet 
-          ? selectedCustomer.company || individualName || 'Unknown'
-          : individualName || selectedCustomer.company || 'Unknown';
+        const displayName = getCustomerDisplayName(selectedCustomer);
         setInvoiceCustomerSearch(displayName);
       }
     } else if (!invoiceFormData.customer_id) {
@@ -1409,6 +1437,8 @@ const [customerSearchQuery, setCustomerSearchQuery] = useState('');
 const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
 const [invoiceCustomerSearch, setInvoiceCustomerSearch] = useState('');
 const [showInvoiceCustomerDropdown, setShowInvoiceCustomerDropdown] = useState(false);
+const debouncedInvoiceCustomerSearch = useDebouncedValue(invoiceCustomerSearch, 300);
+const debouncedInvoiceItemSearch = useDebouncedValue(invoiceItemSearch, 300);
 const [creatingCustomerFromInvoice, setCreatingCustomerFromInvoice] = useState(false);
 const [creatingPartFromInvoice, setCreatingPartFromInvoice] = useState(false);
 const [creatingPartForLineItem, setCreatingPartForLineItem] = useState<number | null>(null);
@@ -1521,6 +1551,234 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     unit_price: 0,
     cost: 0
   });
+  const customersById = useMemo(
+    () => new Map(customers.map((customer) => [String(customer.id), customer])),
+    [customers]
+  );
+  const laborItemsById = useMemo(
+    () => new Map(laborItems.map((labor) => [String(labor.id), labor])),
+    [laborItems]
+  );
+  const inventoryById = useMemo(
+    () => new Map(inventory.map((part) => [String(part.id), part])),
+    [inventory]
+  );
+  const invoiceLaborOptionRows = useMemo(
+    () => laborItems.map((option) => ({ source: 'labor' as const, option })),
+    [laborItems]
+  );
+  const invoicePartOptionRows = useMemo(
+    () => inventory.map((option) => ({ source: 'part' as const, option })),
+    [inventory]
+  );
+  const hydrateInvoiceCustomerDisplay = useCallback(async (customerId?: string | null, fallbackCustomer?: any) => {
+    if (!customerId) {
+      setInvoiceCustomerSearch('');
+      return;
+    }
+
+    const localCustomer = customersById.get(String(customerId));
+    if (localCustomer) {
+      setInvoiceCustomerSearch(getCustomerDisplayName(localCustomer));
+      return;
+    }
+
+    if (fallbackCustomer) {
+      const fallbackName = getCustomerDisplayName(fallbackCustomer);
+      if (fallbackName) {
+        setInvoiceCustomerSearch(fallbackName);
+        return;
+      }
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('customers')
+        .select('id, first_name, last_name, company, phone, email, is_fleet')
+        .eq('id', customerId)
+        .maybeSingle();
+      if (!error && data) {
+        const hydratedCustomer = data as unknown as Customer;
+        setCustomers((prev) =>
+          prev.some((customer) => String(customer.id) === String(customerId))
+            ? prev
+            : [hydratedCustomer, ...prev]
+        );
+        setInvoiceCustomerSearch(getCustomerDisplayName(hydratedCustomer));
+      }
+    } catch (error) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('Could not hydrate invoice customer label:', error);
+      }
+    }
+  }, [customersById]);
+
+  const hydrateInvoiceLineItemsForEdit = useCallback(async (rows: any[]): Promise<InvoiceLineItem[]> => {
+    const rawRows = Array.isArray(rows) ? rows : [];
+    const laborIds = [...new Set(rawRows
+      .filter((item) => item?.item_type === 'labor' && item.reference_id)
+      .map((item) => String(item.reference_id)))];
+    const partIds = [...new Set(rawRows
+      .filter((item) => item?.item_type === 'part' && item.reference_id)
+      .map((item) => String(item.reference_id)))];
+
+    const [laborResult, partResult] = await Promise.all([
+      laborIds.length > 0
+        ? supabase.from('labor_items').select('id, service_name, description').in('id', laborIds)
+        : Promise.resolve({ data: [] as any[], error: null }),
+      partIds.length > 0
+        ? supabase.from('parts').select('id, part_name, part_number, description').in('id', partIds)
+        : Promise.resolve({ data: [] as any[], error: null }),
+    ]);
+
+    if (process.env.NODE_ENV !== 'production') {
+      if ((laborResult as any).error) console.warn('Invoice labor label hydration failed:', (laborResult as any).error);
+      if ((partResult as any).error) console.warn('Invoice part label hydration failed:', (partResult as any).error);
+    }
+
+    const hydratedLaborById = new Map<string, any>([
+      ...Array.from(laborItemsById.entries()),
+      ...(((laborResult as any).data || []).map((labor: any) => [String(labor.id), labor] as [string, any])),
+    ]);
+    const hydratedPartById = new Map<string, any>([
+      ...Array.from(inventoryById.entries()),
+      ...(((partResult as any).data || []).map((part: any) => [String(part.id), part] as [string, any])),
+    ]);
+
+    return rawRows.map((item) => {
+      const itemType = ((item.item_type as 'labor' | 'part') || 'labor') as 'labor' | 'part';
+      const referenceId = item.reference_id || null;
+      const labor = itemType === 'labor' && referenceId ? hydratedLaborById.get(String(referenceId)) : null;
+      const part = itemType === 'part' && referenceId ? hydratedPartById.get(String(referenceId)) : null;
+
+      return {
+        item_type: itemType,
+        reference_id: referenceId,
+        description: item.description || '',
+        item_name: item.item_name || labor?.service_name || part?.part_name || null,
+        item_number: item.item_number || item.part_number || part?.part_number || null,
+        quantity: Number(item.quantity) || 1,
+        unit_price: Number(item.unit_price) || 0,
+        total_price: Number(item.total_price) || 0,
+        discount_type: ((item as any).discount_type || 'none') as 'none' | 'percentage' | 'fixed',
+        discount_value: Number((item as any).discount_value) || 0,
+        discount_amount: Number((item as any).discount_amount) || 0,
+        taxable: (item as any).taxable !== false,
+        lineId: newLineId(),
+      };
+    });
+  }, [inventoryById, laborItemsById]);
+  const buildInvoiceLineItemsPayload = useCallback((
+    invoiceId: string,
+    items: InvoiceLineItem[],
+    options: { includeLabels?: boolean; includeDiscounts?: boolean } = {}
+  ) => {
+    const includeLabels = options.includeLabels !== false;
+    const includeDiscounts = options.includeDiscounts !== false;
+
+    return items.map((item) => {
+      const payload: Record<string, any> = {
+        invoice_id: invoiceId,
+        item_type: item.item_type,
+        reference_id: item.reference_id || null,
+        description: getInvoiceLineItemStoredDescription(item) || '',
+        quantity: Number(item.quantity) || 1,
+        unit_price: Number(item.unit_price) || 0,
+        total_price: Number(item.total_price) || 0,
+        taxable: item.taxable !== false,
+      };
+
+      if (includeLabels) {
+        payload.item_name = item.item_name || (!item.reference_id ? item.description || null : null);
+        payload.item_number = item.item_number || null;
+      }
+
+      if (includeDiscounts) {
+        payload.discount_type = item.discount_type || 'none';
+        payload.discount_value = Number(item.discount_value) || 0;
+        payload.discount_amount = Number(item.discount_amount) || 0;
+      }
+
+      return payload;
+    });
+  }, [getInvoiceLineItemStoredDescription]);
+
+  const insertInvoiceLineItems = useCallback(async (invoiceId: string, items: InvoiceLineItem[]) => {
+    const attempts = [
+      { includeLabels: true, includeDiscounts: true },
+      { includeLabels: false, includeDiscounts: true },
+      { includeLabels: false, includeDiscounts: false },
+    ];
+
+    let lastError: any = null;
+    for (const attempt of attempts) {
+      const payload = buildInvoiceLineItemsPayload(invoiceId, items, attempt);
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('Saving invoice line items payload:', payload.map((line) => ({
+          item_type: line.item_type,
+          reference_id: line.reference_id,
+          item_name: line.item_name,
+          item_number: line.item_number,
+          description: line.description,
+          quantity: line.quantity,
+          unit_price: line.unit_price,
+          total_price: line.total_price,
+        })));
+      }
+
+      const result = await supabase
+        .from('invoice_line_items')
+        .insert(payload)
+        .select('id');
+
+      if (!result.error) {
+        return { data: result.data || [], error: null };
+      }
+
+      lastError = result.error;
+      const msg = String(result.error.message || '').toLowerCase();
+      const code = String(result.error.code || '');
+      const canRetry =
+        code === '42703' ||
+        code === 'PGRST204' ||
+        msg.includes('discount_') ||
+        msg.includes('item_name') ||
+        msg.includes('item_number') ||
+        msg.includes('column') ||
+        msg.includes('schema cache');
+
+      if (!canRetry) break;
+    }
+
+    return { data: [] as any[], error: lastError };
+  }, [buildInvoiceLineItemsPayload]);
+
+  const replaceInvoiceLineItemsSafely = useCallback(async (
+    invoiceId: string,
+    oldRows: any[] | null | undefined,
+    newItems: InvoiceLineItem[]
+  ) => {
+    const insertResult = await insertInvoiceLineItems(invoiceId, newItems);
+    if (insertResult.error) return insertResult.error;
+
+    const oldIds = (oldRows || []).map((row) => row?.id).filter(Boolean);
+    if (oldIds.length === 0) return null;
+
+    const deleteResult = await supabase
+      .from('invoice_line_items')
+      .delete()
+      .in('id', oldIds);
+
+    if (deleteResult.error) {
+      const insertedIds = (insertResult.data || []).map((row: any) => row?.id).filter(Boolean);
+      if (insertedIds.length > 0) {
+        await supabase.from('invoice_line_items').delete().in('id', insertedIds);
+      }
+      return deleteResult.error;
+    }
+
+    return null;
+  }, [insertInvoiceLineItems]);
   
   // Part name and part number autocomplete
   const [partNameSearch, setPartNameSearch] = useState('');
@@ -13269,6 +13527,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                           notes: effectiveNotes,
                                           internal_notes: effectiveInternalNotes
                                         });
+                                        await hydrateInvoiceCustomerDisplay(invoice.customer_id, (invoice as any).customer);
                                         
                                         // Fetch fleet discounts for this customer
                                         if (invoice.customer_id) {
@@ -13304,24 +13563,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
                                         // Set up line items
                                         if (lineItems && lineItems.length > 0) {
-                                          console.log('Setting line items:', lineItems);
-                                          const mappedItems = lineItems.map(item => {
-                                            const mapped = {
-                                              item_type: (item.item_type as 'labor' | 'part') || 'labor',
-                                              reference_id: item.reference_id || null,
-                                              description: item.description || '',
-                                              quantity: Number(item.quantity) || 1,
-                                              unit_price: Number(item.unit_price) || 0,
-                                              total_price: Number(item.total_price) || 0,
-                                              discount_type: ((item as any).discount_type || 'none') as 'none' | 'percentage' | 'fixed',
-                                              discount_value: Number((item as any).discount_value) || 0,
-                                              discount_amount: Number((item as any).discount_amount) || 0,
-                                              taxable: (item as any).taxable !== false,
-                                              lineId: newLineId()
-                                            };
-                                            console.log('Mapped item:', mapped);
-                                            return mapped;
-                                          });
+                                          const mappedItems = await hydrateInvoiceLineItemsForEdit(lineItems);
+                                          if (process.env.NODE_ENV !== 'production') {
+                                            console.debug('Invoice line items hydrated for edit:', mappedItems.map((line) => ({
+                                              type: line.item_type,
+                                              reference_id: line.reference_id,
+                                              display: getInvoiceLineItemDisplayName(line),
+                                            })));
+                                          }
                                           setInvoiceLineItems(ensureInvoiceLineItemPadding(mappedItems));
                                         } else {
                                           console.log('No line items found in database for invoice:', invoice.id);
@@ -13532,6 +13781,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         notes: effectiveNotes,
                         internal_notes: effectiveInternalNotes
                       });
+                      await hydrateInvoiceCustomerDisplay(invoice.customer_id, (invoice as any).customer);
                                       
                                       // Fetch fleet discounts for this customer
                                       if (invoice.customer_id) {
@@ -13567,24 +13817,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
                                       // Set up line items
                                       if (lineItems && lineItems.length > 0) {
-                                        console.log('Setting line items:', lineItems);
-                                        const mappedItems = lineItems.map(item => {
-                                          const mapped = {
-                                            item_type: (item.item_type as 'labor' | 'part') || 'labor',
-                                            reference_id: item.reference_id || null,
-                                            description: item.description || '',
-                                            quantity: Number(item.quantity) || 1,
-                                            unit_price: Number(item.unit_price) || 0,
-                                            total_price: Number(item.total_price) || 0,
-                                          discount_type: ((item as any).discount_type || 'none') as 'none' | 'percentage' | 'fixed',
-                                          discount_value: Number((item as any).discount_value) || 0,
-                                          discount_amount: Number((item as any).discount_amount) || 0,
-                                          taxable: (item as any).taxable !== false,
-                                          lineId: newLineId()
-                                          };
-                                          console.log('Mapped item:', mapped);
-                                          return mapped;
-                                        });
+                                        const mappedItems = await hydrateInvoiceLineItemsForEdit(lineItems);
+                                        if (process.env.NODE_ENV !== 'production') {
+                                          console.debug('Invoice line items hydrated for edit:', mappedItems.map((line) => ({
+                                            type: line.item_type,
+                                            reference_id: line.reference_id,
+                                            display: getInvoiceLineItemDisplayName(line),
+                                          })));
+                                        }
                                       setInvoiceLineItems(ensureInvoiceLineItemPadding(mappedItems));
                                       } else {
                                         console.log('No line items found in database for invoice:', invoice.id);
@@ -20280,16 +20520,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
                         {(() => {
                           // Filter customers by name (individual or company) or phone number
-                          const searchLower = invoiceCustomerSearch.toLowerCase().trim();
+                          const searchLower = debouncedInvoiceCustomerSearch.toLowerCase().trim();
                           
                           // If no search query, show all customers
                           if (!searchLower) {
-                            return customers.map((customer) => {
-                              const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
-                              const customerName = customer.company || individualName || 'Unknown';
-                              const displayName = customer.is_fleet 
-                                ? customer.company || individualName || 'Unknown'
-                                : individualName || customer.company || 'Unknown';
+                            return customers.slice(0, 25).map((customer) => {
+                              const displayName = getCustomerDisplayName(customer);
                               
                               return (
                                 <div
@@ -20353,7 +20589,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             });
                           }
                           
-                          const searchQuery = invoiceCustomerSearch.trim();
+                          const searchQuery = debouncedInvoiceCustomerSearch.trim();
+                          if (invoiceCustomerSearch.trim().length > 0 && searchQuery.length < 2) {
+                            return (
+                              <div className="px-4 py-3 text-sm text-gray-500">
+                                Type at least 2 characters to search customers
+                              </div>
+                            );
+                          }
                           const filteredCustomers = customers.filter(customer => matchesCustomerLookup(customer, searchQuery));
                           const hasExactMatch = filteredCustomers.some(customer => hasExactCustomerLookupMatch(customer, searchQuery));
                           const isPhoneNumber = isPhoneSearchQuery(searchQuery);
@@ -20393,11 +20636,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             <>
                               {filteredCustomers.map((customer) => {
                             // Display name: for individuals use first+last, for fleets use company
-                            const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
-                            const customerName = customer.company || individualName || 'Unknown';
-                            const displayName = customer.is_fleet 
-                              ? customer.company || individualName || 'Unknown'
-                              : individualName || customer.company || 'Unknown';
+                            const displayName = getCustomerDisplayName(customer);
                             
                             return (
                               <div
@@ -20624,25 +20863,32 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     {invoiceLineItems.map((item, idx) => {
                       const lineUiKey = item.lineId || String(idx);
                       const searchTerm = invoiceItemSearch[lineUiKey] || '';
+                      const debouncedSearchTerm = debouncedInvoiceItemSearch[lineUiKey] || '';
                       const selectedItemName = item.reference_id ? getInvoiceLineItemDisplayName(item) : null;
                       const itemNote = getInvoiceLineItemNote(item);
                       const showNoteInput = Boolean(item.reference_id && (invoiceLineDescriptionOpen[lineUiKey] || itemNote));
-                      const searchLower = searchTerm.toLowerCase();
+                      const trimmedSearch = searchTerm.trim();
+                      const debouncedTrimmedSearch = debouncedSearchTerm.trim();
+                      const searchLower = debouncedTrimmedSearch.toLowerCase();
+                      const canSearchItems = debouncedTrimmedSearch.length >= 2;
                       const combinedInvoiceItemOptions: (
                         | { source: 'labor'; option: (typeof laborItems)[number] }
                         | { source: 'part'; option: (typeof inventory)[number] }
-                      )[] = [
-                        ...laborItems
-                          .filter((li) => li.service_name.toLowerCase().includes(searchLower))
-                          .map((li) => ({ source: 'labor' as const, option: li })),
-                        ...inventory
-                          .filter((p) => {
-                            const pn = (p.part_name || '').toLowerCase();
-                            const pnum = (p.part_number || '').toLowerCase();
-                            return pn.includes(searchLower) || pnum.includes(searchLower);
-                          })
-                          .map((p) => ({ source: 'part' as const, option: p })),
-                      ].sort((a, b) => {
+                      )[] = (canSearchItems
+                        ? [
+                            ...invoiceLaborOptionRows.filter(({ option }) =>
+                              option.service_name.toLowerCase().includes(searchLower)
+                            ),
+                            ...invoicePartOptionRows.filter(({ option }) => {
+                              const pn = (option.part_name || '').toLowerCase();
+                              const pnum = (option.part_number || '').toLowerCase();
+                              return pn.includes(searchLower) || pnum.includes(searchLower);
+                            }),
+                          ]
+                        : trimmedSearch.length === 0
+                          ? [...invoiceLaborOptionRows.slice(0, 8), ...invoicePartOptionRows.slice(0, 8)]
+                          : []
+                      ).sort((a, b) => {
                         const la = a.source === 'labor' ? a.option.service_name : a.option.part_name || '';
                         const lb = b.source === 'labor' ? b.option.service_name : b.option.part_name || '';
                         return la.localeCompare(lb, undefined, { sensitivity: 'base' });
@@ -20654,7 +20900,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             value={item.item_type}
                             onChange={(e) => {
                               const t = e.target.value as 'labor' | 'part';
-                              setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, item_type: t, reference_id: null, description: '', unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
+                              setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, item_type: t, reference_id: null, description: '', item_name: null, item_number: null, unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
                               setInvoiceItemSearch(prev => ({ ...prev, [lineUiKey]: '' }));
                             }}
                             className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
@@ -20679,7 +20925,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 const newValue = e.target.value;
                                 // If user starts typing and there's a selected item, clear the selection to allow searching
                                 if (item.reference_id && newValue !== selectedItemName) {
-                                  setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, reference_id: null, description: newValue, unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
+                                  setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, reference_id: null, description: newValue, item_name: null, item_number: null, unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
                                 } else if (!item.reference_id) {
                                   setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, description: newValue } : p));
                                 }
@@ -20726,6 +20972,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                                   item_type: 'labor',
                                                   reference_id: li.id,
                                                   description: '',
+                                                  item_name: li.service_name || '',
+                                                  item_number: null,
                                                   unit_price: finalPrice,
                                                 }),
                                               }
@@ -20765,6 +21013,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                                   item_type: 'part',
                                                   reference_id: pi.id,
                                                   description: '',
+                                                  item_name: pi.part_name || '',
+                                                  item_number: pi.part_number || null,
                                                   unit_price: pi ? Number(pi.selling_price) || 0 : 0,
                                                 }),
                                               }
@@ -20822,48 +21072,54 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 })}
                                 {combinedInvoiceItemOptions.length === 0 && (
                                   <div className="px-3 py-2 space-y-2">
-                                    <div className="text-sm text-gray-500">No items found</div>
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        setCreatingPartFromInvoice(true);
-                                        setCreatingPartForLineItem(idx);
-                                        const searchQuery = searchTerm.trim();
-                                        if (searchQuery) {
-                                          const looksLikePartNumber = /[0-9]/.test(searchQuery);
-                                          if (looksLikePartNumber) {
-                                            setInventoryForm((prev) => ({ ...prev, sku: searchQuery, name: searchQuery }));
-                                          } else {
-                                            setInventoryForm((prev) => ({ ...prev, name: searchQuery }));
-                                          }
-                                        }
-                                        setShowAddInventoryModal(true);
-                                      }}
-                                      className="w-full px-3 py-1.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
-                                    >
-                                      <Plus className="h-4 w-4" />
-                                      Create New Part
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        setCreatingLaborFromInvoice(true);
-                                        setCreatingLaborForLineItem(idx);
-                                        const searchQuery = searchTerm.trim();
-                                        if (searchQuery) {
-                                          setLaborForm((prev) => ({ ...prev, service_name: searchQuery }));
-                                        }
-                                        setShowAddLaborModal(true);
-                                      }}
-                                      className="w-full px-3 py-1.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
-                                    >
-                                      <Plus className="h-4 w-4" />
-                                      Create New Labor
-                                    </button>
+                                    {trimmedSearch.length < 2 ? (
+                                      <div className="text-sm text-gray-500">Type at least 2 characters to search</div>
+                                    ) : (
+                                      <>
+                                        <div className="text-sm text-gray-500">No items found</div>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            setCreatingPartFromInvoice(true);
+                                            setCreatingPartForLineItem(idx);
+                                            const searchQuery = searchTerm.trim();
+                                            if (searchQuery) {
+                                              const looksLikePartNumber = /[0-9]/.test(searchQuery);
+                                              if (looksLikePartNumber) {
+                                                setInventoryForm((prev) => ({ ...prev, sku: searchQuery, name: searchQuery }));
+                                              } else {
+                                                setInventoryForm((prev) => ({ ...prev, name: searchQuery }));
+                                              }
+                                            }
+                                            setShowAddInventoryModal(true);
+                                          }}
+                                          className="w-full px-3 py-1.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
+                                        >
+                                          <Plus className="h-4 w-4" />
+                                          Create New Part
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            setCreatingLaborFromInvoice(true);
+                                            setCreatingLaborForLineItem(idx);
+                                            const searchQuery = searchTerm.trim();
+                                            if (searchQuery) {
+                                              setLaborForm((prev) => ({ ...prev, service_name: searchQuery }));
+                                            }
+                                            setShowAddLaborModal(true);
+                                          }}
+                                          className="w-full px-3 py-1.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
+                                        >
+                                          <Plus className="h-4 w-4" />
+                                          Create New Labor
+                                        </button>
+                                      </>
+                                    )}
                                   </div>
                                 )}
                               </div>
@@ -21732,59 +21988,16 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         return;
                       }
 
-                      // Delete existing line items and create new ones (keep this fast for <1s UX)
-                      await supabase
-                        .from('invoice_line_items')
-                        .delete()
-                        .eq('invoice_id', editingInvoice.id);
-
-                      if (nonEmptyLineItems.length > 0) {
-                        // Build payload from current state only (no duplicate entries; one row per line item)
-                        const lineItemsPayload = nonEmptyLineItems.map(item => ({
-                          invoice_id: editingInvoice.id,
-                          item_type: item.item_type,
-                          reference_id: item.reference_id || null,
-                          description: getInvoiceLineItemStoredDescription(item),
-                          quantity: item.quantity,
-                          unit_price: item.unit_price,
-                          total_price: item.total_price,
-                          discount_type: item.discount_type || 'none',
-                          discount_value: Number(item.discount_value) || 0,
-                          discount_amount: Number(item.discount_amount) || 0,
-                          taxable: item.taxable !== false
-                        }));
-
-                        let { error: lineItemsError } = await supabase
-                          .from('invoice_line_items')
-                          .insert(lineItemsPayload);
-                        if (lineItemsError) {
-                          const msg = String(lineItemsError.message || '');
-                          const code = String(lineItemsError.code || '');
-                          const isDiscountColumnMissing =
-                            code === '42703' ||
-                            code === 'PGRST204' ||
-                            msg.toLowerCase().includes('discount_');
-                          if (isDiscountColumnMissing) {
-                            const payloadWithoutDiscounts = nonEmptyLineItems.map(item => ({
-                              invoice_id: editingInvoice.id,
-                              item_type: item.item_type,
-                              reference_id: item.reference_id || null,
-                              description: getInvoiceLineItemStoredDescription(item),
-                              quantity: item.quantity,
-                              unit_price: item.unit_price,
-                              total_price: item.total_price,
-                              taxable: item.taxable !== false
-                            }));
-                            const retry = await supabase.from('invoice_line_items').insert(payloadWithoutDiscounts);
-                            lineItemsError = retry.error;
-                          }
-                        }
-                        if (lineItemsError) {
-                          console.error('Could not save invoice line items:', lineItemsError);
-                          alert(`Failed to save line items. Please try Update again.\n\n${lineItemsError.message || ''}`);
-                          setInvoiceSaveInProgress(false);
-                          return;
-                        }
+                      const lineItemsError = await replaceInvoiceLineItemsSafely(
+                        editingInvoice.id,
+                        oldLineItems,
+                        savableLineItems
+                      );
+                      if (lineItemsError) {
+                        console.error('Could not save invoice line items:', lineItemsError);
+                        showToast({ type: 'error', message: 'Failed to save invoice line items. Please try again.' });
+                        setInvoiceSaveInProgress(false);
+                        return;
                       }
 
                       // Run inventory adjustments in background so modal closes in <1s
@@ -21801,8 +22014,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           if (oldItemsForInventory.length > 0) {
                             await adjustInventoryForInvoice(editingInvoice.id, oldItemsForInventory, 'add', true);
                           }
-                          if (nonEmptyLineItems.length > 0) {
-                            await adjustInventoryForInvoice(editingInvoice.id, nonEmptyLineItems, 'subtract', true);
+                          if (savableLineItems.length > 0) {
+                            await adjustInventoryForInvoice(editingInvoice.id, savableLineItems, 'subtract', true);
                           }
                           fetchInventory();
                         } catch (e) {
@@ -22003,53 +22216,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       }
 
                       // Create invoice line items if the table exists
-                      if (nonEmptyLineItems.length > 0) {
-                        const lineItemsPayload = nonEmptyLineItems.map(item => ({
-                          invoice_id: invoice.id,
-                          item_type: item.item_type,
-                          reference_id: item.reference_id || null,
-                          description: getInvoiceLineItemStoredDescription(item),
-                          quantity: item.quantity,
-                          unit_price: item.unit_price,
-                          total_price: item.total_price,
-                          discount_type: item.discount_type || 'none',
-                          discount_value: Number(item.discount_value) || 0,
-                          discount_amount: Number(item.discount_amount) || 0,
-                          taxable: item.taxable !== false
-                        }));
-
-                        let { error: lineItemsError } = await supabase
-                          .from('invoice_line_items')
-                          .insert(lineItemsPayload);
+                      if (savableLineItems.length > 0) {
+                        const { error: lineItemsError } = await insertInvoiceLineItems(invoice.id, savableLineItems);
                         if (lineItemsError) {
-                          const msg = String(lineItemsError.message || '');
-                          const code = String(lineItemsError.code || '');
-                          const isDiscountColumnMissing =
-                            code === '42703' ||
-                            code === 'PGRST204' ||
-                            msg.toLowerCase().includes('discount_');
-                          if (isDiscountColumnMissing) {
-                            const payloadWithoutDiscounts = nonEmptyLineItems.map(item => ({
-                              invoice_id: invoice.id,
-                              item_type: item.item_type,
-                              reference_id: item.reference_id || null,
-                              description: getInvoiceLineItemStoredDescription(item),
-                              quantity: item.quantity,
-                              unit_price: item.unit_price,
-                              total_price: item.total_price,
-                              taxable: item.taxable !== false
-                            }));
-                            const retry = await supabase.from('invoice_line_items').insert(payloadWithoutDiscounts);
-                            lineItemsError = retry.error;
-                          }
+                          console.error('Could not create invoice line items:', lineItemsError);
+                          await supabase.from('invoices').delete().eq('id', invoice.id);
+                          showToast({ type: 'error', message: 'Failed to save invoice line items. Please try again.' });
+                          return;
                         }
-                        if (lineItemsError) {
-                          // Log but don't fail - line items table or optional columns may be missing
-                          console.warn('Could not create invoice line items:', lineItemsError);
-                        } else {
-                          // Successfully created line items - adjust inventory for any parts used
-                          await adjustInventoryForInvoice(invoice.id, nonEmptyLineItems);
-                        }
+                        await adjustInventoryForInvoice(invoice.id, savableLineItems);
                       }
 
                       showToast({ type: 'success', message: 'Invoice created' });
@@ -23875,6 +24050,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             item_type: 'labor',
                             reference_id: newLabor.id,
                             description: '',
+                            item_name: newLabor.service_name || '',
+                            item_number: null,
                             unit_price: finalRate,
                           }),
                         }
@@ -24278,6 +24455,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               item_type: 'part',
                               reference_id: newPart.id,
                               description: '',
+                              item_name: newPart.part_name || '',
+                              item_number: newPart.part_number || null,
                               unit_price: newPart.selling_price || 0,
                             }),
                           }
