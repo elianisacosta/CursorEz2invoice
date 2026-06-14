@@ -1,7 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { buildInvoiceDocumentModel } from './buildInvoiceDocumentModel';
 import {
-  ensureLegacyPayments,
   normalizeInvoiceRecord,
   normalizeLineItems,
   normalizePayments,
@@ -165,7 +164,6 @@ export async function loadInvoiceDocumentData(
     };
   });
   let payments = normalizePayments(paymentData);
-  payments = ensureLegacyPayments(invoice, payments);
 
   let shopId = (rawInvoice.shop_id as string | null) || null;
   if (!shopId && userResult.data.user?.id) {

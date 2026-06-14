@@ -119,23 +119,3 @@ export function normalizePayments(rows: unknown[]): InvoiceDocumentPayment[] {
     .filter((row): row is RawRecord => !!row && typeof row === 'object')
     .map((row) => normalizeInvoicePayment(row));
 }
-
-/** Legacy invoices may only have paid_amount on the invoice row — synthesize one payment row. */
-export function ensureLegacyPayments(
-  invoice: InvoiceDocumentInvoice,
-  payments: InvoiceDocumentPayment[]
-): InvoiceDocumentPayment[] {
-  if (payments.length > 0) return payments;
-
-  const paid = Number(invoice.paid_amount) || 0;
-  if (paid <= 0) return payments;
-
-  return [
-    {
-      amount: paid,
-      card_fee: 0,
-      payment_method: 'Other',
-      created_at: invoice.created_at || null,
-    },
-  ];
-}

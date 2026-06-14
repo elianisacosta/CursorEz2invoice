@@ -2,8 +2,17 @@
 
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import Link from 'next/link';
+import { createPortal } from 'react-dom';
 import { supabase } from '@/lib/supabase';
 import { WheelSafeNumberInput } from '@/components/ui/WheelSafeNumberInput';
+import {
+  calculateInvoiceFinancials,
+  getSavedPaymentAppliedToInvoice,
+  getSavedPaymentCardFee,
+  getSavedPaymentTotalCollected,
+  summarizeSavedInvoicePayments,
+  type InvoicePaymentLike,
+} from '@/lib/invoices/invoicePaymentSummary';
 import {
   DUPLICATE_LINE_ITEM_TOAST,
   laborLineItemSelection,
@@ -760,7 +769,56 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
 
   const [invoiceLineItems, setInvoiceLineItems] = useState<InvoiceLineItem[]>(createBlankInvoiceLineItems(2));
   const [invoiceItemSearch, setInvoiceItemSearch] = useState<Record<string, string>>({});
+  const invoiceItemInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const [activeInvoiceItemDropdownKey, setActiveInvoiceItemDropdownKey] = useState<string | null>(null);
+  const [invoiceItemDropdownPosition, setInvoiceItemDropdownPosition] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    maxHeight: number;
+  } | null>(null);
   const [invoiceLineDescriptionOpen, setInvoiceLineDescriptionOpen] = useState<Record<string, boolean>>({});
+  const updateInvoiceItemDropdownPosition = useCallback((lineUiKey: string | null = activeInvoiceItemDropdownKey) => {
+    if (typeof window === 'undefined' || !lineUiKey) return;
+    const input = invoiceItemInputRefs.current[lineUiKey];
+    if (!input) return;
+
+    const rect = input.getBoundingClientRect();
+    const viewportPadding = 12;
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+    const spaceAbove = rect.top - viewportPadding;
+    const openAbove = spaceBelow < 220 && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(160, Math.min(320, openAbove ? spaceAbove : spaceBelow));
+    const desiredWidth = Math.max(260, rect.width);
+    const width = Math.min(desiredWidth, window.innerWidth - viewportPadding * 2);
+    const left = Math.min(
+      Math.max(viewportPadding, rect.left),
+      Math.max(viewportPadding, window.innerWidth - width - viewportPadding)
+    );
+
+    setInvoiceItemDropdownPosition({
+      left,
+      top: openAbove ? Math.max(viewportPadding, rect.top - maxHeight - 4) : rect.bottom + 4,
+      width,
+      maxHeight,
+    });
+  }, [activeInvoiceItemDropdownKey]);
+  useEffect(() => {
+    if (!activeInvoiceItemDropdownKey) {
+      setInvoiceItemDropdownPosition(null);
+      return;
+    }
+
+    updateInvoiceItemDropdownPosition(activeInvoiceItemDropdownKey);
+    const handlePositionUpdate = () => updateInvoiceItemDropdownPosition(activeInvoiceItemDropdownKey);
+    window.addEventListener('resize', handlePositionUpdate);
+    window.addEventListener('scroll', handlePositionUpdate, true);
+
+    return () => {
+      window.removeEventListener('resize', handlePositionUpdate);
+      window.removeEventListener('scroll', handlePositionUpdate, true);
+    };
+  }, [activeInvoiceItemDropdownKey, updateInvoiceItemDropdownPosition]);
   useEffect(() => {
     setInvoiceLineItems((prev) => {
       const padded = ensureInvoiceLineItemPadding(prev);
@@ -823,8 +881,44 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     }
     return false;
   };
-  const [invoicePayments, setInvoicePayments] = useState<any[]>([]);
+  const [invoicePayments, setInvoicePayments] = useState<InvoicePaymentLike[]>([]);
+  const [editingInvoicePayments, setEditingInvoicePayments] = useState<InvoicePaymentLike[]>([]);
   const [loadingPayments, setLoadingPayments] = useState(false);
+  useEffect(() => {
+    if (!editingInvoice?.id) return;
+    console.log('modal paymentHistory state', {
+      invoice_id: editingInvoice.id,
+      payments: editingInvoicePayments,
+    });
+  }, [editingInvoice?.id, editingInvoicePayments]);
+  const mergeInvoicePaymentsForInvoice = (invoiceId: string, payments: InvoicePaymentLike[]) => {
+    setInvoicePayments((prev) => [
+      ...prev.filter((payment) => payment.invoice_id !== invoiceId),
+      ...(payments || []),
+    ]);
+  };
+  const replaceInvoicePaymentsForInvoices = async (invoiceIds: string[]) => {
+    if (invoiceIds.length === 0) {
+      setInvoicePayments([]);
+      return;
+    }
+
+    try {
+      const { data: payments, error } = await supabase
+        .from('invoice_payments')
+        .select('*')
+        .in('invoice_id', invoiceIds);
+
+      if (error) {
+        console.log('Could not fetch invoice payments:', error);
+        return;
+      }
+
+      setInvoicePayments(payments || []);
+    } catch (error) {
+      console.log('Could not fetch invoice payments:', error);
+    }
+  };
   const [allInvoiceLineItems, setAllInvoiceLineItems] = useState<any[]>([]);
   const [invoiceCustomerDiscounts, setInvoiceCustomerDiscounts] = useState<any[]>([]); // Fleet discounts for current invoice customer
   const [showNewOrderModal, setShowNewOrderModal] = useState(false);
@@ -1248,6 +1342,8 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     if (!showCreateInvoiceModal && !editingInvoice) {
       setInvoiceCustomerSearch('');
       setShowInvoiceCustomerDropdown(false);
+      setActiveInvoiceItemDropdownKey(null);
+      setInvoiceItemDropdownPosition(null);
     }
   }, [showCreateInvoiceModal, editingInvoice]);
   const [customerForm, setCustomerForm] = useState({
@@ -2233,7 +2329,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   };
   useEffect(()=>{ fetchEstimates(); }, [contextShopId]);
 
-  // Fetch invoices from Supabase (invoice_balances_v = single source of truth for paid_amount, balance_due, computed_status)
+  // Fetch invoices from Supabase; payment-derived totals are recalculated from invoice_payments.
   const fetchInvoices = async (overrideSortDir?: 'asc' | 'desc') => {
     setInvoicesLoading(true);
     try {
@@ -2278,6 +2374,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           const { data: invData, error: invError } = await fallbackQuery;
           if (!invError && invData) {
             const list = invData as unknown as Invoice[];
+            await replaceInvoicePaymentsForInvoices(list.map((inv) => inv.id).filter(Boolean));
             setInvoices((prev) => {
               const opt = lastOptimisticInvoiceRef.current;
               lastOptimisticInvoiceRef.current = null;
@@ -2310,6 +2407,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           ...row,
           customer: row.customer_id ? customerMap[row.customer_id] ?? null : null
         }));
+        await replaceInvoicePaymentsForInvoices(invoicesWithCustomer.map((inv) => inv.id).filter(Boolean));
         setInvoices((prev) => {
           const opt = lastOptimisticInvoiceRef.current;
           lastOptimisticInvoiceRef.current = null;
@@ -2386,7 +2484,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         setInvoicePayments(payments || []);
       } catch (error) {
         console.log('Could not fetch invoice payments:', error);
-        setInvoicePayments([]);
       }
     };
     
@@ -2412,7 +2509,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     if (!invoiceId) return 0;
     const rows = invoicePayments.filter((p: any) => p.invoice_id === invoiceId);
     if (rows.length === 0) return 0;
-    return round2(rows.reduce((s, p: any) => s + (Number(p.amount) || 0), 0));
+    return summarizeSavedInvoicePayments(rows, {
+      invoiceTotal: Number.MAX_SAFE_INTEGER,
+      applyCardFee: false,
+      cardFeePercentage: cardProcessingFeePercentage,
+    }).totalCollected;
   };
 
   const isCardFeeEnabledForInvoice = (
@@ -2425,36 +2526,25 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   };
 
   const getPaymentCardFeePortion = (
-    payment: { amount?: number | null; card_fee?: number | null; payment_method?: string | null },
-    inv?: Invoice | { apply_card_fee?: boolean | null } | null
-  ) => {
-    const explicitFee = Number(payment.card_fee) || 0;
-    if (explicitFee > 0) return round2(explicitFee);
-
-    const method = payment.payment_method === 'finance' ? 'financing' : payment.payment_method;
-    const rate = (cardProcessingFeePercentage || 0) / 100;
-    if (!isCardFeeEnabledForInvoice(inv) || method !== 'card' || rate <= 0) return 0;
-
-    const amount = Number(payment.amount) || 0;
-    return Math.max(0, round2(amount - round2(amount / (1 + rate))));
-  };
+    payment: { amount?: number | null; card_fee?: number | null; payment_method?: string | null }
+  ) => getSavedPaymentCardFee(payment);
 
   const getCardFeeCollectedForInvoice = (
     invoiceId: string | undefined,
     inv?: Invoice | { apply_card_fee?: boolean | null } | null
   ) => {
     if (!invoiceId) return 0;
-    return round2(
-      invoicePayments
-        .filter((p: any) => p.invoice_id === invoiceId)
-        .reduce((sum, p: any) => sum + getPaymentCardFeePortion(p, inv), 0)
-    );
+    const rows = invoicePayments.filter((p: any) => p.invoice_id === invoiceId);
+    return summarizeSavedInvoicePayments(rows, {
+      invoiceTotal: Number.MAX_SAFE_INTEGER,
+      applyCardFee: false,
+      cardFeePercentage: cardProcessingFeePercentage,
+    }).cardFeeCollected;
   };
 
   /**
-   * Base paid toward invoice (sum of base portions on payment rows). No rows → use invoices.paid_amount (base).
-   * If `card_fee` is missing on a row but the method is card and the invoice fee toggle is on, treat `amount` as gross
-   * and split with the shop rate (same as insert path) so validation matches Balance Due / Pay Half.
+   * Base paid toward invoice from saved payment rows only. If no rows exist, use
+   * the invoice row fallback for legacy invoices that predate payment history.
    */
   const getBasePaidForInvoice = (
     invoiceId: string | undefined,
@@ -2464,27 +2554,30 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     if (!invoiceId) return round2(fallbackPaidFromInvoice);
     const rows = invoicePayments.filter((p: any) => p.invoice_id === invoiceId);
     if (rows.length === 0) return round2(fallbackPaidFromInvoice);
-    const feeOn = isCardFeeEnabledForInvoice(inv);
-    const rate = (cardProcessingFeePercentage || 0) / 100;
-    return round2(
-      rows.reduce((s, p: any) => {
-        const amt = Number(p.amount) || 0;
-        const cf = Number(p.card_fee) || 0;
-        if (cf > 0) return s + (amt - cf);
-        const raw = p.payment_method || '';
-        const method = raw === 'finance' ? 'financing' : raw;
-        if (feeOn && method === 'card' && rate > 0) {
-          return s + round2(amt / (1 + rate));
-        }
-        return s + amt;
-      }, 0)
-    );
+    return summarizeSavedInvoicePayments(rows, {
+      invoiceTotal: Number.MAX_SAFE_INTEGER,
+      applyCardFee: false,
+      cardFeePercentage: cardProcessingFeePercentage,
+    }).paidTowardInvoice;
+  };
+
+  const getInvoiceFinancialsForInvoice = (
+    inv: Invoice,
+    overrides?: Partial<Invoice>
+  ) => {
+    const invoice = { ...inv, ...overrides };
+    const rows = invoice.id
+      ? invoicePayments.filter((p: any) => p.invoice_id === invoice.id)
+      : [];
+
+    return calculateInvoiceFinancials(invoice, rows, {
+      cardFeePercentage: cardProcessingFeePercentage,
+      allowLegacyFallback: true,
+    });
   };
 
   const getBaseBalanceDueForInvoice = (inv: Invoice) => {
-    const baseTotal = Number(inv.total_amount) || 0;
-    const basePaid = getBasePaidForInvoice(inv.id, Number(inv.paid_amount) || 0, inv);
-    return Math.max(0, round2(baseTotal - basePaid));
+    return getInvoiceFinancialsForInvoice(inv).balanceBeforeCardFee;
   };
 
   /**
@@ -2492,9 +2585,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
    * The fee toggle controls whether a card fee is shown/calculated; payment method alone never enables it.
    */
   const getBalanceDueFromPayments = (inv: Invoice) => {
-    const baseBalance = getBaseBalanceDueForInvoice(inv);
-    const cardFee = getCardFeeForBaseBalance(baseBalance, isCardFeeEnabledForInvoice(inv));
-    return Math.max(0, round2(baseBalance + cardFee));
+    return getInvoiceFinancialsForInvoice(inv).totalDueToday;
   };
 
   const updateWorkOrderSafely = async (workOrderId: string, updates: Record<string, unknown>, expectedUpdatedAt?: string | null) => {
@@ -2521,7 +2612,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     try {
       const { data: latestInvoice, error: latestInvoiceError } = await supabase
         .from('invoices')
-        .select('id,total_amount,paid_amount,status,paid_at,updated_at,apply_card_fee,card_fee_amount')
+        .select('id,total_amount,paid_amount,status,paid_at,updated_at,apply_card_fee,card_fee_amount,shop_id')
         .eq('id', invoiceForPayment.id)
         .single();
       if (latestInvoiceError || !latestInvoice) {
@@ -2531,11 +2622,24 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       const normalizedMethod = paymentFormData.method === 'finance' ? 'financing' : paymentFormData.method;
       const invoiceBaseTotal = Number(latestInvoice.total_amount) || 0;
-      const alreadyPaidBase = getBasePaidForInvoice(
-        invoiceForPayment.id,
-        Number(latestInvoice.paid_amount) || 0,
-        latestInvoice as Invoice
-      );
+      const { data: existingPaymentRows, error: existingPaymentsError } = await supabase
+        .from('invoice_payments')
+        .select('*')
+        .eq('invoice_id', invoiceForPayment.id);
+      if (existingPaymentsError) {
+        console.error('Could not load saved payments before recording payment:', existingPaymentsError);
+        alert('Could not load current payment history. Please refresh and try again.');
+        return;
+      }
+      const existingPayments = existingPaymentRows || [];
+      const existingPaymentSummary = summarizeSavedInvoicePayments(existingPayments, {
+        invoiceTotal: invoiceBaseTotal,
+        applyCardFee: false,
+        cardFeePercentage: cardProcessingFeePercentage,
+      });
+      const alreadyPaidBase = existingPayments.length > 0
+        ? existingPaymentSummary.paidTowardInvoice
+        : round2(Number(latestInvoice.paid_amount) || 0);
       const baseRemainingBefore = Math.max(0, invoiceBaseTotal - alreadyPaidBase);
       const cardFeeRate = (cardProcessingFeePercentage || 0) / 100;
       const feeEnabledOnInvoice = (latestInvoice as any).apply_card_fee === true;
@@ -2565,9 +2669,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       const newPaidAmount = round2(alreadyPaidBase + paymentBasePortion);
       const remainingBase = Math.max(0, invoiceBaseTotal - newPaidAmount);
-      const nextCardFeeAmount = feeEnabledOnInvoice
-        ? getCardFeeForBaseBalance(remainingBase, true)
-        : 0;
 
       // Determine status based on remaining base amount (fees are per transaction only)
       let newStatus = latestInvoice.status;
@@ -2598,26 +2699,71 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         .gte('created_at', duplicateCutoff)
         .limit(1);
       if (likelyDuplicate && likelyDuplicate.length > 0) {
+        const { data: duplicatePaymentRows, error: duplicatePaymentRowsError } = await supabase
+          .from('invoice_payments')
+          .select('*')
+          .eq('invoice_id', invoiceForPayment.id)
+          .order('created_at', { ascending: false });
+
+        console.log('refetched payments after insert', {
+          invoice_id: invoiceForPayment.id,
+          shop_id: latestInvoice.shop_id || null,
+          payments: duplicatePaymentRows || [],
+          error: duplicatePaymentRowsError || null,
+        });
+
+        if (!duplicatePaymentRowsError) {
+          mergeInvoicePaymentsForInvoice(invoiceForPayment.id, duplicatePaymentRows || []);
+          if (editingInvoice?.id === invoiceForPayment.id) {
+            setEditingInvoicePayments(duplicatePaymentRows || []);
+          }
+        }
         showToast({ type: 'success', message: 'Payment already saved from another session.' });
+        setShowRecordPaymentModal(false);
+        setInvoiceForPayment(null);
+        setPaymentFormData({
+          amount: '',
+          method: 'card',
+          applyCardFee: false,
+          notes: ''
+        });
         return;
       }
 
       let insertRes = await supabase
         .from('invoice_payments')
         .insert(shouldIncludeCardFee ? insertWithFee : insertPayload)
-        .select('id')
+        .select('*')
         .single();
 
-      if (insertRes.error) {
-        const msg = String((insertRes.error as { message?: string }).message || '');
-        const code = String((insertRes.error as { code?: string }).code || '');
-        const isMissingColumn =
+      const isMissingPaymentFeeColumn = (error: unknown, column: string) => {
+        const msg = String((error as { message?: string } | null)?.message || '').toLowerCase();
+        const code = String((error as { code?: string } | null)?.code || '');
+        return (
           code === 'PGRST204' ||
           code === '42703' ||
-          msg.toLowerCase().includes('card_fee') ||
-          msg.includes('schema cache');
-        if (isMissingColumn && shouldIncludeCardFee) {
-          insertRes = await supabase.from('invoice_payments').insert(insertPayload).select('id').single();
+          msg.includes(column.toLowerCase()) ||
+          msg.includes('schema cache')
+        );
+      };
+
+      if (insertRes.error) {
+        if (shouldIncludeCardFee && isMissingPaymentFeeColumn(insertRes.error, 'card_fee')) {
+          insertRes = await supabase
+            .from('invoice_payments')
+            .insert({ ...insertPayload, card_fee_amount: paymentCardFeePortion })
+            .select('*')
+            .single();
+        }
+        if (shouldIncludeCardFee && insertRes.error && isMissingPaymentFeeColumn(insertRes.error, 'card_fee_amount')) {
+          insertRes = await supabase
+            .from('invoice_payments')
+            .insert({ ...insertPayload, processing_fee: paymentCardFeePortion })
+            .select('*')
+            .single();
+        }
+        if (insertRes.error && !shouldIncludeCardFee && isMissingPaymentFeeColumn(insertRes.error, 'card_fee')) {
+          insertRes = await supabase.from('invoice_payments').insert(insertPayload).select('*').single();
         }
       }
 
@@ -2635,12 +2781,47 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         return;
       }
 
-      const insertedId = (insertRes.data as { id?: string } | null)?.id;
+      console.log('inserted payment', {
+        payment: insertRes.data,
+        invoice_id: invoiceForPayment.id,
+        shop_id: latestInvoice.shop_id || null,
+        created_by: userData?.user?.id || null,
+      });
+
+      const { data: savedPaymentRows, error: savedPaymentRowsError } = await supabase
+        .from('invoice_payments')
+        .select('*')
+        .eq('invoice_id', invoiceForPayment.id)
+        .order('created_at', { ascending: false });
+
+      console.log('refetched payments after insert', {
+        invoice_id: invoiceForPayment.id,
+        shop_id: latestInvoice.shop_id || null,
+        payments: savedPaymentRows || [],
+        error: savedPaymentRowsError || null,
+      });
+
+      if (savedPaymentRowsError || !savedPaymentRows?.some((row: any) => row.id === (insertRes.data as any)?.id)) {
+        console.error('Payment insert succeeded but saved row could not be read:', savedPaymentRowsError);
+        alert('Payment history could not be verified. The invoice was not updated. Please refresh and try again.');
+        return;
+      }
+
+      const nextSavedPayments = savedPaymentRows || [];
+      const nextPaymentSummary = summarizeSavedInvoicePayments(nextSavedPayments as InvoicePaymentLike[], {
+        invoiceTotal: invoiceBaseTotal,
+        applyCardFee: feeEnabledOnInvoice,
+        cardFeePercentage: cardProcessingFeePercentage,
+      });
+      mergeInvoicePaymentsForInvoice(invoiceForPayment.id, nextSavedPayments);
+      if (editingInvoice?.id === invoiceForPayment.id) {
+        setEditingInvoicePayments(nextSavedPayments);
+      }
 
       const invoiceUpdatePayload = {
         status: newStatus,
-        paid_amount: newPaidAmount,
-        card_fee_amount: nextCardFeeAmount,
+        paid_amount: nextPaymentSummary.paidTowardInvoice,
+        card_fee_amount: nextPaymentSummary.currentCardFee,
         paid_at: newStatus === 'paid' ? new Date().toISOString() : latestInvoice.paid_at,
         updated_at: new Date().toISOString(),
       };
@@ -2648,35 +2829,21 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         .from('invoices')
         .update(invoiceUpdatePayload)
         .eq('id', invoiceForPayment.id);
-      const { error: invErr } = latestInvoice.updated_at
-        ? await invoiceUpdateQuery.eq('updated_at', latestInvoice.updated_at)
-        : await invoiceUpdateQuery;
+      if ((latestInvoice as any).shop_id) {
+        invoiceUpdateQuery.eq('shop_id', (latestInvoice as any).shop_id);
+      }
+      const { error: invErr } = await invoiceUpdateQuery;
 
       if (invErr) {
-        console.error('Error recording payment:', invErr);
-        if (insertedId) {
-          await supabase.from('invoice_payments').delete().eq('id', insertedId);
-        }
-        alert('Unable to update the invoice after saving the payment. Please try again.');
-        return;
-      }
-      const { data: verifyUpdated } = await supabase
-        .from('invoices')
-        .select('id')
-        .eq('id', invoiceForPayment.id)
-        .eq('paid_amount', newPaidAmount)
-        .limit(1);
-      if (!verifyUpdated || verifyUpdated.length === 0) {
-        if (insertedId) {
-          await supabase.from('invoice_payments').delete().eq('id', insertedId);
-        }
-        alert('This invoice changed on another device before payment could be applied. Please refresh and try again.');
-        return;
+        console.error('Payment saved, but invoice summary sync failed:', invErr);
+        showToast({
+          type: 'error',
+          message: 'Payment saved, but invoice totals could not sync. Please refresh if totals look wrong.',
+        });
+      } else {
+        showToast({ type: 'success', message: 'Payment recorded successfully' });
       }
 
-      showToast({ type: 'success', message: 'Payment recorded successfully' });
-      await fetchInvoices();
-      
       // If edit modal is open for this invoice: refresh editingInvoice (Amount Paid / Balance Due) and payment history
       if (editingInvoice && editingInvoice.id === invoiceForPayment.id) {
         try {
@@ -2688,11 +2855,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           
           if (paymentsError) {
             console.log('Could not fetch payment history (table may not exist):', paymentsError);
-            setInvoicePayments([]);
+            mergeInvoicePaymentsForInvoice(invoiceForPayment.id, nextSavedPayments);
+            setEditingInvoicePayments(nextSavedPayments);
           } else {
-            setInvoicePayments(payments || []);
+            mergeInvoicePaymentsForInvoice(invoiceForPayment.id, payments || []);
+            setEditingInvoicePayments(payments || []);
           }
-          
+
           // Refetch this invoice so Amount Paid and Balance Due update in the edit modal
           const { data: updatedRow } = await supabase
             .from('invoice_balances_v')
@@ -2717,7 +2886,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           console.log('Error refreshing edit modal after payment:', err);
         }
       }
-      
+
       setShowRecordPaymentModal(false);
       setInvoiceForPayment(null);
       setPaymentFormData({
@@ -2726,6 +2895,32 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         applyCardFee: false,
         notes: ''
       });
+
+      void (async () => {
+        await fetchInvoices();
+        if (editingInvoice && editingInvoice.id === invoiceForPayment.id) {
+          try {
+            const { data: refreshedPayments, error: refreshedPaymentsError } = await supabase
+              .from('invoice_payments')
+              .select('*')
+              .eq('invoice_id', invoiceForPayment.id)
+              .order('created_at', { ascending: false });
+
+            if (refreshedPaymentsError) {
+              console.log('Could not refresh payment history after invoice refresh:', refreshedPaymentsError);
+              mergeInvoicePaymentsForInvoice(invoiceForPayment.id, nextSavedPayments);
+              setEditingInvoicePayments(nextSavedPayments);
+            } else {
+              mergeInvoicePaymentsForInvoice(invoiceForPayment.id, refreshedPayments || []);
+              setEditingInvoicePayments(refreshedPayments || []);
+            }
+          } catch (err) {
+            console.log('Error refreshing payment history after invoice refresh:', err);
+            mergeInvoicePaymentsForInvoice(invoiceForPayment.id, nextSavedPayments);
+            setEditingInvoicePayments(nextSavedPayments);
+          }
+        }
+      })();
     } catch (err) {
       console.error('Error recording payment:', err);
       alert('Unexpected error when recording payment.');
@@ -2734,8 +2929,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     }
   };
 
-  /** Remove one payment row and sync invoices.paid_amount + status with remaining invoice_payments. */
-  const handleDeleteInvoicePayment = async (invoiceId: string, payment: { id: string; amount?: number }) => {
+  /** Remove one payment row and sync invoice summary from remaining saved payment rows. */
+  const handleDeleteInvoicePayment = async (invoiceId: string, payment: InvoicePaymentLike) => {
     if (!payment?.id || !invoiceId) return;
     const ok = confirm(
       'Delete this payment? You can record it again with the correct amount or method.'
@@ -2744,73 +2939,96 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
     setDeletingPaymentId(payment.id);
     try {
-      const { error: delErr } = await supabase.from('invoice_payments').delete().eq('id', payment.id);
+      const { data: deletedPayment, error: delErr } = await supabase
+        .from('invoice_payments')
+        .delete()
+        .eq('id', payment.id)
+        .eq('invoice_id', invoiceId)
+        .select('id')
+        .maybeSingle();
       if (delErr) {
         console.error('Error deleting payment:', delErr);
         alert(`Could not delete payment: ${delErr.message || 'Unknown error'}`);
         return;
       }
+      if (!deletedPayment) {
+        alert('Could not delete payment. It may have already been removed or you may not have access to this invoice.');
+        return;
+      }
 
-      const { data: restRows } = await supabase
+      const { data: restRows, error: restRowsError } = await supabase
         .from('invoice_payments')
-        .select('amount, card_fee, payment_method')
+        .select('*')
         .eq('invoice_id', invoiceId);
+      if (restRowsError) {
+        console.error('Error loading remaining payments after delete:', restRowsError);
+        setInvoicePayments((prev) => prev.filter((p: any) => p.id !== payment.id));
+        if (editingInvoice?.id === invoiceId) {
+          setEditingInvoicePayments((prev) => prev.filter((p: any) => p.id !== payment.id));
+        }
+        showToast({ type: 'success', message: 'Payment deleted' });
+        await fetchInvoices();
+        return;
+      }
 
       const { data: invRow, error: invErr } = await supabase
         .from('invoices')
-        .select('total_amount, paid_at, apply_card_fee')
+        .select('total_amount, paid_at, apply_card_fee, shop_id')
         .eq('id', invoiceId)
         .maybeSingle();
 
       if (invErr || !invRow) {
         console.error('Error loading invoice after payment delete:', invErr);
-        showToast({ type: 'success', message: 'Payment removed' });
+        showToast({ type: 'success', message: 'Payment deleted' });
         await fetchInvoices();
-        setInvoicePayments((prev) => prev.filter((p: any) => p.id !== payment.id));
+        mergeInvoicePaymentsForInvoice(invoiceId, restRows || []);
+        if (editingInvoice?.id === invoiceId) {
+          setEditingInvoicePayments(restRows || []);
+        }
         return;
       }
 
       const invoiceTotal = Number((invRow as any).total_amount) || 0;
       const feeEnabled = (invRow as any).apply_card_fee === true;
-      const rate = (cardProcessingFeePercentage || 0) / 100;
-      const newPaid = round2((restRows || []).reduce((s, r: any) => {
-        const amount = Number(r.amount) || 0;
-        const cardFee = Number((r as any).card_fee) || 0;
-        if (cardFee > 0) return s + (amount - cardFee);
-        const method = r.payment_method === 'finance' ? 'financing' : r.payment_method;
-        if (feeEnabled && method === 'card' && rate > 0) {
-          return s + round2(amount / (1 + rate));
-        }
-        return s + amount;
-      }, 0));
-      const remaining = invoiceTotal - newPaid;
-      const nextCardFeeAmount = getCardFeeForBaseBalance(remaining, feeEnabled);
+      const paymentSummary = summarizeSavedInvoicePayments(restRows || [], {
+        invoiceTotal,
+        applyCardFee: feeEnabled,
+        cardFeePercentage: cardProcessingFeePercentage,
+      });
+      const remaining = paymentSummary.balanceBeforeCardFee;
 
       let newStatus: string;
       if (remaining <= 0.01) {
         newStatus = 'paid';
-      } else if (newPaid > 0.01) {
+      } else if (paymentSummary.paidTowardInvoice > 0.01) {
         newStatus = 'partial';
       } else {
         newStatus = invoiceTotal > 0.01 ? 'unpaid' : 'pending';
       }
 
-      const { error: updErr } = await supabase
+      const updateQuery = supabase
         .from('invoices')
         .update({
-          paid_amount: newPaid,
-          card_fee_amount: nextCardFeeAmount,
+          paid_amount: paymentSummary.paidTowardInvoice,
+          card_fee_amount: paymentSummary.currentCardFee,
           status: newStatus,
           paid_at: newStatus === 'paid' ? new Date().toISOString() : null,
         })
         .eq('id', invoiceId);
+      if ((invRow as any).shop_id) {
+        updateQuery.eq('shop_id', (invRow as any).shop_id);
+      }
+      const { error: updErr } = await updateQuery;
 
       if (updErr) {
         console.error('Error updating invoice after payment delete:', updErr);
         alert('Payment was removed but updating the invoice failed. Please refresh and check totals.');
       }
 
-      setInvoicePayments((prev) => prev.filter((p: any) => p.id !== payment.id));
+      mergeInvoicePaymentsForInvoice(invoiceId, restRows || []);
+      if (editingInvoice?.id === invoiceId) {
+        setEditingInvoicePayments(restRows || []);
+      }
       showToast({ type: 'success', message: 'Payment deleted' });
       await fetchInvoices();
 
@@ -2838,65 +3056,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     } catch (e) {
       console.error('handleDeleteInvoicePayment:', e);
       alert('Unexpected error deleting payment.');
-    } finally {
-      setDeletingPaymentId(null);
-    }
-  };
-
-  /** Legacy: paid_amount set on invoice without invoice_payments rows — clear so user can re-record. */
-  const handleClearLegacyInvoicePayment = async (invoiceId: string) => {
-    if (!invoiceId) return;
-    const ok = confirm(
-      'Remove the recorded payment from this invoice? You can use Record Payment to add the correct amount.'
-    );
-    if (!ok) return;
-
-    setDeletingPaymentId('legacy');
-    try {
-      const { data: invRow } = await supabase
-        .from('invoices')
-        .select('total_amount, apply_card_fee')
-        .eq('id', invoiceId)
-        .maybeSingle();
-      const invoiceTotal = Number((invRow as any)?.total_amount) || 0;
-      const nextCardFeeAmount = getCardFeeForBaseBalance(
-        invoiceTotal,
-        (invRow as any)?.apply_card_fee === true
-      );
-
-      const { error } = await supabase
-        .from('invoices')
-        .update({
-          paid_amount: 0,
-          card_fee_amount: nextCardFeeAmount,
-          status: invoiceTotal > 0.01 ? 'unpaid' : 'pending',
-          paid_at: null,
-        })
-        .eq('id', invoiceId);
-
-      if (error) {
-        console.error('Error clearing invoice payment:', error);
-        alert(`Could not clear payment: ${error.message || 'Unknown error'}`);
-        return;
-      }
-
-      showToast({ type: 'success', message: 'Invoice payment cleared' });
-      await fetchInvoices();
-
-      if (editingInvoice && editingInvoice.id === invoiceId) {
-        const { data: updatedRow } = await supabase
-          .from('invoice_balances_v')
-          .select('*')
-          .eq('id', invoiceId)
-          .maybeSingle();
-        if (updatedRow) {
-          const customer = (editingInvoice as any).customer;
-          setEditingInvoice({ ...updatedRow, customer } as Invoice);
-        }
-      }
-    } catch (e) {
-      console.error('handleClearLegacyInvoicePayment:', e);
-      alert('Unexpected error.');
     } finally {
       setDeletingPaymentId(null);
     }
@@ -3394,21 +3553,16 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     const taxRate = invoice.tax_rate || 0;
     const taxAmount = invoice.tax_amount || 0;
     const totalBase = invoice.total_amount || 0;
-    const paidTowardInvoice = Math.min(
-      totalBase,
-      getBasePaidForInvoice(invoice.id, Number(invoice.paid_amount) || 0, invoice)
-    );
-    const cardFeeCollected = getCardFeeCollectedForInvoice(invoice.id, invoice);
-    const totalCollected = round2(paidTowardInvoice + cardFeeCollected);
-    const balanceBeforeCardFee = Math.max(0, round2(totalBase - paidTowardInvoice));
-    const cardFeeAmount = getCardFeeForBaseBalance(
-      balanceBeforeCardFee,
-      isCardFeeEnabledForInvoice(invoice)
-    );
-    const balanceDue = Math.max(0, round2(balanceBeforeCardFee + cardFeeAmount));
+    const financials = getInvoiceFinancialsForInvoice(invoice);
+    const paidTowardInvoice = financials.paidTowardInvoice;
+    const cardFeeCollected = financials.cardFeeCollected;
+    const totalCollected = financials.totalCollected;
+    const balanceBeforeCardFee = financials.balanceBeforeCardFee;
+    const cardFeeAmount = financials.currentCardFee;
+    const balanceDue = financials.totalDueToday;
     const showCurrentCardFee = isCardFeeEnabledForInvoice(invoice) && balanceBeforeCardFee > 0.005 && cardFeeAmount > 0.005;
     const dueLabel = showCurrentCardFee ? 'Total Due Today:' : 'Balance Due:';
-    const statusLabel = (invoice.computed_status || invoice.status || 'Pending').toString();
+    const statusLabel = financials.status;
     const statusDisplay = statusLabel.charAt(0).toUpperCase() + statusLabel.slice(1).toLowerCase();
 
     // Get shop information for email
@@ -4894,19 +5048,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         ? formatDateOnly(invoice.due_date, { month: 'short', day: 'numeric', year: 'numeric' })
         : '';
       const totalAmount = invoice.total_amount || 0;
-      const paidAmount = getBasePaidForInvoice(invoice.id, Number(invoice.paid_amount) || 0, invoice);
-      const balanceDue = getInvoiceOutstandingAmount(invoice);
-      // Use computed_status from view when present, else derive
-      let status = (invoice.computed_status ?? '').toLowerCase() || invoice.status || 'pending';
-      if (totalAmount === 0) {
-        status = 'pending';
-      } else if (balanceDue <= 0.01) {
-        status = 'paid';
-      } else if (paidAmount > 0) {
-        status = 'partial';
-      } else if (!status || status === 'pending') {
-        status = 'unpaid';
-      }
+      const financials = getInvoiceFinancialsForInvoice(invoice);
+      const paidAmount = financials.paidTowardInvoice;
+      const status = financials.status;
 
       return [
         formatInvoiceNumber(invoice.invoice_number),
@@ -7347,13 +7491,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   };
 
   const getInvoiceOutstandingAmount = (invoice: Invoice): number => {
-    const baseTotal = Number(invoice.total_amount) || 0;
-    const basePaid = getBasePaidForInvoice(invoice.id, Number(invoice.paid_amount) || 0, invoice);
-    const baseBalance = Math.max(0, round2(baseTotal - basePaid));
-    return Math.max(
-      0,
-      round2(baseBalance + getCardFeeForBaseBalance(baseBalance, isCardFeeEnabledForInvoice(invoice)))
-    );
+    return getInvoiceFinancialsForInvoice(invoice).totalDueToday;
   };
 
   const getInvoiceAgingBucket = (invoice: Invoice): AgingBucket => {
@@ -7462,27 +7600,24 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         // Notes
         if (!matchesSearch && (invoice.notes || '').toLowerCase().includes(q)) matchesSearch = true;
       }
-      const status = (invoice.computed_status ?? '').toLowerCase() || (() => {
-        const total = invoice.total_amount || 0;
-        const paid = getBasePaidForInvoice(invoice.id, Number(invoice.paid_amount) || 0, invoice);
-        const bal = getInvoiceOutstandingAmount(invoice);
-        if (total <= 0) return 'pending';
-        if (bal <= 0.01) return 'paid';
-        if (paid > 0.01) return 'partial';
-        return 'unpaid';
-      })();
+      const financials = getInvoiceFinancialsForInvoice(invoice);
+      const status: string = financials.status;
+      const isOverdue =
+        financials.totalDueToday > 0.01 &&
+        !!invoice.due_date &&
+        new Date(invoice.due_date) < new Date();
       let matchesStatus = true;
       if (invoiceStatusFilter !== 'All Status') {
         if (invoiceStatusFilter === 'Pending') matchesStatus = status === 'pending';
         else if (invoiceStatusFilter === 'Unpaid') matchesStatus = status === 'pending' || status === 'unpaid';
         else if (invoiceStatusFilter === 'Paid') matchesStatus = status === 'paid';
-        else if (invoiceStatusFilter === 'Sent') matchesStatus = status === 'sent';
+        else if (invoiceStatusFilter === 'Sent') matchesStatus = status === 'sent' || invoice.status === 'sent';
         else if (invoiceStatusFilter === 'Partial') matchesStatus = status === 'partial';
-        else if (invoiceStatusFilter === 'Overdue') matchesStatus = status === 'overdue';
+        else if (invoiceStatusFilter === 'Overdue') matchesStatus = isOverdue;
       }
       return matchesSearch && matchesStatus;
     });
-  }, [invoices, invoiceSearchQuery, invoiceStatusFilter, customers]);
+  }, [invoices, invoicePayments, invoiceSearchQuery, invoiceStatusFilter, customers, cardProcessingFeePercentage]);
 
   const invoiceTotalPages = Math.max(1, Math.ceil(filteredInvoicesForList.length / invoicePageSize));
   const paginatedInvoicesForList = useMemo(() => {
@@ -12936,11 +13071,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-sm font-medium text-gray-600">Total Due Today</div>
                   <div className="text-2xl font-bold text-gray-900">
-                    {formatCurrency(filteredInvoicesForList.reduce((sum, inv) => {
-                      const baseTotal = Number(inv.total_amount) || 0;
-                      const baseBalance = getBaseBalanceDueForInvoice(inv);
-                      return sum + baseTotal + getCardFeeForBaseBalance(baseBalance, isCardFeeEnabledForInvoice(inv));
-                    }, 0))}
+                    {formatCurrency(filteredInvoicesForList.reduce((sum, inv) => sum + getInvoiceOutstandingAmount(inv), 0))}
                   </div>
                   <div className="text-sm text-gray-600">Incl. active card fees</div>
                 </div>
@@ -12948,10 +13079,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   <div className="text-sm font-medium text-gray-600">Paid</div>
                   <div className="text-2xl font-bold text-green-700">
                     {formatCurrency(filteredInvoicesForList.reduce(
-                      (sum, inv) => sum + Math.min(
-                        Number(inv.total_amount) || 0,
-                        getBasePaidForInvoice(inv.id, Number(inv.paid_amount) || 0, inv)
-                      ),
+                      (sum, inv) => sum + getInvoiceFinancialsForInvoice(inv).paidTowardInvoice,
                       0
                     ))}
                   </div>
@@ -13322,21 +13450,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           return paginatedInvoicesForList.map((invoice) => {
                             const customerName = getInvoiceCustomerName(invoice);
                             const customerPhone = invoice.customer?.phone || '';
-                            const baseTotal = invoice.total_amount || 0;
-                            const basePaidAmount = Math.min(
-                              baseTotal,
-                              getBasePaidForInvoice(invoice.id, Number(invoice.paid_amount) || 0, invoice)
-                            );
-                            const baseBalanceDue = Math.max(0, round2(baseTotal - basePaidAmount));
-                            const cardFeeAmount = getCardFeeForBaseBalance(
-                              baseBalanceDue,
-                              isCardFeeEnabledForInvoice(invoice)
-                            );
-                            const balanceDue = Math.max(0, round2(baseBalanceDue + cardFeeAmount));
-                            // Use computed_status from view when present, else derive
-                            const displayStatus = (invoice.computed_status ?? '').toLowerCase() || (
-                              baseTotal <= 0 ? 'pending' : balanceDue <= 0.01 ? 'paid' : basePaidAmount > 0 ? 'partial' : 'unpaid'
-                            );
+                            const financials = getInvoiceFinancialsForInvoice(invoice);
+                            const balanceDue = financials.totalDueToday;
+                            const displayStatus = financials.status;
                             
                             const statusColors: { [key: string]: string } = {
                             paid: 'bg-green-100 text-green-800', // 🟢 Paid - Green (completed/success)
@@ -13430,13 +13546,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                           
                                           if (paymentsError) {
                                             console.log('Could not fetch payment history (table may not exist):', paymentsError);
-                                            setInvoicePayments([]);
+                                            setEditingInvoicePayments([]);
                                           } else {
-                                            setInvoicePayments(payments || []);
+                                            mergeInvoicePaymentsForInvoice(invoice.id, payments || []);
+                                            setEditingInvoicePayments(payments || []);
                                           }
                                         } catch (err) {
                                           console.log('Error fetching payments:', err);
-                                          setInvoicePayments([]);
                                         } finally {
                                           setLoadingPayments(false);
                                         }
@@ -13717,13 +13833,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                         
                                         if (paymentsError) {
                                           console.log('Could not fetch payment history (table may not exist):', paymentsError);
-                                          setInvoicePayments([]);
+                                          setEditingInvoicePayments([]);
                                         } else {
-                                          setInvoicePayments(payments || []);
+                                          mergeInvoicePaymentsForInvoice(invoice.id, payments || []);
+                                          setEditingInvoicePayments(payments || []);
                                         }
                                       } catch (err) {
                                         console.log('Error fetching payments:', err);
-                                        setInvoicePayments([]);
                                       } finally {
                                         setLoadingPayments(false);
                                       }
@@ -14072,7 +14188,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     {formatCurrency(totalWithFee)}
                                   </td>
                                   <td className="px-6 py-4 text-right text-green-700">
-                                    {formatCurrency(invoice.paid_amount ?? 0)}
+                                    {formatCurrency(getInvoiceFinancialsForInvoice(invoice).paidTowardInvoice)}
                                   </td>
                                   <td className="px-6 py-4 text-right text-gray-900 font-semibold">
                                     {formatCurrency(outstandingAmount)}
@@ -15341,12 +15457,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   ? [customer.first_name, customer.last_name, customer.company].filter(Boolean).join(' ') || 'Unknown'
                   : 'Unknown';
                 
-                // Use computed_status from view when present, else derive from outstanding and due date
                 const outstanding = getInvoiceOutstandingAmount(inv);
-                let status = (inv.computed_status ?? '').toLowerCase() || 'unpaid';
-                if (outstanding <= 0.01) {
-                  status = 'paid';
-                } else if (inv.due_date && new Date(inv.due_date) < now) {
+                let status: string = getInvoiceFinancialsForInvoice(inv).status;
+                if (status !== 'paid' && inv.due_date && new Date(inv.due_date) < now) {
                   status = 'overdue';
                 }
                 
@@ -20241,17 +20354,16 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               {(() => {
                 const baseTotal = (invoiceForPayment.total_amount ?? 0);
                 const feeEnabledOnInvoice = isCardFeeEnabledForInvoice(invoiceForPayment);
-                const paidDisplay = getBasePaidForInvoice(
-                  invoiceForPayment.id,
-                  Number(invoiceForPayment.paid_amount) || 0,
-                  invoiceForPayment
-                );
-                const paidTowardInvoice = Math.min(baseTotal, paidDisplay);
-                const cardFeeCollected = getCardFeeCollectedForInvoice(invoiceForPayment.id, invoiceForPayment);
-                const totalCollected = round2(paidTowardInvoice + cardFeeCollected);
-                const baseBalance = Math.max(0, round2(baseTotal - paidTowardInvoice));
-                const cardFee = getCardFeeForBaseBalance(baseBalance, feeEnabledOnInvoice);
-                const balanceDue = round2(baseBalance + cardFee);
+                const financials = getInvoiceFinancialsForInvoice(invoiceForPayment, {
+                  total_amount: baseTotal,
+                  apply_card_fee: feeEnabledOnInvoice,
+                });
+                const paidTowardInvoice = financials.paidTowardInvoice;
+                const cardFeeCollected = financials.cardFeeCollected;
+                const totalCollected = financials.totalCollected;
+                const baseBalance = financials.balanceBeforeCardFee;
+                const cardFee = financials.currentCardFee;
+                const balanceDue = financials.totalDueToday;
                 const showCurrentCardFee = feeEnabledOnInvoice && baseBalance > 0.005 && cardFee > 0.005;
                 const dueLabel = showCurrentCardFee ? 'Total Due Today:' : 'Balance Due:';
                 return (
@@ -20382,7 +20494,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               </div>
             </div>
 
-            <div className="p-6 border-t border-gray-200 flex justify-end space-x-4">
+            <div className="sticky bottom-0 z-20 bg-white p-6 border-t border-gray-200 flex justify-end space-x-4">
               <button
                 onClick={() => {
                   setShowRecordPaymentModal(false);
@@ -20419,6 +20531,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
             onClick={() => {
               setShowCreateInvoiceModal(false);
               setEditingInvoice(null);
+              setEditingInvoicePayments([]);
               setInvoiceFormData({
                 customer_id: '',
                 work_order_id: '',
@@ -20433,7 +20546,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               });
               setInvoiceLineItems(createBlankInvoiceLineItems(2));
               setInvoiceItemSearch({});
-              setInvoicePayments([]);
               setInvoiceCustomerDiscounts([]);
             }}
           />
@@ -20463,6 +20575,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     onClick={() => {
                       setShowCreateInvoiceModal(false);
                       setEditingInvoice(null);
+                      setEditingInvoicePayments([]);
                       setInvoiceFormData({
                         customer_id: '',
                         work_order_id: '',
@@ -20477,7 +20590,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       });
                       setInvoiceLineItems(createBlankInvoiceLineItems(2));
                       setInvoiceItemSearch({});
-                      setInvoicePayments([]);
                       setInvoiceCustomerDiscounts([]);
                     }}
                     className="text-gray-400 hover:text-gray-600"
@@ -20916,13 +21028,18 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                             />
                           </label>
-                          <div className="relative min-w-0" style={{ zIndex: (searchTerm && !item.reference_id) ? 1000 : 'auto' }}>
+                          <div className="relative min-w-0">
                             <input
+                              ref={(node) => {
+                                invoiceItemInputRefs.current[lineUiKey] = node;
+                              }}
                               type="text"
                               placeholder="Search labor or part item"
                               value={selectedItemName || searchTerm || (!item.reference_id ? item.description : '')}
                               onChange={(e) => {
                                 const newValue = e.target.value;
+                                setActiveInvoiceItemDropdownKey(lineUiKey);
+                                requestAnimationFrame(() => updateInvoiceItemDropdownPosition(lineUiKey));
                                 // If user starts typing and there's a selected item, clear the selection to allow searching
                                 if (item.reference_id && newValue !== selectedItemName) {
                                   setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, reference_id: null, description: newValue, item_name: null, item_number: null, unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
@@ -20931,10 +21048,30 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 }
                                 setInvoiceItemSearch(prev => ({ ...prev, [lineUiKey]: newValue }));
                               }}
+                              onFocus={() => {
+                                if (!item.reference_id) {
+                                  setActiveInvoiceItemDropdownKey(lineUiKey);
+                                  requestAnimationFrame(() => updateInvoiceItemDropdownPosition(lineUiKey));
+                                }
+                              }}
+                              onBlur={() => {
+                                window.setTimeout(() => {
+                                  setActiveInvoiceItemDropdownKey((current) => current === lineUiKey ? null : current);
+                                }, 150);
+                              }}
                               className="w-full min-w-0 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                             />
-                            {searchTerm && !item.reference_id && (
-                              <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-xl max-h-48 overflow-y-auto">
+                            {searchTerm && !item.reference_id && activeInvoiceItemDropdownKey === lineUiKey && invoiceItemDropdownPosition && typeof document !== 'undefined' && createPortal(
+                              <div
+                                className="fixed z-[9999] bg-white border border-gray-300 rounded-lg shadow-2xl overflow-y-auto"
+                                style={{
+                                  left: invoiceItemDropdownPosition.left,
+                                  top: invoiceItemDropdownPosition.top,
+                                  width: invoiceItemDropdownPosition.width,
+                                  maxHeight: invoiceItemDropdownPosition.maxHeight,
+                                }}
+                                onMouseDown={(e) => e.preventDefault()}
+                              >
                                 {combinedInvoiceItemOptions.map((row) => {
                                   const rowKey = row.source === 'labor' ? `labor-${row.option.id}` : `part-${row.option.id}`;
                                   return (
@@ -21031,6 +21168,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                             showToast({ type: 'info', message: DUPLICATE_LINE_ITEM_TOAST });
                                           }
                                         }
+                                        setActiveInvoiceItemDropdownKey(null);
+                                        setInvoiceItemDropdownPosition(null);
                                       }}
                                       className="px-3 py-2 hover:bg-gray-100 cursor-pointer"
                                     >
@@ -21084,6 +21223,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                             e.stopPropagation();
                                             setCreatingPartFromInvoice(true);
                                             setCreatingPartForLineItem(idx);
+                                            setActiveInvoiceItemDropdownKey(null);
+                                            setInvoiceItemDropdownPosition(null);
                                             const searchQuery = searchTerm.trim();
                                             if (searchQuery) {
                                               const looksLikePartNumber = /[0-9]/.test(searchQuery);
@@ -21107,6 +21248,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                             e.stopPropagation();
                                             setCreatingLaborFromInvoice(true);
                                             setCreatingLaborForLineItem(idx);
+                                            setActiveInvoiceItemDropdownKey(null);
+                                            setInvoiceItemDropdownPosition(null);
                                             const searchQuery = searchTerm.trim();
                                             if (searchQuery) {
                                               setLaborForm((prev) => ({ ...prev, service_name: searchQuery }));
@@ -21122,7 +21265,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     )}
                                   </div>
                                 )}
-                              </div>
+                              </div>,
+                              document.body
                             )}
                             {item.reference_id && (
                               <div className="mt-1">
@@ -21361,20 +21505,16 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         const invoiceDiscountAmount = getInvoiceDiscountAmount(currentSubtotal);
                         const currentTax = getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
                         const currentBaseTotal = Math.max(0, currentSubtotal - invoiceDiscountAmount) + currentTax;
-                        const paidShown = getBasePaidForInvoice(
-                          editingInvoice.id,
-                          Number(editingInvoice.paid_amount) || 0,
-                          { ...editingInvoice, total_amount: currentBaseTotal, apply_card_fee: applyCardFee }
-                        );
-                        const paidTowardInvoice = Math.min(currentBaseTotal, paidShown);
-                        const cardFeeCollected = getCardFeeCollectedForInvoice(
-                          editingInvoice.id,
-                          { ...editingInvoice, apply_card_fee: applyCardFee }
-                        );
-                        const totalCollected = round2(paidTowardInvoice + cardFeeCollected);
-                        const baseBalance = Math.max(0, round2(currentBaseTotal - paidTowardInvoice));
-                        const cardFee = getCardFeeForBaseBalance(baseBalance, applyCardFee);
-                        const balanceDue = Math.max(0, round2(baseBalance + cardFee));
+                        const financials = getInvoiceFinancialsForInvoice(editingInvoice, {
+                          total_amount: currentBaseTotal,
+                          apply_card_fee: applyCardFee,
+                        });
+                        const paidTowardInvoice = financials.paidTowardInvoice;
+                        const cardFeeCollected = financials.cardFeeCollected;
+                        const totalCollected = financials.totalCollected;
+                        const baseBalance = financials.balanceBeforeCardFee;
+                        const cardFee = financials.currentCardFee;
+                        const balanceDue = financials.totalDueToday;
                         const showCurrentCardFee = applyCardFee && baseBalance > 0.005 && cardFee > 0.005;
                         const dueLabel = showCurrentCardFee ? 'Total Due Today:' : 'Balance Due:';
                         return (
@@ -21428,14 +21568,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           const invoiceDiscountAmount = getInvoiceDiscountAmount(currentSubtotal);
                           const currentTax = getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
                           const baseTotal = Math.max(0, currentSubtotal - invoiceDiscountAmount) + currentTax;
-                          const paid = getBasePaidForInvoice(
-                            editingInvoice.id,
-                            Number(editingInvoice.paid_amount) || 0,
-                            { ...editingInvoice, total_amount: baseTotal, apply_card_fee: applyCardFee }
-                          );
-                          const baseBalance = Math.max(0, round2(baseTotal - paid));
-                          const cardFeeAmount = getCardFeeForBaseBalance(baseBalance, applyCardFee);
-                          const balanceDue = Math.max(0, round2(baseBalance + cardFeeAmount));
+                          const financials = getInvoiceFinancialsForInvoice(editingInvoice, {
+                            total_amount: baseTotal,
+                            apply_card_fee: applyCardFee,
+                          });
+                          const cardFeeAmount = financials.currentCardFee;
+                          const balanceDue = financials.totalDueToday;
                           
                           const updatedInvoice = {
                             ...editingInvoice,
@@ -21464,28 +21602,32 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     </button>
                   </div>
 
-                  {/* Payment History - only for this invoice (invoicePayments is global for all invoices) */}
+                  {/* Payment History - render from the open modal's freshly loaded rows. */}
                   <div>
                     <h3 className="text-sm font-medium text-gray-700 mb-3">Payment History</h3>
                     {(() => {
                       const paymentsForThisInvoice = editingInvoice?.id
-                        ? invoicePayments.filter((p: any) => p.invoice_id === editingInvoice.id)
+                        ? editingInvoicePayments.filter((p) => p.invoice_id === editingInvoice.id)
                         : [];
                       const paymentsSortedOldestFirst = [...paymentsForThisInvoice].sort(
-                        (a: any, b: any) =>
+                        (a, b) =>
                           new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
                       );
                       return loadingPayments ? (
                         <p className="text-sm text-gray-500">Loading payment history...</p>
                       ) : paymentsForThisInvoice.length > 0 ? (
                       <div className="space-y-3">
-                        {paymentsSortedOldestFirst.map((payment: any, index: number) => {
-                          const paymentAmount = Number(payment.amount) || 0;
+                        {paymentsSortedOldestFirst.map((payment, index: number) => {
+                          console.log('payments rendered in UI', {
+                            invoice_id: editingInvoice?.id,
+                            payment,
+                          });
+                          const paymentAmount = getSavedPaymentTotalCollected(payment);
                           const rawPaymentMethod = payment.payment_method || 'unknown';
                           // Normalize payment method for display (handle both 'finance' and 'financing')
                           const paymentMethod = rawPaymentMethod === 'finance' ? 'financing' : rawPaymentMethod;
-                          const cardFee = getPaymentCardFeePortion(payment, editingInvoice);
-                          const baseAmount = Math.max(0, round2(paymentAmount - cardFee));
+                          const cardFee = getSavedPaymentCardFee(payment);
+                          const baseAmount = getSavedPaymentAppliedToInvoice(payment);
                           
                           // Determine payment type based on cumulative payments up to this point
                           const invoiceTotal = editingInvoice?.total_amount || 0;
@@ -21493,8 +21635,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           const cumulativePaid = paymentsSortedOldestFirst
                             .slice(0, index + 1)
                             .reduce((sum: number, p: any) => {
-                              const amount = Number(p.amount) || 0;
-                              return sum + Math.max(0, round2(amount - getPaymentCardFeePortion(p, editingInvoice)));
+                              return sum + getSavedPaymentAppliedToInvoice(p);
                             }, 0);
                           const isFullPayment = cumulativePaid >= invoiceTotal - 0.01; // Account for rounding
                           const paymentType = isFullPayment ? 'Full payment' : 'Partial payment';
@@ -21549,85 +21690,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           );
                         })}
                       </div>
-                    ) : (editingInvoice && editingInvoice.paid_amount && editingInvoice.paid_amount > 0) ? (
-                      // Show payment info from invoice if no payment records exist
-                      // Try to fetch payment method from invoice_payments table first
-                      (() => {
-                        const invoiceTotal = editingInvoice.total_amount || 0;
-                        const paidAmount = editingInvoice.paid_amount || 0;
-                        const applyFee = (editingInvoice as any).apply_card_fee === true;
-                        let paymentMethod = 'cash';
-                        if (applyFee) {
-                          paymentMethod = 'card';
-                        } else if (paymentsForThisInvoice.length > 0) {
-                          const latestPayment = paymentsForThisInvoice[0];
-                          const rawMethod = latestPayment.payment_method || 'cash';
-                          paymentMethod = rawMethod === 'finance' ? 'financing' : rawMethod;
-                        } else {
-                          paymentMethod = (editingInvoice as any).payment_method || 'cash';
-                          if (paymentMethod === 'finance') paymentMethod = 'financing';
-                        }
-                        const rate = (cardProcessingFeePercentage || 0) / 100;
-                        const baseAmount = paidAmount;
-                        const showEstimateGross =
-                          applyFee && rate > 0 && paymentMethod === 'card';
-                        const grossDisplay = showEstimateGross
-                          ? round2(baseAmount * (1 + rate))
-                          : baseAmount;
-                        const feeDisplay = showEstimateGross
-                          ? round2(grossDisplay - baseAmount)
-                          : 0;
-                        
-                        // Format payment method for display
-                        const displayMethod = paymentMethod === 'card' ? 'Card' : 
-                                             paymentMethod === 'cash' ? 'Cash' :
-                                             paymentMethod === 'check' ? 'Check' :
-                                             paymentMethod === 'financing' ? 'Financing' :
-                                             paymentMethod === 'zelle' ? 'Zelle' :
-                                             paymentMethod === 'digital' ? 'Digital' :
-                                             paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1);
-                        
-                        return (
-                          <div className="space-y-3">
-                            <div className="bg-gray-50 rounded-lg p-3 flex items-center justify-between gap-2 min-w-0">
-                              <div className="flex items-center gap-3 flex-1 min-w-0 flex-wrap">
-                                <span className="text-sm text-gray-600">
-                                  {editingInvoice.paid_at ? formatDateInTimezone(editingInvoice.paid_at) : 'Payment recorded'}
-                                </span>
-                                <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
-                                  {displayMethod}
-                                </span>
-                                <span className="text-sm text-gray-600">
-                                  {paidAmount >= invoiceTotal - 0.01 ? 'Full payment' : 'Partial payment'}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2 flex-shrink-0">
-                                <span className="text-sm font-semibold text-gray-900">
-                                  ${grossDisplay.toFixed(2)}
-                                </span>
-                                {feeDisplay > 0 && (
-                                  <span className="text-sm text-orange-600">
-                                    + ${feeDisplay.toFixed(2)} fee
-                                  </span>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => handleClearLegacyInvoicePayment(editingInvoice.id)}
-                                  disabled={deletingPaymentId === 'legacy'}
-                                  className="p-2 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50 touch-manipulation"
-                                  title="Clear recorded payment"
-                                  aria-label="Clear recorded payment"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
-                              </div>
-                            </div>
-                            <p className="text-xs text-gray-500 italic">Payment details from invoice record only — delete clears the amount so you can re-enter.</p>
-                          </div>
-                        );
-                      })()
+                    ) : (editingInvoice && Number((editingInvoice as any).paid_amount) > 0) ? (
+                      null
                     ) : (
-                      <p className="text-sm text-gray-500">No payment history found.</p>
+                      <p className="text-sm text-gray-500">
+                        No payment history found.
+                      </p>
                     );
                     })()}
                   </div>
@@ -21663,19 +21731,17 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       </span>
                     </div>
                     {(() => {
-                      // Calculate card fee the same way as in the balance due section
-                      // For new invoices: calculate on (subtotal + tax)
-                      // For editing invoices: calculate on balance due (subtotal + tax - paid_amount)
+                      // Calculate card fee the same way as in the balance due section.
                       const subtotal = getInvoiceSubtotal(invoiceLineItems);
                       const invoiceDiscountAmount = getInvoiceDiscountAmount(subtotal);
                       const tax = getTaxableSubtotalAfterInvoiceDiscount(invoiceLineItems) * (invoiceFormData.tax_rate || 0);
                       const baseTotal = Math.max(0, subtotal - invoiceDiscountAmount) + tax;
                       
                       if (editingInvoice && applyCardFee) {
-                        // When editing: calculate on balance due
-                        const paidAmount = (editingInvoice as Invoice)?.paid_amount || 0;
-                        const balanceDueBeforeFee = Math.max(0, baseTotal - paidAmount);
-                        const cardFee = balanceDueBeforeFee * (cardProcessingFeePercentage / 100);
+                        const cardFee = getInvoiceFinancialsForInvoice(editingInvoice, {
+                          total_amount: baseTotal,
+                          apply_card_fee: applyCardFee,
+                        }).currentCardFee;
                         if (cardFee > 0) {
                           return (
                             <div className="flex justify-between">
@@ -21746,11 +21812,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               </div>
             </div>
 
-            <div className="p-6 border-t border-gray-200 flex justify-end space-x-4">
+            <div className="sticky bottom-0 z-20 bg-white p-6 border-t border-gray-200 flex justify-end space-x-4">
               <button
                 onClick={() => {
                   setShowCreateInvoiceModal(false);
                   setEditingInvoice(null);
+                  setEditingInvoicePayments([]);
                   setInvoiceFormData({
                     customer_id: '',
                     work_order_id: '',
@@ -21766,7 +21833,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   setInvoiceLineItems(createBlankInvoiceLineItems(2));
                   setInvoiceItemSearch({});
                   setApplyCardFee(false);
-                  setInvoicePayments([]);
                 }}
                 className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
               >
@@ -21800,23 +21866,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     if (editingInvoice) {
                       // total_amount = base only (subtotal + tax). Card fee is stored separately and never doubled.
                       const totalAmount = baseTotal;
-                      const paidAmountForUpdatedTotal = getBasePaidForInvoice(
-                        editingInvoice.id,
-                        Number(editingInvoice.paid_amount) || 0,
-                        { ...editingInvoice, total_amount: totalAmount, apply_card_fee: applyCardFee }
-                      );
-                      const remainingBaseForUpdatedTotal = Math.max(0, round2(totalAmount - paidAmountForUpdatedTotal));
-                      const cardFeeAmount = getCardFeeForBaseBalance(remainingBaseForUpdatedTotal, applyCardFee);
-                      
-                      // Determine status from the base invoice balance. Card fees are only applied to unpaid balance.
-                      let invoiceStatus =
-                        totalAmount <= 0
-                          ? 'pending'
-                          : remainingBaseForUpdatedTotal <= 0.01
-                            ? 'paid'
-                            : paidAmountForUpdatedTotal > 0
-                              ? 'partial'
-                              : 'unpaid';
+                      const updatedFinancials = getInvoiceFinancialsForInvoice(editingInvoice, {
+                        total_amount: totalAmount,
+                        apply_card_fee: applyCardFee,
+                      });
+                      const remainingBaseForUpdatedTotal = updatedFinancials.balanceBeforeCardFee;
+                      const cardFeeAmount = updatedFinancials.currentCardFee;
+                      const invoiceStatus = updatedFinancials.status;
                       
                       // Update existing invoice
                       // Convert invoice_date to ISO string for created_at if it was changed
@@ -22233,6 +22289,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       // Close modal and reset form
                       setShowCreateInvoiceModal(false);
                       setEditingInvoice(null);
+                      setEditingInvoicePayments([]);
                       setInvoiceFormData({
                         customer_id: '',
                         work_order_id: '',
@@ -22248,7 +22305,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       setInvoiceLineItems(createBlankInvoiceLineItems(2));
                       setInvoiceItemSearch({});
                       setApplyCardFee(false);
-                      setInvoicePayments([]);
                   }
                 } catch (err) {
                     console.error('Error saving invoice:', err);

@@ -1,4 +1,4 @@
--- Single source of truth for invoice balances: total_amount, paid_amount (from payments), balance_due, computed_status.
+-- Single source of truth for invoice balances: total_amount, paid_amount (from payment base/applied amounts), balance_due, computed_status.
 -- Use this view for Invoice List, AR tab, and Reports so calculations match everywhere.
 -- RLS: view uses security_invoker (PG 15+) so RLS on invoices (and invoice_payments) applies to the caller.
 
@@ -25,9 +25,10 @@ SELECT
   i.paid_at,
   COALESCE(i.apply_card_fee, false) AS apply_card_fee,
   COALESCE(i.card_fee_amount, 0)::numeric(10,2) AS card_fee_amount,
-  -- Use sum of invoice_payments when present; fall back to invoices.paid_amount for legacy data
+  -- Use sum of invoice_payments applied amounts when present; fall back to invoices.paid_amount for legacy data.
+  -- Card payment `amount` is total collected, so card_fee must be subtracted from invoice paid.
   (COALESCE(p.paid_sum, i.paid_amount, 0))::numeric(10,2) AS paid_amount,
-  -- balance_due = (total_amount + card_fee_amount) - paid_sum; card fee is applied once, never doubled
+  -- balance_due = (total_amount + active remaining card_fee_amount) - paid_sum
   GREATEST(COALESCE(i.total_amount, 0) + COALESCE(i.card_fee_amount, 0) - (COALESCE(p.paid_sum, i.paid_amount, 0)), 0)::numeric(10,2) AS balance_due,
   CASE
     WHEN LOWER(TRIM(COALESCE(i.status, ''))) IN ('void', 'voided', 'cancelled', 'canceled') THEN COALESCE(i.status, 'cancelled')
@@ -39,7 +40,9 @@ SELECT
   COALESCE(NULLIF(REGEXP_REPLACE(COALESCE(i.invoice_number, ''), '[^0-9]', '', 'g'), '')::bigint, 0) AS invoice_number_numeric
 FROM public.invoices i
 LEFT JOIN (
-  SELECT invoice_id, SUM(amount) AS paid_sum
+  SELECT
+    invoice_id,
+    SUM(GREATEST(COALESCE(amount, 0) - COALESCE(card_fee, 0), 0)) AS paid_sum
   FROM public.invoice_payments
   GROUP BY invoice_id
 ) p ON p.invoice_id = i.id;
@@ -72,7 +75,13 @@ BEGIN
         END AS computed_status,
         COALESCE(NULLIF(REGEXP_REPLACE(COALESCE(i.invoice_number, ''''), ''[^0-9]'', '''', ''g''), '''')::bigint, 0) AS invoice_number_numeric
       FROM public.invoices i
-      LEFT JOIN (SELECT invoice_id, SUM(amount) AS paid_sum FROM public.invoice_payments GROUP BY invoice_id) p ON p.invoice_id = i.id
+      LEFT JOIN (
+        SELECT
+          invoice_id,
+          SUM(GREATEST(COALESCE(amount, 0) - COALESCE(card_fee, 0), 0)) AS paid_sum
+        FROM public.invoice_payments
+        GROUP BY invoice_id
+      ) p ON p.invoice_id = i.id
     ';
   END IF;
 END $$;
@@ -81,4 +90,4 @@ END $$;
 GRANT SELECT ON public.invoice_balances_v TO authenticated;
 GRANT SELECT ON public.invoice_balances_v TO service_role;
 
-COMMENT ON VIEW public.invoice_balances_v IS 'Invoice list with paid_amount=sum(payments) or invoices.paid_amount (legacy), balance_due, computed_status. Use for Invoice List, AR, and Reports.';
+COMMENT ON VIEW public.invoice_balances_v IS 'Invoice list with paid_amount=sum(payment amount minus saved card fee) or invoices.paid_amount (legacy), balance_due, computed_status. Use for Invoice List, AR, and Reports.';
