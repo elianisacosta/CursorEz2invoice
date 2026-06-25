@@ -52,9 +52,9 @@ export function buildInvoiceDocumentHtml(rawData: InvoiceDocumentData): string {
               ? `<div style="font-size:11px;color:#b91c1c">${escapeHtml(discountText)}</div>`
               : '';
             return `<tr>
-              <td style="text-align:right">${Number(item.quantity) || 1}</td>
               <td>${type}</td>
               <td>${displayName}${invoiceNote}${discount}</td>
+              <td style="text-align:right">${Number(item.quantity) || 1}</td>
               <td style="text-align:right">$${toCurrencyNumber(item.unit_price).toFixed(2)}</td>
               <td style="text-align:right">$${toCurrencyNumber(item.total_price).toFixed(2)}</td>
             </tr>`;
@@ -147,7 +147,7 @@ export function buildInvoiceDocumentHtml(rawData: InvoiceDocumentData): string {
     <table class="table">
       <thead>
         <tr>
-          <th style="text-align:right">QTY</th><th>TYPE</th><th>ITEM / SERVICE</th>
+          <th>TYPE</th><th>ITEM / SERVICE</th><th style="text-align:right">QTY</th>
           <th style="text-align:right">UNIT PRICE</th>
           <th style="text-align:right">TOTAL</th>
         </tr>

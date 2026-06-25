@@ -64,9 +64,9 @@ export default function InvoiceDocument(props: InvoiceDocumentProps) {
         <table className="table">
           <thead>
             <tr>
-              <th style={{ textAlign: 'right' }}>QTY</th>
               <th>TYPE</th>
               <th>ITEM / SERVICE</th>
+              <th style={{ textAlign: 'right' }}>QTY</th>
               <th style={{ textAlign: 'right' }}>UNIT PRICE</th>
               <th style={{ textAlign: 'right' }}>TOTAL</th>
             </tr>
@@ -83,7 +83,6 @@ export default function InvoiceDocument(props: InvoiceDocumentProps) {
                 const discountText = formatLineItemDiscountText(item);
                 return (
                 <tr key={`${idx}-${item.reference_id || ''}`}>
-                  <td style={{ textAlign: 'right' }}>{Number(item.quantity) || 1}</td>
                   <td>{getLineItemTypeLabel(item.item_type)}</td>
                   <td>
                     {formatLineItemDisplayName(item)}
@@ -98,6 +97,7 @@ export default function InvoiceDocument(props: InvoiceDocumentProps) {
                       </div>
                     )}
                   </td>
+                  <td style={{ textAlign: 'right' }}>{Number(item.quantity) || 1}</td>
                   <td style={{ textAlign: 'right' }}>${toCurrencyNumber(item.unit_price).toFixed(2)}</td>
                   <td style={{ textAlign: 'right' }}>${toCurrencyNumber(item.total_price).toFixed(2)}</td>
                 </tr>

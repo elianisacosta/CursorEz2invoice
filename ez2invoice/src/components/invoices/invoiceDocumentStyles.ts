@@ -11,10 +11,11 @@ export const INVOICE_DOCUMENT_STYLES = `
   .section-title { font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: .4px; color: #374151; margin-bottom: 8px; }
   .table { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 16px 0; }
   .table th { background: #f9fafb; border-bottom: 2px solid #e5e7eb; padding: 8px; text-align: left; font-size: 11px; text-transform: uppercase; color: #374151; }
-  .table th:nth-child(1), .table td:nth-child(1) { width: 44px; }
-  .table th:nth-child(2), .table td:nth-child(2) { width: 58px; }
+  .table th:nth-child(1), .table td:nth-child(1) { width: 58px; }
+  .table th:nth-child(3), .table td:nth-child(3) { width: 44px; }
   .table th:nth-child(4), .table td:nth-child(4) { width: 78px; }
   .table th:nth-child(5), .table td:nth-child(5) { width: 78px; }
+  .table td:nth-child(2) { overflow-wrap: normal; word-break: normal; }
   .table td { border-bottom: 1px solid #e5e7eb; padding: 8px; font-size: 13px; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
   .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 6px; }
   .totals { text-align: right; }
