@@ -14,6 +14,12 @@ import {
   type InvoicePaymentLike,
 } from '@/lib/invoices/invoicePaymentSummary';
 import {
+  findPartByPartNumber,
+  searchInvoiceCatalogItems,
+  type InvoiceCatalogLaborRow,
+  type InvoiceCatalogPartRow,
+} from '@/lib/invoices/searchInvoiceCatalogItems';
+import {
   DUPLICATE_LINE_ITEM_TOAST,
   laborLineItemSelection,
   mergeDuplicateLineItem,
@@ -110,6 +116,50 @@ function useDebouncedValue<T>(value: T, delayMs = 300): T {
   }, [value, delayMs]);
 
   return debouncedValue;
+}
+
+type InvoiceItemOptionRow =
+  | { source: 'labor'; option: InvoiceCatalogLaborRow }
+  | { source: 'part'; option: InvoiceCatalogPartRow };
+
+function combineInvoiceItemOptionLists(
+  primary: InvoiceItemOptionRow[],
+  secondary: InvoiceItemOptionRow[]
+): InvoiceItemOptionRow[] {
+  const seen = new Set<string>();
+  const merged: InvoiceItemOptionRow[] = [];
+  for (const row of [...primary, ...secondary]) {
+    const key = row.source === 'labor' ? `labor:${row.option.id}` : `part:${row.option.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(row);
+  }
+  return merged.sort((a, b) => {
+    const la = a.source === 'labor' ? a.option.service_name : a.option.part_name || '';
+    const lb = b.source === 'labor' ? b.option.service_name : b.option.part_name || '';
+    return la.localeCompare(lb, undefined, { sensitivity: 'base' });
+  });
+}
+
+function buildLocalInvoiceItemOptions(
+  searchLower: string,
+  laborRows: Array<{ source: 'labor'; option: { id: string; service_name: string; description?: string | null } }>,
+  partRows: Array<{ source: 'part'; option: { id: string; part_name: string; part_number?: string | null; description?: string | null } }>
+): InvoiceItemOptionRow[] {
+  if (!searchLower) return [];
+  return combineInvoiceItemOptionLists(
+    laborRows.filter(({ option }) => {
+      const name = (option.service_name || '').toLowerCase();
+      const desc = (option.description || '').toLowerCase();
+      return name.includes(searchLower) || desc.includes(searchLower);
+    }) as InvoiceItemOptionRow[],
+    partRows.filter(({ option }) => {
+      const pn = (option.part_name || '').toLowerCase();
+      const pnum = (option.part_number || '').toLowerCase();
+      const desc = (option.description || '').toLowerCase();
+      return pn.includes(searchLower) || pnum.includes(searchLower) || desc.includes(searchLower);
+    }) as InvoiceItemOptionRow[]
+  );
 }
 
 interface Timesheet {
@@ -769,6 +819,14 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
 
   const [invoiceLineItems, setInvoiceLineItems] = useState<InvoiceLineItem[]>(createBlankInvoiceLineItems(2));
   const [invoiceItemSearch, setInvoiceItemSearch] = useState<Record<string, string>>({});
+  const [invoiceItemLiveOptionsByLine, setInvoiceItemLiveOptionsByLine] = useState<
+    Record<string, Array<
+      | { source: 'labor'; option: InvoiceCatalogLaborRow }
+      | { source: 'part'; option: InvoiceCatalogPartRow }
+    >>
+  >({});
+  const [invoiceItemSearchLoadingByLine, setInvoiceItemSearchLoadingByLine] = useState<Record<string, boolean>>({});
+  const [existingPartNumberMatch, setExistingPartNumberMatch] = useState<InvoiceCatalogPartRow | null>(null);
   const invoiceItemInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [activeInvoiceItemDropdownKey, setActiveInvoiceItemDropdownKey] = useState<string | null>(null);
   const [invoiceItemDropdownPosition, setInvoiceItemDropdownPosition] = useState<{
@@ -4746,6 +4804,145 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       setInventoryLoading(false);
     }
   };
+
+  const mergeInvoiceCatalogIntoState = useCallback((labor: InvoiceCatalogLaborRow[], parts: InvoiceCatalogPartRow[]) => {
+    if (parts.length > 0) {
+      setInventory((prev) => {
+        const byId = new Map(prev.map((part) => [String(part.id), part]));
+        parts.forEach((part) => {
+          const existing = byId.get(String(part.id));
+          byId.set(String(part.id), {
+            id: part.id,
+            part_number: part.part_number,
+            part_name: part.part_name,
+            description: part.description,
+            category: part.category,
+            supplier: existing?.supplier ?? null,
+            location: existing?.location ?? null,
+            quantity_in_stock: Number(part.quantity_in_stock) || 0,
+            minimum_stock_level: existing?.minimum_stock_level ?? 0,
+            selling_price: Number(part.selling_price) || 0,
+            cost: part.cost,
+          });
+        });
+        return Array.from(byId.values());
+      });
+    }
+    if (labor.length > 0) {
+      setLaborItems((prev) => {
+        const byId = new Map(prev.map((item) => [String(item.id), item]));
+        labor.forEach((item) => {
+          byId.set(String(item.id), {
+            id: item.id,
+            service_name: item.service_name,
+            category: item.category,
+            description: item.description,
+            rate_type: item.rate_type,
+            rate: Number(item.rate) || 0,
+            est_hours: item.est_hours,
+          });
+        });
+        return Array.from(byId.values());
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showCreateInvoiceModal && !editingInvoice) return;
+    void fetchInventory();
+    void fetchLaborItems();
+  }, [showCreateInvoiceModal, editingInvoice?.id]);
+
+  useEffect(() => {
+    if (!showCreateInvoiceModal && !editingInvoice) return;
+    const lineKey = activeInvoiceItemDropdownKey;
+    if (!lineKey) return;
+
+    const term = (debouncedInvoiceItemSearch[lineKey] || '').trim();
+    if (term.length < 2) {
+      setInvoiceItemLiveOptionsByLine((prev) => {
+        if (!(lineKey in prev)) return prev;
+        const next = { ...prev };
+        delete next[lineKey];
+        return next;
+      });
+      return;
+    }
+
+    let cancelled = false;
+    const runSearch = async () => {
+      setInvoiceItemSearchLoadingByLine((prev) => ({ ...prev, [lineKey]: true }));
+      try {
+        const shopId = await getShopId();
+        const { labor, parts } = await searchInvoiceCatalogItems(supabase, {
+          shopId,
+          isFounder,
+          searchTerm: term,
+        });
+        if (cancelled) return;
+
+        mergeInvoiceCatalogIntoState(labor, parts);
+        const combined = combineInvoiceItemOptionLists(
+          labor.map((option) => ({ source: 'labor' as const, option })),
+          parts.map((option) => ({ source: 'part' as const, option }))
+        );
+        setInvoiceItemLiveOptionsByLine((prev) => ({ ...prev, [lineKey]: combined }));
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Invoice item search failed:', error);
+        }
+      } finally {
+        if (!cancelled) {
+          setInvoiceItemSearchLoadingByLine((prev) => ({ ...prev, [lineKey]: false }));
+        }
+      }
+    };
+
+    void runSearch();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    debouncedInvoiceItemSearch,
+    activeInvoiceItemDropdownKey,
+    showCreateInvoiceModal,
+    editingInvoice?.id,
+    isFounder,
+    mergeInvoiceCatalogIntoState,
+  ]);
+
+  const debouncedPartNumberLookup = useDebouncedValue(inventoryForm.sku, 300);
+  useEffect(() => {
+    if (!showAddInventoryModal || editingInventoryItem) {
+      setExistingPartNumberMatch(null);
+      return;
+    }
+
+    const trimmed = debouncedPartNumberLookup.trim();
+    if (!trimmed) {
+      setExistingPartNumberMatch(null);
+      return;
+    }
+
+    let cancelled = false;
+    const runLookup = async () => {
+      const shopId = await getShopId();
+      const match = await findPartByPartNumber(supabase, {
+        shopId,
+        isFounder,
+        partNumber: trimmed,
+        excludePartId: editingInventoryItem,
+      });
+      if (!cancelled) {
+        setExistingPartNumberMatch(match);
+      }
+    };
+
+    void runLookup();
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedPartNumberLookup, showAddInventoryModal, editingInventoryItem, isFounder]);
 
   // Search functions for part name and part number autocomplete
   const searchPartName = async (query: string) => {
@@ -20443,8 +20640,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     Pay Half
                   </button>
                 </div>
-                <input
-                  type="number"
+                <WheelSafeNumberInput
                   step="0.01"
                   value={paymentFormData.amount}
                   onChange={(e) => setPaymentFormData(prev => ({ ...prev, amount: e.target.value }))}
@@ -20975,36 +21171,22 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     {invoiceLineItems.map((item, idx) => {
                       const lineUiKey = item.lineId || String(idx);
                       const searchTerm = invoiceItemSearch[lineUiKey] || '';
-                      const debouncedSearchTerm = debouncedInvoiceItemSearch[lineUiKey] || '';
                       const selectedItemName = item.reference_id ? getInvoiceLineItemDisplayName(item) : null;
                       const itemNote = getInvoiceLineItemNote(item);
                       const showNoteInput = Boolean(item.reference_id && (invoiceLineDescriptionOpen[lineUiKey] || itemNote));
                       const trimmedSearch = searchTerm.trim();
-                      const debouncedTrimmedSearch = debouncedSearchTerm.trim();
-                      const searchLower = debouncedTrimmedSearch.toLowerCase();
-                      const canSearchItems = debouncedTrimmedSearch.length >= 2;
-                      const combinedInvoiceItemOptions: (
-                        | { source: 'labor'; option: (typeof laborItems)[number] }
-                        | { source: 'part'; option: (typeof inventory)[number] }
-                      )[] = (canSearchItems
-                        ? [
-                            ...invoiceLaborOptionRows.filter(({ option }) =>
-                              option.service_name.toLowerCase().includes(searchLower)
-                            ),
-                            ...invoicePartOptionRows.filter(({ option }) => {
-                              const pn = (option.part_name || '').toLowerCase();
-                              const pnum = (option.part_number || '').toLowerCase();
-                              return pn.includes(searchLower) || pnum.includes(searchLower);
-                            }),
-                          ]
+                      const searchLower = trimmedSearch.toLowerCase();
+                      const canSearchItems = trimmedSearch.length >= 2;
+                      const localInvoiceItemOptions = canSearchItems
+                        ? buildLocalInvoiceItemOptions(searchLower, invoiceLaborOptionRows, invoicePartOptionRows)
+                        : [];
+                      const liveInvoiceItemOptions = invoiceItemLiveOptionsByLine[lineUiKey] || [];
+                      const combinedInvoiceItemOptions = canSearchItems
+                        ? combineInvoiceItemOptionLists(liveInvoiceItemOptions, localInvoiceItemOptions)
                         : trimmedSearch.length === 0
-                          ? [...invoiceLaborOptionRows.slice(0, 8), ...invoicePartOptionRows.slice(0, 8)]
-                          : []
-                      ).sort((a, b) => {
-                        const la = a.source === 'labor' ? a.option.service_name : a.option.part_name || '';
-                        const lb = b.source === 'labor' ? b.option.service_name : b.option.part_name || '';
-                        return la.localeCompare(lb, undefined, { sensitivity: 'base' });
-                      });
+                          ? [...invoiceLaborOptionRows.slice(0, 12), ...invoicePartOptionRows.slice(0, 12)]
+                          : [];
+                      const isInvoiceItemSearchLoading = Boolean(invoiceItemSearchLoadingByLine[lineUiKey]);
                       
                       return (
                         <div key={item.lineId || `invoice-line-${idx}`} className="grid min-w-[920px] gap-3 items-start" style={{ gridTemplateColumns: '72px 44px minmax(260px, 2fr) 64px 88px 84px 86px 78px 32px' }}>
@@ -21182,6 +21364,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                           {row.source === 'part' && row.option.part_number && (
                                             <span className="text-xs text-gray-500">{row.option.part_number}</span>
                                           )}
+                                          {row.source === 'labor' && row.option.description && (
+                                            <span className="text-xs text-gray-500 truncate">{row.option.description}</span>
+                                          )}
+                                          {row.source === 'part' && row.option.description && (
+                                            <span className="text-xs text-gray-500 truncate">{row.option.description}</span>
+                                          )}
                                         </div>
                                         {row.source === 'labor' && (() => {
                                           const disc = invoiceCustomerDiscounts.find(
@@ -21209,10 +21397,17 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     </div>
                                   );
                                 })}
+                                {isInvoiceItemSearchLoading && trimmedSearch.length >= 2 && (
+                                  <div className="px-3 py-2 text-sm text-gray-500 border-b border-gray-100">
+                                    Searching saved items...
+                                  </div>
+                                )}
                                 {combinedInvoiceItemOptions.length === 0 && (
                                   <div className="px-3 py-2 space-y-2">
                                     {trimmedSearch.length < 2 ? (
                                       <div className="text-sm text-gray-500">Type at least 2 characters to search</div>
+                                    ) : isInvoiceItemSearchLoading ? (
+                                      <div className="text-sm text-gray-500">Searching saved items...</div>
                                     ) : (
                                       <>
                                         <div className="text-sm text-gray-500">No items found</div>
@@ -24089,6 +24284,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     }
 
                     const lineIndex = creatingLaborForLineItem;
+                    const targetLineUiKey = invoiceLineItems[lineIndex]?.lineId || String(lineIndex);
                     let mergedNewLabor = false;
                     setInvoiceLineItems((prev) => {
                       const { items, merged } = mergeDuplicateLineItem(
@@ -24118,7 +24314,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
                     setInvoiceItemSearch((prev) => ({
                       ...prev,
-                      [lineIndex]: mergedNewLabor ? '' : newLabor.service_name || '',
+                      [targetLineUiKey]: mergedNewLabor ? '' : newLabor.service_name || '',
                     }));
                     if (mergedNewLabor) {
                       showToast({ type: 'info', message: DUPLICATE_LINE_ITEM_TOAST });
@@ -24131,7 +24327,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   setShowLaborCategoryDropdown(false);
                   setCreatingLaborFromInvoice(false);
                   setCreatingLaborForLineItem(null);
-                  fetchLaborItems();
+                  await fetchLaborItems();
                 }
               }} className="px-4 py-3 sm:py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 touch-manipulation min-h-[44px] sm:min-h-0">Create Labor Item</button>
             </div>
@@ -24275,6 +24471,77 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       ))}
                     </div>
                   )}
+                  {!editingInventoryItem && existingPartNumberMatch && (
+                    <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                      <p className="font-medium">
+                        This part number already exists: {existingPartNumberMatch.part_name}
+                      </p>
+                      <p className="mt-1 text-amber-800">
+                        Use the existing part instead of creating a duplicate with the same part number.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const existingPart = existingPartNumberMatch;
+                          if (!existingPart) return;
+
+                          if (creatingPartFromInvoice && creatingPartForLineItem !== null) {
+                            const lineItemIdx = creatingPartForLineItem;
+                            const targetLine = invoiceLineItems[lineItemIdx];
+                            const targetLineUiKey = targetLine?.lineId || String(lineItemIdx);
+                            let mergedExistingPart = false;
+                            setInvoiceLineItems((prev) => {
+                              const { items, merged } = mergeDuplicateLineItem(
+                                prev,
+                                lineItemIdx,
+                                partLineItemSelection(existingPart),
+                                {
+                                  withTotals: withComputedLineItemTotals,
+                                  createBlank: (itemType, base) => ({
+                                    ...createBlankInvoiceLineItem(itemType),
+                                    ...(base?.lineId ? { lineId: base.lineId } : {}),
+                                  }),
+                                  applySelection: (p) => ({
+                                    ...p,
+                                    item_type: 'part',
+                                    reference_id: existingPart.id,
+                                    description: '',
+                                    item_name: existingPart.part_name || '',
+                                    item_number: existingPart.part_number || null,
+                                    unit_price: Number(existingPart.selling_price) || 0,
+                                  }),
+                                }
+                              );
+                              mergedExistingPart = merged;
+                              return ensureInvoiceLineItemPadding(items);
+                            });
+                            setInvoiceItemSearch((prev) => ({
+                              ...prev,
+                              [targetLineUiKey]: mergedExistingPart
+                                ? ''
+                                : formatPartDisplayName(existingPart) || '',
+                            }));
+                            setCreatingPartFromInvoice(false);
+                            setCreatingPartForLineItem(null);
+                          }
+
+                          setShowAddInventoryModal(false);
+                          setInventoryForm({ name: '', category: '', description: '', sku: '', supplier: '', location: '', quantity: 0, min_stock: 0, unit_price: 0, cost: 0 });
+                          setPartNameSearch('');
+                          setPartNameSuggestions([]);
+                          setShowPartNameDropdown(false);
+                          setPartNumberSearch('');
+                          setPartNumberSuggestions([]);
+                          setShowPartNumberDropdown(false);
+                          setExistingPartNumberMatch(null);
+                          void fetchInventory();
+                        }}
+                        className="mt-2 rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700"
+                      >
+                        Use existing part
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -24372,6 +24639,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   setPartNumberSearch('');
                   setPartNumberSuggestions([]);
                   setShowPartNumberDropdown(false);
+                  setExistingPartNumberMatch(null);
                 }} 
                 className="px-4 py-3 sm:py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 touch-manipulation min-h-[44px] sm:min-h-0"
               >
@@ -24387,25 +24655,27 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     console.warn('Part number / SKU is required'); 
                     return; 
                   }
-                  
-                  // Get user and shop_id
-                  const { data: userData } = await supabase.auth.getUser();
-                  if (!userData?.user?.id) {
-                    console.error('❌ You must be logged in to add inventory items.');
+
+                  const shopId = await getShopId();
+                  if (!shopId && !isFounder) {
+                    console.error('No shop found for user. Cannot save inventory item.');
                     return;
                   }
-                  
-                  // Get shop_id from truck_shops table
-                  const { data: shopData, error: shopError } = await supabase
-                    .from('truck_shops')
-                    .select('id')
-                    .eq('user_id', userData.user.id)
-                    .limit(1)
-                    .single();
-                  
-                  if (shopError || !shopData) {
-                    // If no shop found, try to create one or use null (RLS might handle it)
-                    console.warn('No shop found for user, attempting insert without shop_id (RLS may handle it)');
+
+                  if (!editingInventoryItem) {
+                    const duplicatePart = await findPartByPartNumber(supabase, {
+                      shopId,
+                      isFounder,
+                      partNumber: inventoryForm.sku.trim(),
+                    });
+                    if (duplicatePart) {
+                      setExistingPartNumberMatch(duplicatePart);
+                      showToast({
+                        type: 'error',
+                        message: 'This part number already exists. Use the existing part instead.',
+                      });
+                      return;
+                    }
                   }
                   
                   let data, error;
@@ -24426,7 +24696,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   } else {
                     // Insert new item
                     ({ data, error } = await supabase.from('parts').insert({
-                      shop_id: shopData?.id || null,
+                      shop_id: shopId || null,
                       part_number: inventoryForm.sku.trim(),
                       part_name: inventoryForm.name.trim(),
                       description: inventoryForm.description || null,
@@ -24484,12 +24754,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     setPartNumberSearch('');
                     setPartNumberSuggestions([]);
                     setShowPartNumberDropdown(false);
-                    fetchInventory();
+                    setExistingPartNumberMatch(null);
+                    await fetchInventory();
                     
                     // If created from invoice modal, auto-select the new part
                     if (creatingPartFromInvoice && creatingPartForLineItem !== null && data && data.length > 0) {
                       const newPart = data[0];
                       const lineItemIdx = creatingPartForLineItem;
+                      const targetLineUiKey = invoiceLineItems[lineItemIdx]?.lineId || String(lineItemIdx);
                       
                       setCreatingPartFromInvoice(false);
                       setCreatingPartForLineItem(null);
@@ -24523,7 +24795,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
                       setInvoiceItemSearch((prev) => ({
                         ...prev,
-                        [lineItemIdx]: mergedNewPart
+                        [targetLineUiKey]: mergedNewPart
                           ? ''
                           : formatPartDisplayName(newPart) || '',
                       }));
