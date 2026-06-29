@@ -130,3 +130,58 @@ export async function findPartByPartNumber(
 
   return (exactMatches[0] as InvoiceCatalogPartRow | undefined) || null;
 }
+
+export type InventoryPartInsertForm = {
+  name: string;
+  sku: string;
+  unit_price: number;
+};
+
+/** Merge insert RETURNING row with form values (RETURNING may be empty under RLS). */
+export function mergeInventoryPartFromInsert(
+  row: Partial<InvoiceCatalogPartRow> | null | undefined,
+  form: InventoryPartInsertForm
+): InvoiceCatalogPartRow | null {
+  const id = row?.id ? String(row.id) : '';
+  if (!id) return null;
+
+  const rowPrice = Number(row?.selling_price);
+  const formPrice = Number(form.unit_price) || 0;
+  const sellingPrice = rowPrice > 0 ? rowPrice : formPrice;
+
+  return {
+    id,
+    part_name: (row?.part_name || form.name).trim(),
+    part_number: (row?.part_number || form.sku).trim() || null,
+    description: row?.description ?? null,
+    category: row?.category ?? null,
+    selling_price: sellingPrice,
+    cost: row?.cost ?? null,
+    quantity_in_stock: Number(row?.quantity_in_stock) || 0,
+    shop_id: row?.shop_id ?? null,
+  };
+}
+
+/**
+ * After parts INSERT, resolve the created row for invoice line-item linking.
+ * Supabase may return data=[] when INSERT succeeds but RETURNING is blocked.
+ */
+export async function resolvePartAfterInventoryInsert(
+  supabase: SupabaseClient,
+  options: {
+    shopId: string | null;
+    isFounder: boolean;
+    insertRows: Partial<InvoiceCatalogPartRow>[] | null | undefined;
+    form: InventoryPartInsertForm;
+  }
+): Promise<InvoiceCatalogPartRow | null> {
+  const fromReturning = mergeInventoryPartFromInsert(options.insertRows?.[0], options.form);
+  if (fromReturning) return fromReturning;
+
+  const fetched = await findPartByPartNumber(supabase, {
+    shopId: options.shopId,
+    isFounder: options.isFounder,
+    partNumber: options.form.sku,
+  });
+  return mergeInventoryPartFromInsert(fetched, options.form);
+}

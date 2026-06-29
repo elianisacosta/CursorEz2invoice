@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { createPortal } from 'react-dom';
 import { supabase } from '@/lib/supabase';
@@ -15,6 +15,7 @@ import {
 } from '@/lib/invoices/invoicePaymentSummary';
 import {
   findPartByPartNumber,
+  resolvePartAfterInventoryInsert,
   searchInvoiceCatalogItems,
   type InvoiceCatalogLaborRow,
   type InvoiceCatalogPartRow,
@@ -258,6 +259,12 @@ import {
   hydrateInvoiceLineItemLabelsFromRow,
   prepareSavableInvoiceLineItems,
 } from '@/lib/invoices/invoiceLineItemPersistence';
+import {
+  computeInvoiceItemDropdownPosition,
+  getInvoiceItemDropdownStyle,
+  scrollInvoiceItemInputIntoView,
+  type InvoiceItemDropdownPosition,
+} from '@/lib/invoices/invoiceItemDropdownPosition';
 
 export default function Dashboard() {
   const { isFounder, subscriptionBypass, simulatedTier, currentTier, canAccessFeature, getBayLimit, setSubscriptionBypass, setSimulatedTier } = useFounder();
@@ -833,6 +840,10 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   };
 
   const [invoiceLineItems, setInvoiceLineItems] = useState<InvoiceLineItem[]>(createBlankInvoiceLineItems(2));
+  const invoiceLineItemsRef = useRef(invoiceLineItems);
+  useEffect(() => {
+    invoiceLineItemsRef.current = invoiceLineItems;
+  }, [invoiceLineItems]);
   const [invoiceItemSearch, setInvoiceItemSearch] = useState<Record<string, string>>({});
   const [invoiceItemLiveOptionsByLine, setInvoiceItemLiveOptionsByLine] = useState<
     Record<string, Array<
@@ -843,55 +854,76 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   const [invoiceItemSearchLoadingByLine, setInvoiceItemSearchLoadingByLine] = useState<Record<string, boolean>>({});
   const [existingPartNumberMatch, setExistingPartNumberMatch] = useState<InvoiceCatalogPartRow | null>(null);
   const invoiceItemInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const activeInvoiceItemAnchorRef = useRef<HTMLInputElement | null>(null);
+  const invoiceDrawerScrollRef = useRef<HTMLDivElement | null>(null);
+  const invoiceLineItemsScrollRef = useRef<HTMLDivElement | null>(null);
   const [activeInvoiceItemDropdownKey, setActiveInvoiceItemDropdownKey] = useState<string | null>(null);
-  const [invoiceItemDropdownPosition, setInvoiceItemDropdownPosition] = useState<{
-    left: number;
-    top: number;
-    width: number;
-    maxHeight: number;
-  } | null>(null);
+  const [invoiceItemDropdownPosition, setInvoiceItemDropdownPosition] =
+    useState<InvoiceItemDropdownPosition | null>(null);
   const [invoiceLineDescriptionOpen, setInvoiceLineDescriptionOpen] = useState<Record<string, boolean>>({});
-  const updateInvoiceItemDropdownPosition = useCallback((lineUiKey: string | null = activeInvoiceItemDropdownKey) => {
-    if (typeof window === 'undefined' || !lineUiKey) return;
-    const input = invoiceItemInputRefs.current[lineUiKey];
-    if (!input) return;
+  const updateInvoiceItemDropdownPosition = useCallback(
+    (lineUiKey: string | null, anchor?: HTMLInputElement | null, options?: { scrollIntoView?: boolean }) => {
+      if (typeof window === 'undefined' || !lineUiKey) return;
+      const input =
+        anchor ||
+        activeInvoiceItemAnchorRef.current ||
+        invoiceItemInputRefs.current[lineUiKey];
+      if (!input) return;
 
-    const rect = input.getBoundingClientRect();
-    const viewportPadding = 12;
-    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
-    const spaceAbove = rect.top - viewportPadding;
-    const openAbove = spaceBelow < 220 && spaceAbove > spaceBelow;
-    const maxHeight = Math.max(160, Math.min(320, openAbove ? spaceAbove : spaceBelow));
-    const desiredWidth = Math.max(260, rect.width);
-    const width = Math.min(desiredWidth, window.innerWidth - viewportPadding * 2);
-    const left = Math.min(
-      Math.max(viewportPadding, rect.left),
-      Math.max(viewportPadding, window.innerWidth - width - viewportPadding)
-    );
+      if (options?.scrollIntoView) {
+        scrollInvoiceItemInputIntoView(input);
+      }
 
-    setInvoiceItemDropdownPosition({
-      left,
-      top: openAbove ? Math.max(viewportPadding, rect.top - maxHeight - 4) : rect.bottom + 4,
-      width,
-      maxHeight,
-    });
-  }, [activeInvoiceItemDropdownKey]);
-  useEffect(() => {
-    if (!activeInvoiceItemDropdownKey) {
+      const position = computeInvoiceItemDropdownPosition(input, lineUiKey);
+      setInvoiceItemDropdownPosition(position);
+    },
+    []
+  );
+  const activeInvoiceItemSearchTerm = activeInvoiceItemDropdownKey
+    ? (invoiceItemSearch[activeInvoiceItemDropdownKey] || '').trim()
+    : '';
+  useLayoutEffect(() => {
+    if (!activeInvoiceItemDropdownKey || !activeInvoiceItemSearchTerm) {
       setInvoiceItemDropdownPosition(null);
       return;
     }
 
-    updateInvoiceItemDropdownPosition(activeInvoiceItemDropdownKey);
-    const handlePositionUpdate = () => updateInvoiceItemDropdownPosition(activeInvoiceItemDropdownKey);
+    updateInvoiceItemDropdownPosition(activeInvoiceItemDropdownKey, activeInvoiceItemAnchorRef.current, {
+      scrollIntoView: true,
+    });
+
+    const handlePositionUpdate = () => {
+      updateInvoiceItemDropdownPosition(activeInvoiceItemDropdownKey, activeInvoiceItemAnchorRef.current);
+    };
+
     window.addEventListener('resize', handlePositionUpdate);
     window.addEventListener('scroll', handlePositionUpdate, true);
+    window.visualViewport?.addEventListener('resize', handlePositionUpdate);
+    window.visualViewport?.addEventListener('scroll', handlePositionUpdate);
+
+    const scrollContainers = [
+      invoiceDrawerScrollRef.current,
+      invoiceLineItemsScrollRef.current,
+    ].filter(Boolean) as HTMLElement[];
+
+    scrollContainers.forEach((container) => {
+      container.addEventListener('scroll', handlePositionUpdate, { passive: true });
+    });
 
     return () => {
       window.removeEventListener('resize', handlePositionUpdate);
       window.removeEventListener('scroll', handlePositionUpdate, true);
+      window.visualViewport?.removeEventListener('resize', handlePositionUpdate);
+      window.visualViewport?.removeEventListener('scroll', handlePositionUpdate);
+      scrollContainers.forEach((container) => {
+        container.removeEventListener('scroll', handlePositionUpdate);
+      });
     };
-  }, [activeInvoiceItemDropdownKey, updateInvoiceItemDropdownPosition]);
+  }, [
+    activeInvoiceItemDropdownKey,
+    activeInvoiceItemSearchTerm,
+    updateInvoiceItemDropdownPosition,
+  ]);
   useEffect(() => {
     setInvoiceLineItems((prev) => {
       const padded = ensureInvoiceLineItemPadding(prev);
@@ -1612,6 +1644,7 @@ const [creatingCustomerFromInvoice, setCreatingCustomerFromInvoice] = useState(f
 const [creatingPartFromInvoice, setCreatingPartFromInvoice] = useState(false);
 const [creatingPartForLineItem, setCreatingPartForLineItem] = useState<number | null>(null);
 const [creatingPartForLineId, setCreatingPartForLineId] = useState<string | null>(null);
+const pendingInvoicePartLineRef = useRef<{ lineId: string } | null>(null);
 const [creatingLaborFromInvoice, setCreatingLaborFromInvoice] = useState(false);
 const [creatingLaborForLineItem, setCreatingLaborForLineItem] = useState<number | null>(null);
 const [creatingLaborForLineId, setCreatingLaborForLineId] = useState<string | null>(null);
@@ -1843,10 +1876,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const buildInvoiceLineItemsPayload = useCallback((
     invoiceId: string,
     items: InvoiceLineItem[],
-    options: { includeLabels?: boolean; includeDiscounts?: boolean } = {}
+    options: { includeLabels?: boolean; includeDiscounts?: boolean; includeTaxable?: boolean } = {}
   ) => {
     const includeLabels = options.includeLabels !== false;
     const includeDiscounts = options.includeDiscounts !== false;
+    const includeTaxable = options.includeTaxable !== false;
 
     return items.map((item) => {
       const payload: Record<string, any> = {
@@ -1857,8 +1891,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         quantity: Number(item.quantity) || 1,
         unit_price: Number(item.unit_price) || 0,
         total_price: Number(item.total_price) || 0,
-        taxable: item.taxable !== false,
       };
+      if (includeTaxable) {
+        payload.taxable = item.taxable !== false;
+      }
 
       if (includeLabels) {
         payload.item_name = item.item_name || item.description || null;
@@ -1877,9 +1913,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
   const insertInvoiceLineItems = useCallback(async (invoiceId: string, items: InvoiceLineItem[]) => {
     const attempts = [
-      { includeLabels: true, includeDiscounts: true },
-      { includeLabels: false, includeDiscounts: true },
-      { includeLabels: false, includeDiscounts: false },
+      { includeLabels: true, includeDiscounts: true, includeTaxable: true },
+      { includeLabels: false, includeDiscounts: true, includeTaxable: true },
+      { includeLabels: false, includeDiscounts: false, includeTaxable: true },
+      { includeLabels: false, includeDiscounts: false, includeTaxable: false },
     ];
 
     let lastError: any = null;
@@ -1904,7 +1941,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         .select('id');
 
       if (!result.error) {
-        return { data: result.data || [], error: null };
+        const inserted = result.data || [];
+        if (inserted.length !== payload.length) {
+          lastError = {
+            message: `Expected ${payload.length} invoice line items but saved ${inserted.length}`,
+          };
+          continue;
+        }
+        return { data: inserted, error: null };
       }
 
       lastError = result.error;
@@ -1916,6 +1960,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         msg.includes('discount_') ||
         msg.includes('item_name') ||
         msg.includes('item_number') ||
+        msg.includes('taxable') ||
         msg.includes('column') ||
         msg.includes('schema cache');
 
@@ -20933,7 +20978,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               setInvoiceCustomerDiscounts([]);
             }}
           />
-          <div className="absolute inset-y-0 right-0 w-full max-w-6xl bg-white shadow-2xl overflow-y-auto overscroll-contain" onClick={(e) => e.stopPropagation()}>
+          <div
+            ref={invoiceDrawerScrollRef}
+            className="absolute inset-y-0 right-0 w-full max-w-6xl bg-white shadow-2xl overflow-y-auto overscroll-contain"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
                 <div>
@@ -21342,7 +21391,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   <h3 className="text-lg font-semibold text-gray-900">Line Items</h3>
                 </div>
 
-                <div className="bg-gray-50 rounded-lg p-4 min-w-0 overflow-x-auto">
+                <div ref={invoiceLineItemsScrollRef} className="bg-gray-50 rounded-lg p-4 min-w-0 overflow-x-auto">
                   <div className="grid min-w-[920px] gap-3 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4" style={{ gridTemplateColumns: '72px 44px minmax(260px, 2fr) 64px 88px 84px 86px 78px 32px' }}>
                     <div>Type</div>
                     <div title="Include in tax (uncheck e.g. for labor when client pays cash)">Tax</div>
@@ -21401,15 +21450,19 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           <div className="relative min-w-0">
                             <input
                               ref={(node) => {
-                                invoiceItemInputRefs.current[lineUiKey] = node;
+                                if (node) {
+                                  invoiceItemInputRefs.current[lineUiKey] = node;
+                                } else {
+                                  delete invoiceItemInputRefs.current[lineUiKey];
+                                }
                               }}
                               type="text"
                               placeholder="Search labor or part item"
                               value={selectedItemName || searchTerm || (!item.reference_id ? item.description : '')}
                               onChange={(e) => {
                                 const newValue = e.target.value;
+                                activeInvoiceItemAnchorRef.current = e.currentTarget;
                                 setActiveInvoiceItemDropdownKey(lineUiKey);
-                                requestAnimationFrame(() => updateInvoiceItemDropdownPosition(lineUiKey));
                                 // If user starts typing and there's a selected item, clear the selection to allow searching
                                 if (item.reference_id && newValue !== selectedItemName) {
                                   setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, reference_id: null, description: newValue, item_name: null, item_number: null, unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
@@ -21418,10 +21471,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 }
                                 setInvoiceItemSearch(prev => ({ ...prev, [lineUiKey]: newValue }));
                               }}
-                              onFocus={() => {
+                              onFocus={(e) => {
                                 if (!item.reference_id) {
+                                  activeInvoiceItemAnchorRef.current = e.currentTarget;
                                   setActiveInvoiceItemDropdownKey(lineUiKey);
-                                  requestAnimationFrame(() => updateInvoiceItemDropdownPosition(lineUiKey));
                                 }
                               }}
                               onBlur={() => {
@@ -21431,15 +21484,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               }}
                               className="w-full min-w-0 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                             />
-                            {searchTerm && !item.reference_id && activeInvoiceItemDropdownKey === lineUiKey && invoiceItemDropdownPosition && typeof document !== 'undefined' && createPortal(
+                            {searchTerm && !item.reference_id && activeInvoiceItemDropdownKey === lineUiKey && invoiceItemDropdownPosition?.lineKey === lineUiKey && typeof document !== 'undefined' && createPortal(
                               <div
-                                className="fixed z-[9999] bg-white border border-gray-300 rounded-lg shadow-2xl overflow-y-auto"
-                                style={{
-                                  left: invoiceItemDropdownPosition.left,
-                                  top: invoiceItemDropdownPosition.top,
-                                  width: invoiceItemDropdownPosition.width,
-                                  maxHeight: invoiceItemDropdownPosition.maxHeight,
-                                }}
+                                className="bg-white border border-gray-300 rounded-lg shadow-2xl overflow-y-auto"
+                                style={getInvoiceItemDropdownStyle(invoiceItemDropdownPosition)}
                                 onMouseDown={(e) => e.preventDefault()}
                               >
                                 {combinedInvoiceItemOptions.map((row) => {
@@ -21607,6 +21655,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                             setCreatingPartFromInvoice(true);
                                             setCreatingPartForLineItem(idx);
                                             setCreatingPartForLineId(lineUiKey);
+                                            pendingInvoicePartLineRef.current = { lineId: lineUiKey };
                                             setActiveInvoiceItemDropdownKey(null);
                                             setInvoiceItemDropdownPosition(null);
                                             const searchQuery = searchTerm.trim();
@@ -22226,7 +22275,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 disabled={invoiceSaveInProgress}
                 onClick={async () => {
                   const { nonEmpty: nonEmptyLineItems, savable: savableLineItems } =
-                    prepareSavableInvoiceLineItems(invoiceLineItems, {
+                    prepareSavableInvoiceLineItems(invoiceLineItemsRef.current, {
                       isEmpty: isInvoiceLineEmpty,
                       withTotals: withComputedLineItemTotals,
                     });
@@ -24535,6 +24584,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
             setCreatingPartFromInvoice(false);
             setCreatingPartForLineItem(null);
             setCreatingPartForLineId(null);
+            pendingInvoicePartLineRef.current = null;
             setEditingInventoryItem(null);
             setInventoryForm({ name: '', category: '', description: '', sku: '', supplier: '', location: '', quantity: 0, min_stock: 0, unit_price: 0, cost: 0 });
             setPartNameSearch('');
@@ -24553,6 +24603,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 setCreatingPartFromInvoice(false);
                 setCreatingPartForLineItem(null);
                 setCreatingPartForLineId(null);
+                pendingInvoicePartLineRef.current = null;
                 setEditingInventoryItem(null);
                 setInventoryForm({ name: '', category: '', description: '', sku: '', supplier: '', location: '', quantity: 0, min_stock: 0, unit_price: 0, cost: 0 });
                 setPartNameSearch('');
@@ -24719,6 +24770,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             setCreatingPartFromInvoice(false);
                             setCreatingPartForLineItem(null);
                             setCreatingPartForLineId(null);
+                            pendingInvoicePartLineRef.current = null;
                           }
 
                           setShowAddInventoryModal(false);
@@ -24874,35 +24926,45 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     }
                   }
                   
+                  const partFormSnapshot = {
+                    name: inventoryForm.name.trim(),
+                    sku: inventoryForm.sku.trim(),
+                    unit_price: Number(inventoryForm.unit_price) || 0,
+                  };
+                  const pendingInvoicePartLine = pendingInvoicePartLineRef.current;
+                  const shouldLinkPartToInvoice =
+                    creatingPartFromInvoice &&
+                    Boolean(pendingInvoicePartLine?.lineId || creatingPartForLineId || creatingPartForLineItem !== null);
+                  
                   let data, error;
                   
                   if (editingInventoryItem) {
                     // Update existing item
                     ({ data, error } = await supabase.from('parts').update({
-                      part_number: inventoryForm.sku.trim(),
-                      part_name: inventoryForm.name.trim(),
+                      part_number: partFormSnapshot.sku,
+                      part_name: partFormSnapshot.name,
                       description: inventoryForm.description || null,
                       category: inventoryForm.category || null,
                       cost: Number(inventoryForm.cost) || 0,
-                      selling_price: Number(inventoryForm.unit_price) || 0,
+                      selling_price: partFormSnapshot.unit_price,
                       quantity_in_stock: Number(inventoryForm.quantity) || 0,
                       minimum_stock_level: Number(inventoryForm.min_stock) || 0,
                       supplier: inventoryForm.supplier || null
-                    }).eq('id', editingInventoryItem).select());
+                    }).eq('id', editingInventoryItem).select('id, part_name, part_number, selling_price, description, category, cost, quantity_in_stock, shop_id'));
                   } else {
                     // Insert new item
                     ({ data, error } = await supabase.from('parts').insert({
                       shop_id: shopId || null,
-                      part_number: inventoryForm.sku.trim(),
-                      part_name: inventoryForm.name.trim(),
+                      part_number: partFormSnapshot.sku,
+                      part_name: partFormSnapshot.name,
                       description: inventoryForm.description || null,
                       category: inventoryForm.category || null,
                       cost: Number(inventoryForm.cost) || 0,
-                      selling_price: Number(inventoryForm.unit_price) || 0,
+                      selling_price: partFormSnapshot.unit_price,
                       quantity_in_stock: Number(inventoryForm.quantity) || 0,
                       minimum_stock_level: Number(inventoryForm.min_stock) || 0,
                       supplier: inventoryForm.supplier || null
-                    }).select());
+                    }).select('id, part_name, part_number, selling_price, description, category, cost, quantity_in_stock, shop_id'));
                   }
                   
                   if(error){
@@ -24951,62 +25013,90 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     setPartNumberSuggestions([]);
                     setShowPartNumberDropdown(false);
                     setExistingPartNumberMatch(null);
-                    await fetchInventory();
-                    
-                    // If created from invoice modal, auto-select the new part
-                    if (creatingPartFromInvoice && (creatingPartForLineId || creatingPartForLineItem !== null) && data && data.length > 0) {
-                      const newPart = data[0] as InventoryItem;
+
+                    if (shouldLinkPartToInvoice) {
                       const targetLineId =
+                        pendingInvoicePartLine?.lineId ||
                         creatingPartForLineId ||
                         (creatingPartForLineItem !== null
-                          ? invoiceLineItems[creatingPartForLineItem]?.lineId || String(creatingPartForLineItem)
+                          ? invoiceLineItemsRef.current[creatingPartForLineItem]?.lineId ||
+                            String(creatingPartForLineItem)
                           : null);
+
+                      const resolvedPart = await resolvePartAfterInventoryInsert(supabase, {
+                        shopId,
+                        isFounder,
+                        insertRows: data,
+                        form: partFormSnapshot,
+                      });
 
                       setCreatingPartFromInvoice(false);
                       setCreatingPartForLineItem(null);
                       setCreatingPartForLineId(null);
+                      pendingInvoicePartLineRef.current = null;
 
-                      if (!targetLineId) return;
+                      if (targetLineId && resolvedPart) {
+                        const newPart = resolvedPart as InventoryItem;
+                        setInventory((prev) => {
+                          const withoutDuplicate = prev.filter(
+                            (part) => String(part.id) !== String(newPart.id)
+                          );
+                          return [newPart, ...withoutDuplicate];
+                        });
 
-                      setInventory((prev) => {
-                        const withoutDuplicate = prev.filter((part) => String(part.id) !== String(newPart.id));
-                        return [newPart, ...withoutDuplicate];
-                      });
-
-                      let mergedNewPart = false;
-                      setInvoiceLineItems((prev) => {
-                        const lineItemIdx = findInvoiceLineIndexByLineId(prev, targetLineId);
-                        if (lineItemIdx < 0) return prev;
-                        const { items, merged } = mergeDuplicateLineItem(
-                          prev,
-                          lineItemIdx,
-                          partLineItemSelection(newPart),
-                          {
-                            withTotals: withComputedLineItemTotals,
-                            createBlank: (itemType, base) => ({
-                              ...createBlankInvoiceLineItem(itemType),
-                              ...(base?.lineId ? { lineId: base.lineId } : {}),
-                            }),
-                            applySelection: (line) =>
-                              withComputedLineItemTotals(
-                                applyInventoryPartToInvoiceLineItem(line, newPart)
-                              ),
+                        let mergedNewPart = false;
+                        setInvoiceLineItems((prev) => {
+                          const lineItemIdx = findInvoiceLineIndexByLineId(prev, targetLineId);
+                          if (lineItemIdx < 0) {
+                            console.error(
+                              'Could not find invoice line to attach new part',
+                              targetLineId
+                            );
+                            return prev;
                           }
-                        );
-                        mergedNewPart = merged;
-                        return ensureInvoiceLineItemPadding(items);
-                      });
+                          const { items, merged } = mergeDuplicateLineItem(
+                            prev,
+                            lineItemIdx,
+                            partLineItemSelection(newPart),
+                            {
+                              withTotals: withComputedLineItemTotals,
+                              createBlank: (itemType, base) => ({
+                                ...createBlankInvoiceLineItem(itemType),
+                                ...(base?.lineId ? { lineId: base.lineId } : {}),
+                              }),
+                              applySelection: (line) =>
+                                withComputedLineItemTotals(
+                                  applyInventoryPartToInvoiceLineItem(line, newPart)
+                                ),
+                            }
+                          );
+                          mergedNewPart = merged;
+                          return ensureInvoiceLineItemPadding(items);
+                        });
 
-                      setInvoiceItemSearch((prev) => ({
-                        ...prev,
-                        [targetLineId]: mergedNewPart
-                          ? ''
-                          : formatPartDisplayName(newPart) || '',
-                      }));
-                      if (mergedNewPart) {
-                        showToast({ type: 'info', message: DUPLICATE_LINE_ITEM_TOAST });
+                        setInvoiceItemSearch((prev) => ({
+                          ...prev,
+                          [targetLineId]: mergedNewPart
+                            ? ''
+                            : formatPartDisplayName(newPart) || '',
+                        }));
+                        if (mergedNewPart) {
+                          showToast({ type: 'info', message: DUPLICATE_LINE_ITEM_TOAST });
+                        }
+                      } else if (targetLineId) {
+                        console.error(
+                          'Part saved to inventory but could not be resolved for invoice line link',
+                          { targetLineId, partFormSnapshot, insertRows: data }
+                        );
+                        showToast({
+                          type: 'error',
+                          message:
+                            'Part was saved to inventory but could not be linked to the invoice line. Search for it and select it again.',
+                        });
                       }
                     }
+
+                    await fetchInventory();
                   }
                 }} 
                 className="px-4 py-3 sm:py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 touch-manipulation min-h-[44px] sm:min-h-0"

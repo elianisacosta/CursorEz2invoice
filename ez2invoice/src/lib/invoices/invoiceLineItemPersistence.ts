@@ -78,7 +78,10 @@ export function applyInventoryPartToInvoiceLineItem<T extends PersistableInvoice
     description: '',
     item_name: partName || null,
     item_number: partNumber,
-    unit_price: Number(part.selling_price) || 0,
+    unit_price: (() => {
+      const fromPart = Number(part.selling_price);
+      return fromPart > 0 ? fromPart : Number(line.unit_price) || 0;
+    })(),
   };
 }
 
@@ -104,7 +107,9 @@ export function prepareSavableInvoiceLineItems<T extends PersistableInvoiceLineI
       Boolean(item.description?.trim()) ||
       Boolean(item.item_name?.trim()) ||
       Boolean(item.item_number?.trim());
-    return hasIdentity && (Number(item.total_price) || 0) > 0;
+    const gross = (Number(item.quantity) || 0) * (Number(item.unit_price) || 0);
+    const hasPrice = (Number(item.total_price) || 0) > 0 || gross > 0;
+    return hasIdentity && hasPrice;
   });
   return { normalized, nonEmpty, savable };
 }
