@@ -244,9 +244,24 @@ import { useToast } from '@/components/ui/useToast';
 import ConfirmDeleteDialog from '@/components/ui/ConfirmDeleteDialog';
 import AnnualVehicleInspectionForm from '@/components/AnnualVehicleInspectionForm';
 import SubscriptionAccessCheck from '@/components/SubscriptionAccessCheck';
+import { useInvoicesEstimatesIntegration } from '@/hooks/useInvoicesEstimatesIntegration';
+import { shouldShowEstimatesNavTab } from '@/lib/features/invoicesEstimatesIntegration';
+import {
+  buildCombinedInvoiceEstimateList,
+  estimateMatchesInvoiceListSearch,
+} from '@/lib/features/invoiceEstimateListEntries';
+import { InvoicesTabEstimateListRow } from '@/components/invoices/InvoicesTabEstimateListRow';
+import {
+  applyInventoryPartToInvoiceLineItem,
+  buildInvoiceLineItemDescriptionForSave,
+  findInvoiceLineIndexByLineId,
+  hydrateInvoiceLineItemLabelsFromRow,
+  prepareSavableInvoiceLineItems,
+} from '@/lib/invoices/invoiceLineItemPersistence';
 
 export default function Dashboard() {
   const { isFounder, subscriptionBypass, simulatedTier, currentTier, canAccessFeature, getBayLimit, setSubscriptionBypass, setSimulatedTier } = useFounder();
+  const invoicesEstimatesIntegrationEnabled = useInvoicesEstimatesIntegration(isFounder);
   const { currentShopId: contextShopId, shops, setCurrentShopId, isLoading: shopLoading } = useShop();
   const { showToast } = useToast();
   const showToastRef = useRef(showToast);
@@ -541,7 +556,7 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     return autoText.some((value) => value?.trim().toLowerCase() === normalizedNote.toLowerCase()) ? '' : rawNote;
   };
   const getInvoiceLineItemStoredDescription = (item: InvoiceLineItem) =>
-    item.reference_id ? getInvoiceLineItemNote(item) : item.description;
+    buildInvoiceLineItemDescriptionForSave(item, getInvoiceLineItemNote(item));
   const areInvoiceLineItemsEqual = (a: InvoiceLineItem[], b: InvoiceLineItem[]) => {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i += 1) {
@@ -1596,8 +1611,10 @@ const debouncedInvoiceItemSearch = useDebouncedValue(invoiceItemSearch, 300);
 const [creatingCustomerFromInvoice, setCreatingCustomerFromInvoice] = useState(false);
 const [creatingPartFromInvoice, setCreatingPartFromInvoice] = useState(false);
 const [creatingPartForLineItem, setCreatingPartForLineItem] = useState<number | null>(null);
+const [creatingPartForLineId, setCreatingPartForLineId] = useState<string | null>(null);
 const [creatingLaborFromInvoice, setCreatingLaborFromInvoice] = useState(false);
 const [creatingLaborForLineItem, setCreatingLaborForLineItem] = useState<number | null>(null);
+const [creatingLaborForLineId, setCreatingLaborForLineId] = useState<string | null>(null);
 const [estimateCustomerSearch, setEstimateCustomerSearch] = useState('');
 const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState(false);
 const [creatingCustomerFromEstimate, setCreatingCustomerFromEstimate] = useState(false);
@@ -1804,13 +1821,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       const referenceId = item.reference_id || null;
       const labor = itemType === 'labor' && referenceId ? hydratedLaborById.get(String(referenceId)) : null;
       const part = itemType === 'part' && referenceId ? hydratedPartById.get(String(referenceId)) : null;
+      const storedLabels = hydrateInvoiceLineItemLabelsFromRow(item as Record<string, unknown>);
 
       return {
         item_type: itemType,
         reference_id: referenceId,
-        description: item.description || '',
-        item_name: item.item_name || labor?.service_name || part?.part_name || null,
-        item_number: item.item_number || item.part_number || part?.part_number || null,
+        description: storedLabels.description || item.description || '',
+        item_name: storedLabels.item_name || item.item_name || labor?.service_name || part?.part_name || null,
+        item_number: storedLabels.item_number || item.item_number || item.part_number || part?.part_number || null,
         quantity: Number(item.quantity) || 1,
         unit_price: Number(item.unit_price) || 0,
         total_price: Number(item.total_price) || 0,
@@ -1835,7 +1853,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         invoice_id: invoiceId,
         item_type: item.item_type,
         reference_id: item.reference_id || null,
-        description: getInvoiceLineItemStoredDescription(item) || '',
+        description: getInvoiceLineItemStoredDescription(item) || (item.reference_id ? 'Item' : ''),
         quantity: Number(item.quantity) || 1,
         unit_price: Number(item.unit_price) || 0,
         total_price: Number(item.total_price) || 0,
@@ -1843,7 +1861,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       };
 
       if (includeLabels) {
-        payload.item_name = item.item_name || (!item.reference_id ? item.description || null : null);
+        payload.item_name = item.item_name || item.description || null;
         payload.item_number = item.item_number || null;
       }
 
@@ -7822,15 +7840,82 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     return filteredInvoicesForList.slice(start, start + invoicePageSize);
   }, [filteredInvoicesForList, invoiceCurrentPage, invoicePageSize]);
 
+  const filteredEstimatesForInvoiceList = useMemo(() => {
+    if (!invoicesEstimatesIntegrationEnabled) return [];
+    if (invoiceStatusFilter !== 'All Status') return [];
+    return estimates.filter((estimate) =>
+      estimateMatchesInvoiceListSearch(estimate, invoiceSearchQuery)
+    );
+  }, [
+    estimates,
+    invoiceSearchQuery,
+    invoiceStatusFilter,
+    invoicesEstimatesIntegrationEnabled,
+  ]);
+
+  const filteredDocumentsForList = useMemo(() => {
+    if (!invoicesEstimatesIntegrationEnabled) return [];
+    return buildCombinedInvoiceEstimateList(
+      filteredInvoicesForList,
+      filteredEstimatesForInvoiceList
+    );
+  }, [
+    invoicesEstimatesIntegrationEnabled,
+    filteredInvoicesForList,
+    filteredEstimatesForInvoiceList,
+  ]);
+
+  const invoiceListRowCount = invoicesEstimatesIntegrationEnabled
+    ? filteredDocumentsForList.length
+    : filteredInvoicesForList.length;
+
+  const invoiceListTotalPages = Math.max(
+    1,
+    Math.ceil(invoiceListRowCount / invoicePageSize)
+  );
+
+  const paginatedDocumentsForList = useMemo(() => {
+    if (!invoicesEstimatesIntegrationEnabled) return [];
+    const start = (invoiceCurrentPage - 1) * invoicePageSize;
+    return filteredDocumentsForList.slice(start, start + invoicePageSize);
+  }, [
+    filteredDocumentsForList,
+    invoiceCurrentPage,
+    invoicePageSize,
+    invoicesEstimatesIntegrationEnabled,
+  ]);
+
+  const invoiceListGridColumns = invoicesEstimatesIntegrationEnabled
+    ? 'minmax(72px, 0.75fr) minmax(110px, 1.1fr) minmax(150px, 1.5fr) minmax(100px, 1fr) minmax(120px, 1.05fr) minmax(90px, 0.85fr) minmax(105px, 0.95fr) minmax(170px, 1.25fr)'
+    : 'minmax(110px, 1.1fr) minmax(150px, 1.5fr) minmax(100px, 1fr) minmax(120px, 1.05fr) minmax(90px, 0.85fr) minmax(105px, 0.95fr) minmax(170px, 1.25fr)';
+
   useEffect(() => {
     setInvoiceCurrentPage(1);
   }, [invoiceSearchQuery, invoiceStatusFilter, invoicePageSize]);
 
   useEffect(() => {
-    if (invoiceCurrentPage > invoiceTotalPages) {
-      setInvoiceCurrentPage(invoiceTotalPages);
+    const totalPages = invoicesEstimatesIntegrationEnabled
+      ? invoiceListTotalPages
+      : invoiceTotalPages;
+    if (invoiceCurrentPage > totalPages) {
+      setInvoiceCurrentPage(totalPages);
     }
-  }, [invoiceCurrentPage, invoiceTotalPages]);
+  }, [
+    invoiceCurrentPage,
+    invoiceTotalPages,
+    invoiceListTotalPages,
+    invoicesEstimatesIntegrationEnabled,
+  ]);
+
+  useEffect(() => {
+    if (
+      invoicesEstimatesIntegrationEnabled &&
+      !shouldShowEstimatesNavTab(isFounder, true) &&
+      activeTab === 'estimates'
+    ) {
+      setActiveTab('invoices');
+    }
+  }, [activeTab, invoicesEstimatesIntegrationEnabled, isFounder]);
 
   // Customer stats from invoices and work orders (for Customers tab)
   const { customerStatsMap, totalRevenue, totalVisits } = useMemo(() => {
@@ -10859,6 +10944,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               </div>
               {navigationItems
                 .filter((item) => {
+                  if (
+                    item.id === 'estimates' &&
+                    !shouldShowEstimatesNavTab(isFounder, invoicesEstimatesIntegrationEnabled)
+                  ) {
+                    return false;
+                  }
                   // Hide DOT Inspections for Starter plan
                   if (item.id === 'dot-inspections') {
                     return canAccessFeature('dot_inspections');
@@ -13422,11 +13513,21 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <div
                   role="button"
                   tabIndex={0}
-                  aria-label="Open Estimates tab"
-                  onClick={() => setActiveTab('estimates')}
+                  aria-label={invoicesEstimatesIntegrationEnabled ? 'Estimates workflow' : 'Open Estimates tab'}
+                  onClick={() => {
+                    if (invoicesEstimatesIntegrationEnabled) {
+                      setShowCreateEstimateModal(true);
+                      return;
+                    }
+                    setActiveTab('estimates');
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
+                      if (invoicesEstimatesIntegrationEnabled) {
+                        setShowCreateEstimateModal(true);
+                        return;
+                      }
                       setActiveTab('estimates');
                     }
                   }}
@@ -13439,7 +13540,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       </span>
                       <div className="min-w-0">
                         <div className="text-sm font-semibold text-gray-900">Estimates</div>
-                        <div className="text-[11px] text-gray-500 leading-snug">Open estimates tab</div>
+                        <div className="text-[11px] text-gray-500 leading-snug">
+                          {invoicesEstimatesIntegrationEnabled
+                            ? 'Create and send quotes'
+                            : 'Open estimates tab'}
+                        </div>
                       </div>
                     </div>
                     <ChevronRight className="h-4 w-4 shrink-0 text-gray-300 group-hover:text-primary-500 transition-colors mt-1" aria-hidden />
@@ -13556,6 +13661,16 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         <Plus className="h-4 w-4" />
                         <span>Create Invoice</span>
                       </button>
+                      {invoicesEstimatesIntegrationEnabled && (
+                        <button
+                          type="button"
+                          onClick={() => setShowCreateEstimateModal(true)}
+                          className="bg-white text-primary-700 border border-primary-300 px-4 py-2 rounded-lg hover:bg-primary-50 transition-colors flex items-center space-x-2 text-sm w-full md:w-auto justify-center"
+                        >
+                          <ClipboardList className="h-4 w-4" />
+                          <span>Create Estimate</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -13566,8 +13681,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <div className="p-6 border-b border-gray-200">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                      <h3 className="text-lg font-semibold text-gray-900">Invoice List</h3>
-                      <p className="text-sm text-gray-600 mt-1">Manage billing and track payment status.</p>
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        {invoicesEstimatesIntegrationEnabled ? 'Invoices & Estimates' : 'Invoice List'}
+                      </h3>
+                      <p className="text-sm text-gray-600 mt-1">
+                        {invoicesEstimatesIntegrationEnabled
+                          ? 'Manage billing, quotes, and track document status.'
+                          : 'Manage billing and track payment status.'}
+                      </p>
                     </div>
                     <div className="flex items-center gap-2 text-sm text-gray-600">
                       <span>Rows</span>
@@ -13580,29 +13701,42 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         <option value={50}>50</option>
                         <option value={100}>100</option>
                       </select>
-                      <span className="text-gray-500">of {filteredInvoicesForList.length}</span>
+                      <span className="text-gray-500">of {invoiceListRowCount}</span>
                     </div>
                   </div>
                 </div>
                 <div className="p-6">
-                  {invoices.length === 0 ? (
+                  {invoices.length === 0 && (!invoicesEstimatesIntegrationEnabled || estimates.length === 0) ? (
                     /* Empty State */
                     <div className="text-center py-12">
                       <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                       <h3 className="text-lg font-medium text-gray-900 mb-2">No invoices yet</h3>
                       <p className="text-gray-600 mb-6">Create your first invoice to get started with billing.</p>
-                      <button
-                        onClick={() => setShowCreateInvoiceModal(true)}
-                        className="bg-primary-500 text-white px-6 py-3 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2 mx-auto"
-                      >
-                        <Plus className="h-4 w-4" />
-                        <span>Create Your First Invoice</span>
-                      </button>
+                      <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                        <button
+                          onClick={() => setShowCreateInvoiceModal(true)}
+                          className="bg-primary-500 text-white px-6 py-3 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2"
+                        >
+                          <Plus className="h-4 w-4" />
+                          <span>Create Your First Invoice</span>
+                        </button>
+                        {invoicesEstimatesIntegrationEnabled && (
+                          <button
+                            type="button"
+                            onClick={() => setShowCreateEstimateModal(true)}
+                            className="bg-white text-primary-700 border border-primary-300 px-6 py-3 rounded-lg hover:bg-primary-50 transition-colors flex items-center space-x-2"
+                          >
+                            <ClipboardList className="h-4 w-4" />
+                            <span>Create Your First Estimate</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ) : (
                     <div className="min-w-0 overflow-x-hidden md:overflow-x-auto">
                       {/* Table Header - Desktop Only */}
-                      <div className="hidden md:grid gap-2 text-xs font-medium text-gray-500 uppercase tracking-wider mb-3 min-w-0" style={{ gridTemplateColumns: 'minmax(110px, 1.1fr) minmax(150px, 1.5fr) minmax(100px, 1fr) minmax(120px, 1.05fr) minmax(90px, 0.85fr) minmax(105px, 0.95fr) minmax(170px, 1.25fr)' }}>
+                      <div className="hidden md:grid gap-2 text-xs font-medium text-gray-500 uppercase tracking-wider mb-3 min-w-0" style={{ gridTemplateColumns: invoiceListGridColumns }}>
+                        {invoicesEstimatesIntegrationEnabled && <div className="min-w-0">Type</div>}
                         <button
                           type="button"
                           onClick={() => {
@@ -13630,21 +13764,44 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       {/* Invoice List */}
                       <div className="space-y-3">
                         {(() => {
-                          if (filteredInvoicesForList.length === 0) {
+                          if (invoiceListRowCount === 0) {
                             return (
                               <div className="text-center py-12">
                                 <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                                <h3 className="text-lg font-medium text-gray-900 mb-2">No invoices found</h3>
+                                <h3 className="text-lg font-medium text-gray-900 mb-2">No documents found</h3>
                                 <p className="text-gray-600 mb-6">
-                                  {invoices.length === 0 
+                                  {invoices.length === 0 && estimates.length === 0
                                     ? "Create your first invoice to get started with billing."
-                                    : "No invoices match your search criteria."}
+                                    : "No invoices or estimates match your search criteria."}
                                 </p>
                               </div>
                             );
                           }
-                          
-                          return paginatedInvoicesForList.map((invoice) => {
+
+                          const rowsToRender = invoicesEstimatesIntegrationEnabled
+                            ? paginatedDocumentsForList
+                            : paginatedInvoicesForList.map((data) => ({
+                                kind: 'invoice' as const,
+                                data,
+                              }));
+
+                          return rowsToRender.map((entry) => {
+                            if (entry.kind === 'estimate') {
+                              return (
+                                <InvoicesTabEstimateListRow
+                                  key={`estimate-${entry.data.id}`}
+                                  estimate={entry.data as Estimate}
+                                  formatCurrency={formatCurrency}
+                                  formatDateInTimezone={formatDateInTimezone}
+                                  onView={(est) => void handleViewEstimate(est as Estimate)}
+                                  onPrint={(est) => void handlePrintEstimate(est as Estimate)}
+                                  onSend={(est) => void handleSendEstimate(est as Estimate)}
+                                  onDelete={(est) => void handleDeleteEstimate(est as Estimate)}
+                                />
+                              );
+                            }
+
+                            const invoice = entry.data as Invoice;
                             const customerName = getInvoiceCustomerName(invoice);
                             const customerPhone = invoice.customer?.phone || '';
                             const financials = getInvoiceFinancialsForInvoice(invoice);
@@ -13667,6 +13824,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               <div className="md:hidden bg-white border border-gray-200 rounded-lg p-3 space-y-3">
                                 <div className="flex items-start justify-between">
                                   <div className="flex-1">
+                                    {invoicesEstimatesIntegrationEnabled && (
+                                      <span className="inline-flex mb-1 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-blue-100 text-blue-800">
+                                        Invoice
+                                      </span>
+                                    )}
                                     <div className="font-medium text-gray-900 text-sm mb-1">
                                       {formatInvoiceNumber(invoice.invoice_number)}
                                     </div>
@@ -13958,7 +14120,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               </div>
 
                               {/* Desktop Table View */}
-                              <div className="hidden md:grid gap-2 items-center py-2 border-b border-gray-100 hover:bg-gray-50 min-w-0 text-sm" style={{ gridTemplateColumns: 'minmax(110px, 1.1fr) minmax(150px, 1.5fr) minmax(100px, 1fr) minmax(120px, 1.05fr) minmax(90px, 0.85fr) minmax(105px, 0.95fr) minmax(170px, 1.25fr)' }}>
+                              <div className="hidden md:grid gap-2 items-center py-2 border-b border-gray-100 hover:bg-gray-50 min-w-0 text-sm" style={{ gridTemplateColumns: invoiceListGridColumns }}>
+                                {invoicesEstimatesIntegrationEnabled && (
+                                  <div className="min-w-0">
+                                    <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-blue-100 text-blue-800 whitespace-nowrap">
+                                      Invoice
+                                    </span>
+                                  </div>
+                                )}
                                 <div className="font-medium text-gray-900 min-w-0 whitespace-nowrap" title={formatInvoiceNumber(invoice.invoice_number)}>
                                   {formatInvoiceNumber(invoice.invoice_number)}
                                 </div>
@@ -14215,11 +14384,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         });
                         })()}
                       </div>
-                      {filteredInvoicesForList.length > 0 && (
+                      {invoiceListRowCount > 0 && (
                         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-sm text-gray-600">
                           <div>
-                            Showing {Math.min((invoiceCurrentPage - 1) * invoicePageSize + 1, filteredInvoicesForList.length)}-
-                            {Math.min(invoiceCurrentPage * invoicePageSize, filteredInvoicesForList.length)} of {filteredInvoicesForList.length}
+                            Showing {Math.min((invoiceCurrentPage - 1) * invoicePageSize + 1, invoiceListRowCount)}-
+                            {Math.min(invoiceCurrentPage * invoicePageSize, invoiceListRowCount)} of {invoiceListRowCount}
                           </div>
                           <div className="flex items-center gap-2">
                             <button
@@ -14230,11 +14399,30 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             >
                               Previous
                             </button>
-                            <span>Page {invoiceCurrentPage} / {invoiceTotalPages}</span>
+                            <span>
+                              Page {invoiceCurrentPage} /{' '}
+                              {invoicesEstimatesIntegrationEnabled
+                                ? invoiceListTotalPages
+                                : invoiceTotalPages}
+                            </span>
                             <button
                               type="button"
-                              onClick={() => setInvoiceCurrentPage((p) => Math.min(invoiceTotalPages, p + 1))}
-                              disabled={invoiceCurrentPage >= invoiceTotalPages}
+                              onClick={() =>
+                                setInvoiceCurrentPage((p) =>
+                                  Math.min(
+                                    invoicesEstimatesIntegrationEnabled
+                                      ? invoiceListTotalPages
+                                      : invoiceTotalPages,
+                                    p + 1
+                                  )
+                                )
+                              }
+                              disabled={
+                                invoiceCurrentPage >=
+                                (invoicesEstimatesIntegrationEnabled
+                                  ? invoiceListTotalPages
+                                  : invoiceTotalPages)
+                              }
                               className="px-3 py-1.5 border border-gray-300 rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
                             >
                               Next
@@ -21327,15 +21515,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                                   ...createBlankInvoiceLineItem(itemType),
                                                   ...(base?.lineId ? { lineId: base.lineId } : {}),
                                                 }),
-                                                applySelection: (p) => ({
-                                                  ...p,
-                                                  item_type: 'part',
-                                                  reference_id: pi.id,
-                                                  description: '',
-                                                  item_name: pi.part_name || '',
-                                                  item_number: pi.part_number || null,
-                                                  unit_price: pi ? Number(pi.selling_price) || 0 : 0,
-                                                }),
+                                                applySelection: (line) =>
+                                                  withComputedLineItemTotals(
+                                                    applyInventoryPartToInvoiceLineItem(line, {
+                                                      id: pi.id,
+                                                      part_name: pi.part_name,
+                                                      part_number: pi.part_number,
+                                                      selling_price: pi.selling_price,
+                                                    })
+                                                  ),
                                               }
                                             );
                                             mergedPart = merged;
@@ -21418,6 +21606,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                             e.stopPropagation();
                                             setCreatingPartFromInvoice(true);
                                             setCreatingPartForLineItem(idx);
+                                            setCreatingPartForLineId(lineUiKey);
                                             setActiveInvoiceItemDropdownKey(null);
                                             setInvoiceItemDropdownPosition(null);
                                             const searchQuery = searchTerm.trim();
@@ -22036,8 +22225,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               <button
                 disabled={invoiceSaveInProgress}
                 onClick={async () => {
-                  const nonEmptyLineItems = invoiceLineItems.filter((item) => !isInvoiceLineEmpty(item));
-                  const savableLineItems = nonEmptyLineItems.filter((item) => (item.reference_id || item.description?.trim()) && (item.total_price || 0) > 0);
+                  const { nonEmpty: nonEmptyLineItems, savable: savableLineItems } =
+                    prepareSavableInvoiceLineItems(invoiceLineItems, {
+                      isEmpty: isInvoiceLineEmpty,
+                      withTotals: withComputedLineItemTotals,
+                    });
 
                   if (!invoiceFormData.customer_id && !editingInvoice) {
                     alert('Please select a customer');
@@ -24342,6 +24534,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
             setShowAddInventoryModal(false);
             setCreatingPartFromInvoice(false);
             setCreatingPartForLineItem(null);
+            setCreatingPartForLineId(null);
             setEditingInventoryItem(null);
             setInventoryForm({ name: '', category: '', description: '', sku: '', supplier: '', location: '', quantity: 0, min_stock: 0, unit_price: 0, cost: 0 });
             setPartNameSearch('');
@@ -24359,6 +24552,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 setShowAddInventoryModal(false);
                 setCreatingPartFromInvoice(false);
                 setCreatingPartForLineItem(null);
+                setCreatingPartForLineId(null);
                 setEditingInventoryItem(null);
                 setInventoryForm({ name: '', category: '', description: '', sku: '', supplier: '', location: '', quantity: 0, min_stock: 0, unit_price: 0, cost: 0 });
                 setPartNameSearch('');
@@ -24485,12 +24679,18 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           const existingPart = existingPartNumberMatch;
                           if (!existingPart) return;
 
-                          if (creatingPartFromInvoice && creatingPartForLineItem !== null) {
-                            const lineItemIdx = creatingPartForLineItem;
-                            const targetLine = invoiceLineItems[lineItemIdx];
-                            const targetLineUiKey = targetLine?.lineId || String(lineItemIdx);
+                          if (creatingPartFromInvoice && (creatingPartForLineId || creatingPartForLineItem !== null)) {
+                            const targetLineId =
+                              creatingPartForLineId ||
+                              (creatingPartForLineItem !== null
+                                ? invoiceLineItems[creatingPartForLineItem]?.lineId || String(creatingPartForLineItem)
+                                : null);
+                            if (!targetLineId) return;
+
                             let mergedExistingPart = false;
                             setInvoiceLineItems((prev) => {
+                              const lineItemIdx = findInvoiceLineIndexByLineId(prev, targetLineId);
+                              if (lineItemIdx < 0) return prev;
                               const { items, merged } = mergeDuplicateLineItem(
                                 prev,
                                 lineItemIdx,
@@ -24501,15 +24701,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     ...createBlankInvoiceLineItem(itemType),
                                     ...(base?.lineId ? { lineId: base.lineId } : {}),
                                   }),
-                                  applySelection: (p) => ({
-                                    ...p,
-                                    item_type: 'part',
-                                    reference_id: existingPart.id,
-                                    description: '',
-                                    item_name: existingPart.part_name || '',
-                                    item_number: existingPart.part_number || null,
-                                    unit_price: Number(existingPart.selling_price) || 0,
-                                  }),
+                                  applySelection: (line) =>
+                                    withComputedLineItemTotals(
+                                      applyInventoryPartToInvoiceLineItem(line, existingPart)
+                                    ),
                                 }
                               );
                               mergedExistingPart = merged;
@@ -24517,12 +24712,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             });
                             setInvoiceItemSearch((prev) => ({
                               ...prev,
-                              [targetLineUiKey]: mergedExistingPart
+                              [targetLineId]: mergedExistingPart
                                 ? ''
                                 : formatPartDisplayName(existingPart) || '',
                             }));
                             setCreatingPartFromInvoice(false);
                             setCreatingPartForLineItem(null);
+                            setCreatingPartForLineId(null);
                           }
 
                           setShowAddInventoryModal(false);
@@ -24758,16 +24954,29 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     await fetchInventory();
                     
                     // If created from invoice modal, auto-select the new part
-                    if (creatingPartFromInvoice && creatingPartForLineItem !== null && data && data.length > 0) {
-                      const newPart = data[0];
-                      const lineItemIdx = creatingPartForLineItem;
-                      const targetLineUiKey = invoiceLineItems[lineItemIdx]?.lineId || String(lineItemIdx);
-                      
+                    if (creatingPartFromInvoice && (creatingPartForLineId || creatingPartForLineItem !== null) && data && data.length > 0) {
+                      const newPart = data[0] as InventoryItem;
+                      const targetLineId =
+                        creatingPartForLineId ||
+                        (creatingPartForLineItem !== null
+                          ? invoiceLineItems[creatingPartForLineItem]?.lineId || String(creatingPartForLineItem)
+                          : null);
+
                       setCreatingPartFromInvoice(false);
                       setCreatingPartForLineItem(null);
-                      
+                      setCreatingPartForLineId(null);
+
+                      if (!targetLineId) return;
+
+                      setInventory((prev) => {
+                        const withoutDuplicate = prev.filter((part) => String(part.id) !== String(newPart.id));
+                        return [newPart, ...withoutDuplicate];
+                      });
+
                       let mergedNewPart = false;
                       setInvoiceLineItems((prev) => {
+                        const lineItemIdx = findInvoiceLineIndexByLineId(prev, targetLineId);
+                        if (lineItemIdx < 0) return prev;
                         const { items, merged } = mergeDuplicateLineItem(
                           prev,
                           lineItemIdx,
@@ -24778,15 +24987,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               ...createBlankInvoiceLineItem(itemType),
                               ...(base?.lineId ? { lineId: base.lineId } : {}),
                             }),
-                            applySelection: (p) => ({
-                              ...p,
-                              item_type: 'part',
-                              reference_id: newPart.id,
-                              description: '',
-                              item_name: newPart.part_name || '',
-                              item_number: newPart.part_number || null,
-                              unit_price: newPart.selling_price || 0,
-                            }),
+                            applySelection: (line) =>
+                              withComputedLineItemTotals(
+                                applyInventoryPartToInvoiceLineItem(line, newPart)
+                              ),
                           }
                         );
                         mergedNewPart = merged;
@@ -24795,7 +24999,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
                       setInvoiceItemSearch((prev) => ({
                         ...prev,
-                        [targetLineUiKey]: mergedNewPart
+                        [targetLineId]: mergedNewPart
                           ? ''
                           : formatPartDisplayName(newPart) || '',
                       }));

@@ -7,7 +7,8 @@
     "dev:clean": "rimraf .next node_modules/.cache && next dev -p 3000",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --experimental-strip-types --test src/lib/invoices/invoiceLineItemPersistence.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.76.1",
