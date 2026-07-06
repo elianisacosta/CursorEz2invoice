@@ -255,9 +255,25 @@ import { InvoicesTabEstimateListRow } from '@/components/invoices/InvoicesTabEst
 import {
   applyInventoryPartToInvoiceLineItem,
   buildInvoiceLineItemDescriptionForSave,
+  buildInvoiceLineItemDbPayloads,
+  buildLegacyInvoiceLineItemsFromTotals,
+  canMutateInvoiceLineItemsForSave,
+  delayMs,
   findInvoiceLineIndexByLineId,
-  hydrateInvoiceLineItemLabelsFromRow,
+  getSavedInvoiceLineItemDisplayLabel,
+  hydrateInvoiceLineItemRowsForEdit,
+  isGenericInvoiceLinePlaceholder,
+  isUiOnlyInvoiceLineItemEmpty,
+  logInvoiceLineItemEditPipeline,
+  logInvoiceLineItemNetwork,
+  normalizeInvoiceLineItemType,
+  partitionSavableLineItems,
   prepareSavableInvoiceLineItems,
+  resolveInvoiceLineItemLoadForEdit,
+  resolveInvoiceLineItemRowsForEdit,
+  serializeInvoiceLineItemRowForDebug,
+  shouldRetryInvoiceLineItemFetch,
+  wouldInvoiceLineItemSaveRegressToService,
 } from '@/lib/invoices/invoiceLineItemPersistence';
 import {
   computeInvoiceItemDropdownPosition,
@@ -411,6 +427,10 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     }));
   }, [defaultTaxRate]);
   interface InvoiceLineItem {
+    /** Persisted invoice_line_items.id when editing an existing row. */
+    id?: string;
+    /** Frozen label from DB snapshot; not replaced by live catalog/search state. */
+    savedDisplayLabel?: string;
     item_type: 'labor' | 'part';
     reference_id?: string | null;
     description: string;
@@ -426,7 +446,12 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     taxable?: boolean;
     /** Client-only id for React key and dedupe; not sent to DB. */
     lineId?: string;
+    userModified?: boolean;
+    originalDbSnapshot?: import('@/lib/invoices/invoiceLineItemPersistence').InvoiceLineItemDbSnapshot;
   }
+
+  const touchInvoiceLineItem = (item: InvoiceLineItem): InvoiceLineItem =>
+    item.userModified ? item : { ...item, userModified: true };
 
   const newLineId = () => `line-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const createBlankInvoiceLineItem = (itemType: 'labor' | 'part' = 'labor'): InvoiceLineItem => ({
@@ -490,13 +515,7 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   };
   const createBlankInvoiceLineItems = (count = 2, itemType: 'labor' | 'part' = 'labor'): InvoiceLineItem[] =>
     Array.from({ length: Math.max(1, count) }, () => createBlankInvoiceLineItem(itemType));
-  const isInvoiceLineEmpty = (item: InvoiceLineItem): boolean =>
-    !item.reference_id &&
-    !item.description?.trim() &&
-    (Number(item.quantity) || 0) === 1 &&
-    (Number(item.unit_price) || 0) === 0 &&
-    (Number(item.discount_value) || 0) === 0 &&
-    (Number(item.total_price) || 0) === 0;
+  const isInvoiceLineEmpty = (item: InvoiceLineItem): boolean => isUiOnlyInvoiceLineItemEmpty(item);
   const hasInvoiceLineInput = (item: InvoiceLineItem): boolean => !isInvoiceLineEmpty(item);
   const normalizeInvoiceLineItems = (items: InvoiceLineItem[]): InvoiceLineItem[] =>
     items.map((item) => withComputedLineItemTotals({ ...item, lineId: item.lineId || newLineId() }));
@@ -522,20 +541,25 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
       : individualName || customer.company || 'Unknown';
   };
   const getInvoiceLineItemDisplayName = (item: InvoiceLineItem) => {
+    const candidates = [
+      item.savedDisplayLabel?.trim(),
+      getSavedInvoiceLineItemDisplayLabel(item),
+    ].filter(Boolean) as string[];
+    for (const candidate of candidates) {
+      if (!isGenericInvoiceLinePlaceholder(candidate)) return candidate;
+    }
     if (item.reference_id) {
       if (item.item_type === 'labor') {
-        return (
-          item.item_name ||
-          laborItemsById.get(String(item.reference_id))?.service_name ||
-          item.description ||
-          'Labor'
-        );
+        const laborName = laborItemsById.get(String(item.reference_id))?.service_name || '';
+        if (laborName && !isGenericInvoiceLinePlaceholder(laborName)) return laborName;
+      } else {
+        const part = inventoryById.get(String(item.reference_id));
+        const partLabel = formatPartDisplayName(part) || '';
+        if (partLabel && !isGenericInvoiceLinePlaceholder(partLabel)) return partLabel;
       }
-      const part = inventoryById.get(String(item.reference_id));
-      const hydratedPartDisplay = [item.item_number, item.item_name].filter(Boolean).join(' — ');
-      return formatPartDisplayName(part) || hydratedPartDisplay || item.description || 'Part';
     }
-    return item.description || '';
+    const description = item.description?.trim() || '';
+    return isGenericInvoiceLinePlaceholder(description) ? '' : description;
   };
   const getInvoiceLineItemNote = (item: InvoiceLineItem) => {
     const rawNote = item.description || '';
@@ -573,6 +597,9 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
       if (left.item_type !== right.item_type) return false;
       if ((left.reference_id || null) !== (right.reference_id || null)) return false;
       if ((left.description || '') !== (right.description || '')) return false;
+      if ((left.savedDisplayLabel || '') !== (right.savedDisplayLabel || '')) return false;
+      if ((left.item_name || '') !== (right.item_name || '')) return false;
+      if ((left.item_number || '') !== (right.item_number || '')) return false;
       if ((left.taxable !== false) !== (right.taxable !== false)) return false;
       if ((left.discount_type || 'none') !== (right.discount_type || 'none')) return false;
       if ((Number(left.quantity) || 0) !== (Number(right.quantity) || 0)) return false;
@@ -839,6 +866,16 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     }
   };
 
+  const invoiceLineItemsHydrationTokenRef = useRef(0);
+  const invoiceLineItemsSkipPaddingEffectRef = useRef(false);
+  const invoiceLineItemsCacheByInvoiceIdRef = useRef<Map<string, any[]>>(new Map());
+  const invoiceLineItemsSuccessfulSnapshotRef = useRef<Map<string, any[]>>(new Map());
+  const networkOnlineRef = useRef(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const networkReconnectGraceUntilRef = useRef(0);
+  const [invoiceLineItemsLoadStatus, setInvoiceLineItemsLoadStatus] = useState<
+    'idle' | 'loading' | 'loaded' | 'loaded-stale' | 'empty' | 'error' | 'reconnecting' | 'timeout'
+  >('idle');
+  const [invoiceLineItemsLoadError, setInvoiceLineItemsLoadError] = useState<string | null>(null);
   const [invoiceLineItems, setInvoiceLineItems] = useState<InvoiceLineItem[]>(createBlankInvoiceLineItems(2));
   const invoiceLineItemsRef = useRef(invoiceLineItems);
   useEffect(() => {
@@ -925,11 +962,30 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     updateInvoiceItemDropdownPosition,
   ]);
   useEffect(() => {
+    if (invoiceLineItemsSkipPaddingEffectRef.current) {
+      invoiceLineItemsSkipPaddingEffectRef.current = false;
+      return;
+    }
     setInvoiceLineItems((prev) => {
       const padded = ensureInvoiceLineItemPadding(prev);
       return areInvoiceLineItemsEqual(prev, padded) ? prev : padded;
     });
   }, [invoiceLineItems]);
+  useEffect(() => {
+    if (!showCreateInvoiceModal || !editingInvoice?.id) return;
+    logInvoiceLineItemEditPipeline('state-after-render', editingInvoice.id, invoiceLineItems.map((line) => ({
+      id: line.id,
+      lineId: line.lineId,
+      item_type: line.item_type,
+      reference_id: line.reference_id,
+      savedDisplayLabel: line.savedDisplayLabel,
+      item_name: line.item_name,
+      description: line.description,
+      inputDisplay: getInvoiceLineItemDisplayName(line),
+      unit_price: line.unit_price,
+      total_price: line.total_price,
+    })));
+  }, [showCreateInvoiceModal, editingInvoice?.id, invoiceLineItems]);
   const [applyCardFee, setApplyCardFee] = useState(false);
   // Save settings to localStorage when they change - with error handling and persistence
   useEffect(() => {
@@ -1820,10 +1876,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const hydrateInvoiceLineItemsForEdit = useCallback(async (rows: any[]): Promise<InvoiceLineItem[]> => {
     const rawRows = Array.isArray(rows) ? rows : [];
     const laborIds = [...new Set(rawRows
-      .filter((item) => item?.item_type === 'labor' && item.reference_id)
+      .filter((item) => normalizeInvoiceLineItemType(item?.item_type) === 'labor' && item.reference_id)
       .map((item) => String(item.reference_id)))];
     const partIds = [...new Set(rawRows
-      .filter((item) => item?.item_type === 'part' && item.reference_id)
+      .filter((item) => normalizeInvoiceLineItemType(item?.item_type) === 'part' && item.reference_id)
       .map((item) => String(item.reference_id)))];
 
     const [laborResult, partResult] = await Promise.all([
@@ -1849,91 +1905,501 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       ...(((partResult as any).data || []).map((part: any) => [String(part.id), part] as [string, any])),
     ]);
 
-    return rawRows.map((item) => {
-      const itemType = ((item.item_type as 'labor' | 'part') || 'labor') as 'labor' | 'part';
-      const referenceId = item.reference_id || null;
-      const labor = itemType === 'labor' && referenceId ? hydratedLaborById.get(String(referenceId)) : null;
-      const part = itemType === 'part' && referenceId ? hydratedPartById.get(String(referenceId)) : null;
-      const storedLabels = hydrateInvoiceLineItemLabelsFromRow(item as Record<string, unknown>);
-
-      return {
-        item_type: itemType,
-        reference_id: referenceId,
-        description: storedLabels.description || item.description || '',
-        item_name: storedLabels.item_name || item.item_name || labor?.service_name || part?.part_name || null,
-        item_number: storedLabels.item_number || item.item_number || item.part_number || part?.part_number || null,
-        quantity: Number(item.quantity) || 1,
-        unit_price: Number(item.unit_price) || 0,
-        total_price: Number(item.total_price) || 0,
-        discount_type: ((item as any).discount_type || 'none') as 'none' | 'percentage' | 'fixed',
-        discount_value: Number((item as any).discount_value) || 0,
-        discount_amount: Number((item as any).discount_amount) || 0,
-        taxable: (item as any).taxable !== false,
-        lineId: newLineId(),
-      };
-    });
+    return hydrateInvoiceLineItemRowsForEdit(rawRows, {
+      laborById: hydratedLaborById,
+      partById: hydratedPartById,
+    }).map((item) => ({
+      ...item,
+      description: item.description || '',
+      lineId: item.lineId || item.id || newLineId(),
+    }));
   }, [inventoryById, laborItemsById]);
+
+  const getCachedInvoiceLineRowsForEdit = useCallback((invoiceId: string): any[] => {
+    const fromSessionCache = invoiceLineItemsCacheByInvoiceIdRef.current.get(invoiceId) || [];
+    const fromBulkCache = allInvoiceLineItems.filter(
+      (row) => row && String(row.invoice_id || '') === String(invoiceId)
+    );
+    const mergedById = new Map<string, any>();
+    for (const row of [...fromBulkCache, ...fromSessionCache]) {
+      if (!row) continue;
+      const key = row.id ? String(row.id) : `${row.invoice_id}-${row.description}-${row.unit_price}`;
+      mergedById.set(key, row);
+    }
+    return Array.from(mergedById.values());
+  }, [allInvoiceLineItems]);
+
+  const rememberInvoiceLineItemsCache = useCallback((invoiceId: string, rows: any[]) => {
+    if (!invoiceId || !Array.isArray(rows) || rows.length === 0) return;
+    invoiceLineItemsCacheByInvoiceIdRef.current.set(invoiceId, rows);
+  }, []);
+
+  const rememberSuccessfulInvoiceLineItemsSnapshot = useCallback((invoiceId: string, rows: any[]) => {
+    if (!invoiceId || !Array.isArray(rows) || rows.length === 0) return;
+    invoiceLineItemsSuccessfulSnapshotRef.current.set(
+      invoiceId,
+      rows.map((row) => ({ ...row }))
+    );
+    rememberInvoiceLineItemsCache(invoiceId, rows);
+  }, [rememberInvoiceLineItemsCache]);
+
+  const getSuccessfulInvoiceLineItemsSnapshot = useCallback((invoiceId: string): any[] => {
+    return invoiceLineItemsSuccessfulSnapshotRef.current.get(invoiceId) || [];
+  }, []);
+
+  const isNetworkRecentlyReconnected = useCallback(() => {
+    return Date.now() < networkReconnectGraceUntilRef.current;
+  }, []);
+
+  const applyResolvedInvoiceLineItemsForEdit = useCallback(async (
+    invoice: Invoice,
+    loadResolution: ReturnType<typeof resolveInvoiceLineItemLoadForEdit>
+  ) => {
+    const hydrationToken = invoiceLineItemsHydrationTokenRef.current;
+
+    logInvoiceLineItemNetwork('INVOICE ITEMS LOAD STATUS', {
+      invoiceId: invoice.id,
+      status: loadResolution.status,
+      fromCache: loadResolution.fromCache,
+      canMutateLineItems: loadResolution.canMutateLineItems,
+      suspiciousFetch: loadResolution.suspiciousFetch,
+      rowCount: loadResolution.rows.length,
+    });
+
+    setInvoiceLineItemsLoadStatus(loadResolution.status);
+    setInvoiceLineItemsLoadError(loadResolution.errorMessage || null);
+
+    if (loadResolution.status === 'error' || loadResolution.status === 'timeout') {
+      if (hydrationToken !== invoiceLineItemsHydrationTokenRef.current) return;
+      const snapshot = getSuccessfulInvoiceLineItemsSnapshot(invoice.id);
+      if (snapshot.length > 0) {
+        const mappedItems = await hydrateInvoiceLineItemsForEdit(snapshot);
+        if (hydrationToken !== invoiceLineItemsHydrationTokenRef.current) return;
+        invoiceLineItemsSkipPaddingEffectRef.current = true;
+        setInvoiceLineItems(ensureInvoiceLineItemPadding(mappedItems.map((item) => ({
+          ...item,
+          description: item.description || '',
+        }))));
+        setInvoiceLineItemsLoadStatus('loaded-stale');
+        return;
+      }
+      invoiceLineItemsSkipPaddingEffectRef.current = true;
+      setInvoiceLineItems(createBlankInvoiceLineItems(2));
+      return;
+    }
+
+    const resolvedRows = loadResolution.rows;
+    if (resolvedRows.length > 0) {
+      if (loadResolution.status === 'loaded') {
+        rememberSuccessfulInvoiceLineItemsSnapshot(invoice.id, resolvedRows);
+      }
+      const mappedItems = await hydrateInvoiceLineItemsForEdit(resolvedRows);
+      if (hydrationToken !== invoiceLineItemsHydrationTokenRef.current) return;
+
+      const paddedItems = ensureInvoiceLineItemPadding(
+        mappedItems.map((item) => ({
+          ...item,
+          description: item.description || '',
+        }))
+      );
+
+      logInvoiceLineItemEditPipeline('mapped-before-set-state', invoice.id, paddedItems.map((line) => ({
+        id: line.id,
+        lineId: line.lineId,
+        item_type: line.item_type,
+        reference_id: line.reference_id,
+        savedDisplayLabel: line.savedDisplayLabel,
+        item_name: line.item_name,
+        item_number: line.item_number,
+        description: line.description,
+        unit_price: line.unit_price,
+        total_price: line.total_price,
+        loadStatus: loadResolution.status,
+      })));
+
+      invoiceLineItemsSkipPaddingEffectRef.current = true;
+      setInvoiceLineItems(paddedItems);
+      return;
+    }
+
+    if (loadResolution.status === 'reconnecting' || loadResolution.status === 'loaded-stale') {
+      if (hydrationToken !== invoiceLineItemsHydrationTokenRef.current) return;
+      invoiceLineItemsSkipPaddingEffectRef.current = true;
+      setInvoiceLineItems(createBlankInvoiceLineItems(2));
+      return;
+    }
+
+    if (loadResolution.status !== 'empty') {
+      if (hydrationToken !== invoiceLineItemsHydrationTokenRef.current) return;
+      invoiceLineItemsSkipPaddingEffectRef.current = true;
+      setInvoiceLineItems(createBlankInvoiceLineItems(2));
+      return;
+    }
+
+    console.warn('No invoice line items found for invoice:', invoice.id);
+    const legacyItems = buildLegacyInvoiceLineItemsFromTotals(invoice);
+    if (legacyItems.length > 0) {
+      invoiceLineItemsSkipPaddingEffectRef.current = true;
+      setInvoiceLineItems(
+        ensureInvoiceLineItemPadding(
+          legacyItems.map((item) => ({
+            ...item,
+            description: item.description || '',
+            savedDisplayLabel: item.savedDisplayLabel || '',
+            lineId: newLineId(),
+          }))
+        )
+      );
+      return;
+    }
+
+    invoiceLineItemsSkipPaddingEffectRef.current = true;
+    setInvoiceLineItems(createBlankInvoiceLineItems(2));
+  }, [
+    getSuccessfulInvoiceLineItemsSnapshot,
+    hydrateInvoiceLineItemsForEdit,
+    rememberSuccessfulInvoiceLineItemsSnapshot,
+  ]);
+
+  const applyInvoiceLineItemsForEdit = useCallback(async (
+    invoice: Invoice,
+    fetchedRows: any[] | null | undefined,
+    fetchError: unknown,
+    options?: { recentlyReconnected?: boolean }
+  ) => {
+    const cachedRows = getCachedInvoiceLineRowsForEdit(invoice.id);
+    const priorSnapshot = getSuccessfulInvoiceLineItemsSnapshot(invoice.id);
+    const loadResolution = resolveInvoiceLineItemLoadForEdit(
+      invoice.id,
+      fetchedRows,
+      fetchError,
+      cachedRows,
+      {
+        priorSuccessfulSnapshot: priorSnapshot,
+        invoiceSubtotal: Number((invoice as any).subtotal) || 0,
+        recentlyReconnected: options?.recentlyReconnected,
+      }
+    );
+
+    if (fetchError) {
+      console.error('Error fetching line items:', fetchError);
+      logInvoiceLineItemNetwork('INVOICE ITEMS FETCH ERROR', {
+        invoiceId: invoice.id,
+        error: fetchError,
+      });
+    }
+
+    logInvoiceLineItemEditPipeline('db-fetch-raw', invoice.id, {
+      fetchFailed: loadResolution.fetchFailed,
+      status: loadResolution.status,
+      fromCache: loadResolution.fromCache,
+      rowCount: Array.isArray(fetchedRows) ? fetchedRows.length : 0,
+      cachedRowCount: cachedRows.length,
+      snapshotRowCount: priorSnapshot.length,
+      rows: (Array.isArray(fetchedRows) ? fetchedRows : []).map((row) =>
+        serializeInvoiceLineItemRowForDebug(row as Record<string, unknown>)
+      ),
+    });
+
+    logInvoiceLineItemEditPipeline('resolved-rows', invoice.id, {
+      status: loadResolution.status,
+      fromCache: loadResolution.fromCache,
+      canMutateLineItems: loadResolution.canMutateLineItems,
+      suspiciousFetch: loadResolution.suspiciousFetch,
+      rows: loadResolution.rows,
+    });
+
+    await applyResolvedInvoiceLineItemsForEdit(invoice, loadResolution);
+  }, [
+    applyResolvedInvoiceLineItemsForEdit,
+    getCachedInvoiceLineRowsForEdit,
+    getSuccessfulInvoiceLineItemsSnapshot,
+  ]);
+
+  const fetchInvoiceLineItemsForEdit = useCallback(async (invoiceId: string) => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 15000);
+    try {
+      const result = await supabase
+        .from('invoice_line_items')
+        .select('*')
+        .eq('invoice_id', invoiceId)
+        .order('created_at', { ascending: true })
+        .abortSignal(controller.signal);
+      return result;
+    } catch (error) {
+      const aborted = (error as { name?: string })?.name === 'AbortError';
+      return {
+        data: null,
+        error: aborted ? { message: 'Timed out loading invoice line items', name: 'TimeoutError' } : error,
+      };
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }, []);
+
+  const loadInvoiceLineItemsForEdit = useCallback(async (invoice: Invoice) => {
+    const hydrationToken = ++invoiceLineItemsHydrationTokenRef.current;
+    const recentlyReconnected = isNetworkRecentlyReconnected() || !networkOnlineRef.current;
+    const priorSnapshot = getSuccessfulInvoiceLineItemsSnapshot(invoice.id);
+
+    logInvoiceLineItemNetwork('INVOICE ITEMS FETCH START', {
+      invoiceId: invoice.id,
+      recentlyReconnected,
+      online: networkOnlineRef.current,
+      snapshotRowCount: priorSnapshot.length,
+    });
+
+    setInvoiceLineItemsLoadStatus(
+      recentlyReconnected && priorSnapshot.length > 0 ? 'reconnecting' : 'loading'
+    );
+    setInvoiceLineItemsLoadError(null);
+
+    if (recentlyReconnected && priorSnapshot.length > 0) {
+      await applyResolvedInvoiceLineItemsForEdit(invoice, {
+        status: 'reconnecting',
+        rows: priorSnapshot,
+        fromCache: true,
+        fetchFailed: true,
+        canMutateLineItems: false,
+        errorMessage: 'Reconnecting — reloading invoice items from the server…',
+        suspiciousFetch: true,
+      });
+    }
+
+    const maxAttempts = recentlyReconnected ? 5 : 1;
+    let lastData: any[] | null = null;
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (attempt > 1) {
+        await delayMs(350 * attempt);
+      }
+
+      const result = await fetchInvoiceLineItemsForEdit(invoice.id);
+      lastData = result.data;
+      lastError = result.error;
+
+      const loadResolution = resolveInvoiceLineItemLoadForEdit(
+        invoice.id,
+        lastData,
+        lastError,
+        getCachedInvoiceLineRowsForEdit(invoice.id),
+        {
+          priorSuccessfulSnapshot: priorSnapshot,
+          invoiceSubtotal: Number((invoice as any).subtotal) || 0,
+          recentlyReconnected: recentlyReconnected && attempt < maxAttempts,
+        }
+      );
+
+      if (shouldRetryInvoiceLineItemFetch(loadResolution) && attempt < maxAttempts) {
+        if (hydrationToken !== invoiceLineItemsHydrationTokenRef.current) return { data: lastData, error: lastError };
+        logInvoiceLineItemNetwork('INVOICE ITEMS FETCH ERROR', {
+          invoiceId: invoice.id,
+          attempt,
+          willRetry: true,
+          status: loadResolution.status,
+          error: lastError,
+        });
+        setInvoiceLineItemsLoadStatus('reconnecting');
+        setInvoiceLineItemsLoadError(
+          loadResolution.errorMessage || 'Reconnecting — retrying invoice line items…'
+        );
+        continue;
+      }
+
+      if (!loadResolution.fetchFailed && loadResolution.status === 'loaded') {
+        logInvoiceLineItemNetwork('INVOICE ITEMS FETCH SUCCESS', {
+          invoiceId: invoice.id,
+          attempt,
+          rowCount: loadResolution.rows.length,
+        });
+      } else if (loadResolution.fetchFailed) {
+        logInvoiceLineItemNetwork('INVOICE ITEMS FETCH ERROR', {
+          invoiceId: invoice.id,
+          attempt,
+          willRetry: false,
+          status: loadResolution.status,
+          error: lastError,
+        });
+      }
+
+      await applyInvoiceLineItemsForEdit(invoice, lastData, lastError, { recentlyReconnected });
+      return { data: lastData, error: lastError };
+    }
+
+    if (hydrationToken !== invoiceLineItemsHydrationTokenRef.current) {
+      return { data: lastData, error: lastError };
+    }
+    await applyInvoiceLineItemsForEdit(invoice, lastData, lastError, { recentlyReconnected });
+    return { data: lastData, error: lastError };
+  }, [
+    applyInvoiceLineItemsForEdit,
+    applyResolvedInvoiceLineItemsForEdit,
+    fetchInvoiceLineItemsForEdit,
+    getCachedInvoiceLineRowsForEdit,
+    getSuccessfulInvoiceLineItemsSnapshot,
+    isNetworkRecentlyReconnected,
+  ]);
+
+  const retryInvoiceLineItemsLoad = useCallback(async () => {
+    if (!editingInvoice?.id) return;
+    await loadInvoiceLineItemsForEdit(editingInvoice);
+  }, [editingInvoice, loadInvoiceLineItemsForEdit]);
+
+  useEffect(() => {
+    const handleNetworkStatusChanged = (online: boolean) => {
+      networkOnlineRef.current = online;
+      if (online) {
+        networkReconnectGraceUntilRef.current = Date.now() + 15000;
+      }
+      logInvoiceLineItemNetwork('NETWORK STATUS CHANGED', {
+        online,
+        at: new Date().toISOString(),
+        reconnectGraceUntil: networkReconnectGraceUntilRef.current,
+        editingInvoiceId: editingInvoice?.id || null,
+      });
+      if (
+        online &&
+        editingInvoice?.id &&
+        showCreateInvoiceModal &&
+        !canMutateInvoiceLineItemsForSave(invoiceLineItemsLoadStatus)
+      ) {
+        void retryInvoiceLineItemsLoad();
+      }
+    };
+
+    const handleOnline = () => handleNetworkStatusChanged(true);
+    const handleOffline = () => handleNetworkStatusChanged(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [
+    editingInvoice?.id,
+    invoiceLineItemsLoadStatus,
+    retryInvoiceLineItemsLoad,
+    showCreateInvoiceModal,
+  ]);
   const buildInvoiceLineItemsPayload = useCallback((
     invoiceId: string,
     items: InvoiceLineItem[],
-    options: { includeLabels?: boolean; includeDiscounts?: boolean; includeTaxable?: boolean } = {}
+    options: {
+      includeDiscounts?: boolean;
+      includeTaxable?: boolean;
+      priorRowsById?: Map<string, Record<string, unknown>>;
+    } = {}
   ) => {
-    const includeLabels = options.includeLabels !== false;
-    const includeDiscounts = options.includeDiscounts !== false;
-    const includeTaxable = options.includeTaxable !== false;
-
-    return items.map((item) => {
-      const payload: Record<string, any> = {
-        invoice_id: invoiceId,
-        item_type: item.item_type,
-        reference_id: item.reference_id || null,
-        description: getInvoiceLineItemStoredDescription(item) || (item.reference_id ? 'Item' : ''),
-        quantity: Number(item.quantity) || 1,
-        unit_price: Number(item.unit_price) || 0,
-        total_price: Number(item.total_price) || 0,
-      };
-      if (includeTaxable) {
-        payload.taxable = item.taxable !== false;
-      }
-
-      if (includeLabels) {
-        payload.item_name = item.item_name || item.description || null;
-        payload.item_number = item.item_number || null;
-      }
-
-      if (includeDiscounts) {
-        payload.discount_type = item.discount_type || 'none';
-        payload.discount_value = Number(item.discount_value) || 0;
-        payload.discount_amount = Number(item.discount_amount) || 0;
-      }
-
-      return payload;
+    return buildInvoiceLineItemDbPayloads(invoiceId, items, {
+      includeTaxable: options.includeTaxable !== false,
+      includeDiscounts: options.includeDiscounts !== false,
+      priorRowsById: options.priorRowsById,
     });
-  }, [getInvoiceLineItemStoredDescription]);
+  }, []);
 
-  const insertInvoiceLineItems = useCallback(async (invoiceId: string, items: InvoiceLineItem[]) => {
+  const updateInvoiceLineItems = useCallback(async (
+    invoiceId: string,
+    items: InvoiceLineItem[],
+    priorRowsById: Map<string, Record<string, unknown>>
+  ) => {
     const attempts = [
-      { includeLabels: true, includeDiscounts: true, includeTaxable: true },
-      { includeLabels: false, includeDiscounts: true, includeTaxable: true },
-      { includeLabels: false, includeDiscounts: false, includeTaxable: true },
-      { includeLabels: false, includeDiscounts: false, includeTaxable: false },
+      { includeDiscounts: true, includeTaxable: true },
+      { includeDiscounts: false, includeTaxable: true },
+      { includeDiscounts: false, includeTaxable: false },
+    ];
+
+    let lastError: any = null;
+    for (const item of items) {
+      if (!item.id) continue;
+      let updated = false;
+      for (const attempt of attempts) {
+        const payload = buildInvoiceLineItemsPayload(invoiceId, [item], {
+          ...attempt,
+          priorRowsById,
+        })[0];
+        const { invoice_id: _invoiceId, ...updatePayload } = payload;
+        const result = await supabase
+          .from('invoice_line_items')
+          .update(updatePayload)
+          .eq('id', item.id)
+          .select('id');
+
+        if (!result.error && result.data && result.data.length > 0) {
+          updated = true;
+          break;
+        }
+
+        // UPDATE can succeed while RETURNING is empty under RLS — verify the row still exists.
+        if (!result.error) {
+          const verify = await supabase
+            .from('invoice_line_items')
+            .select('id')
+            .eq('id', item.id)
+            .maybeSingle();
+          if (!verify.error && verify.data?.id) {
+            updated = true;
+            break;
+          }
+          lastError = verify.error || { message: `Invoice line item ${item.id} update returned no rows` };
+        } else {
+          lastError = result.error;
+        }
+
+        const msg = String(lastError?.message || '').toLowerCase();
+        const code = String(lastError?.code || '');
+        const canRetry =
+          code === '42703' ||
+          code === 'PGRST204' ||
+          msg.includes('discount_') ||
+          msg.includes('taxable') ||
+          msg.includes('column') ||
+          msg.includes('schema cache');
+        if (!canRetry) break;
+      }
+      if (!updated) {
+        logInvoiceLineItemNetwork('INVOICE LINE ITEM UPDATE FAILED', {
+          invoiceId,
+          itemId: item.id,
+          lineId: item.lineId,
+          savedDisplayLabel: item.savedDisplayLabel,
+          reference_id: item.reference_id,
+          error: lastError,
+        });
+        return { error: lastError || { message: `Failed to update invoice line item ${item.id}` } };
+      }
+    }
+
+    return { error: null };
+  }, [buildInvoiceLineItemsPayload]);
+
+  const insertInvoiceLineItems = useCallback(async (
+    invoiceId: string,
+    items: InvoiceLineItem[],
+    priorRowsById?: Map<string, Record<string, unknown>>
+  ) => {
+    const attempts = [
+      { includeDiscounts: true, includeTaxable: true },
+      { includeDiscounts: false, includeTaxable: true },
+      { includeDiscounts: false, includeTaxable: false },
     ];
 
     let lastError: any = null;
     for (const attempt of attempts) {
-      const payload = buildInvoiceLineItemsPayload(invoiceId, items, attempt);
+      const payload = buildInvoiceLineItemsPayload(invoiceId, items, { ...attempt, priorRowsById });
       if (process.env.NODE_ENV !== 'production') {
         console.debug('Saving invoice line items payload:', payload.map((line) => ({
           item_type: line.item_type,
           reference_id: line.reference_id,
-          item_name: line.item_name,
-          item_number: line.item_number,
           description: line.description,
           quantity: line.quantity,
           unit_price: line.unit_price,
           total_price: line.total_price,
         })));
       }
+      logInvoiceLineItemEditPipeline('save-payload', invoiceId, payload);
 
       const result = await supabase
         .from('invoice_line_items')
@@ -1942,13 +2408,33 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       if (!result.error) {
         const inserted = result.data || [];
-        if (inserted.length !== payload.length) {
-          lastError = {
-            message: `Expected ${payload.length} invoice line items but saved ${inserted.length}`,
-          };
-          continue;
+        if (inserted.length === payload.length) {
+          return { data: inserted, error: null };
         }
-        return { data: inserted, error: null };
+        if (inserted.length === 0 && payload.length > 0) {
+          const verify = await supabase
+            .from('invoice_line_items')
+            .select('id, description, quantity, unit_price')
+            .eq('invoice_id', invoiceId)
+            .order('created_at', { ascending: true });
+          if (!verify.error && Array.isArray(verify.data)) {
+            const allPayloadRowsFound = payload.every((line) =>
+              verify.data!.some(
+                (row) =>
+                  String(row.description ?? '') === String(line.description ?? '') &&
+                  Number(row.quantity) === Number(line.quantity) &&
+                  Number(row.unit_price) === Number(line.unit_price)
+              )
+            );
+            if (allPayloadRowsFound) {
+              return { data: verify.data, error: null };
+            }
+          }
+        }
+        lastError = {
+          message: `Expected ${payload.length} invoice line items but saved ${inserted.length}`,
+        };
+        continue;
       }
 
       lastError = result.error;
@@ -1958,8 +2444,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         code === '42703' ||
         code === 'PGRST204' ||
         msg.includes('discount_') ||
-        msg.includes('item_name') ||
-        msg.includes('item_number') ||
         msg.includes('taxable') ||
         msg.includes('column') ||
         msg.includes('schema cache');
@@ -1975,27 +2459,55 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     oldRows: any[] | null | undefined,
     newItems: InvoiceLineItem[]
   ) => {
-    const insertResult = await insertInvoiceLineItems(invoiceId, newItems);
-    if (insertResult.error) return insertResult.error;
+    const priorRowsById = new Map<string, Record<string, unknown>>(
+      (oldRows || [])
+        .filter((row) => row?.id)
+        .map((row) => [String(row.id), row as Record<string, unknown>])
+    );
+    const { updates, inserts } = partitionSavableLineItems(newItems);
+    const keptIds = new Set<string>();
 
-    const oldIds = (oldRows || []).map((row) => row?.id).filter(Boolean);
-    if (oldIds.length === 0) return null;
+    logInvoiceLineItemEditPipeline('save-savable', invoiceId, {
+      updateIds: updates.map((line) => line.id),
+      insertCount: inserts.length,
+      skippedUiPaddingCount: newItems.length - updates.length - inserts.length,
+      savable: newItems.map((line) => ({
+        id: line.id,
+        lineId: line.lineId,
+        item_type: line.item_type,
+        reference_id: line.reference_id,
+        savedDisplayLabel: line.savedDisplayLabel,
+        description: line.description,
+        quantity: line.quantity,
+        unit_price: line.unit_price,
+        total_price: line.total_price,
+      })),
+    });
 
-    const deleteResult = await supabase
-      .from('invoice_line_items')
-      .delete()
-      .in('id', oldIds);
+    if (updates.length > 0) {
+      const updateResult = await updateInvoiceLineItems(invoiceId, updates, priorRowsById);
+      if (updateResult.error) return updateResult.error;
+      updates.forEach((line) => {
+        if (line.id) keptIds.add(String(line.id));
+      });
+    }
 
-    if (deleteResult.error) {
-      const insertedIds = (insertResult.data || []).map((row: any) => row?.id).filter(Boolean);
-      if (insertedIds.length > 0) {
-        await supabase.from('invoice_line_items').delete().in('id', insertedIds);
-      }
-      return deleteResult.error;
+    if (inserts.length > 0) {
+      const insertResult = await insertInvoiceLineItems(invoiceId, inserts, priorRowsById);
+      if (insertResult.error) return insertResult.error;
+    }
+
+    const deleteIds = (oldRows || [])
+      .map((row) => row?.id)
+      .filter((id) => id && !keptIds.has(String(id)));
+
+    if (deleteIds.length > 0) {
+      const deleteResult = await supabase.from('invoice_line_items').delete().in('id', deleteIds);
+      if (deleteResult.error) return deleteResult.error;
     }
 
     return null;
-  }, [insertInvoiceLineItems]);
+  }, [insertInvoiceLineItems, updateInvoiceLineItems]);
   
   // Part name and part number autocomplete
   const [partNameSearch, setPartNameSearch] = useState('');
@@ -2586,14 +3098,32 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       
       // Fetch invoice line items
       try {
-        const { data: lineItems } = await supabase
+        const { data: lineItems, error: lineItemsError } = await supabase
           .from('invoice_line_items')
           .select('*')
           .in('invoice_id', invoiceIds);
-        setAllInvoiceLineItems(lineItems || []);
+        if (!lineItemsError) {
+          setAllInvoiceLineItems(lineItems || []);
+          const grouped = new Map<string, any[]>();
+          for (const row of lineItems || []) {
+            if (!row?.invoice_id) continue;
+            const key = String(row.invoice_id);
+            const bucket = grouped.get(key) || [];
+            bucket.push(row);
+            grouped.set(key, bucket);
+          }
+          grouped.forEach((rows, invoiceId) => {
+            invoiceLineItemsCacheByInvoiceIdRef.current.set(invoiceId, rows);
+            invoiceLineItemsSuccessfulSnapshotRef.current.set(
+              invoiceId,
+              rows.map((row) => ({ ...row }))
+            );
+          });
+        } else {
+          console.log('Could not refresh invoice line items cache:', lineItemsError);
+        }
       } catch (error) {
         console.log('Could not fetch invoice line items:', error);
-        setAllInvoiceLineItems([]);
       }
       
       // Fetch invoice payments
@@ -13926,18 +14456,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   <button
                                     onClick={async () => {
                                       try {
-                                        // Fetch existing line items
-                                        const { data: lineItems, error: lineItemsError } = await supabase
-                                          .from('invoice_line_items')
-                                          .select('*')
-                                          .eq('invoice_id', invoice.id)
-                                          .order('created_at', { ascending: true });
-
-                                        if (lineItemsError) {
-                                          console.error('Error fetching line items:', lineItemsError);
-                                        }
-
-                                        console.log('Fetched line items for invoice:', invoice.id, lineItems);
+                                        // Load line items (network-aware; no Service fallback on failure)
+                                        setInvoiceLineItemsLoadStatus('loading');
+                                        setInvoiceLineItemsLoadError(null);
 
                                         // Fetch payment history
                                         setLoadingPayments(true);
@@ -14081,64 +14602,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                           setInvoiceCustomerDiscounts([]);
                                         }
 
-                                        // Set up line items
-                                        if (lineItems && lineItems.length > 0) {
-                                          const mappedItems = await hydrateInvoiceLineItemsForEdit(lineItems);
-                                          if (process.env.NODE_ENV !== 'production') {
-                                            console.debug('Invoice line items hydrated for edit:', mappedItems.map((line) => ({
-                                              type: line.item_type,
-                                              reference_id: line.reference_id,
-                                              display: getInvoiceLineItemDisplayName(line),
-                                            })));
-                                          }
-                                          setInvoiceLineItems(ensureInvoiceLineItemPadding(mappedItems));
-                                        } else {
-                                          console.log('No line items found in database for invoice:', invoice.id);
-                                          // If invoice has a subtotal but no line items, create a line item from the subtotal
-                                          const subtotal = invoice.subtotal || 0;
-                                          const total = invoice.total_amount || 0;
-                                          const tax = invoice.tax_amount || 0;
-                                          
-                                          if (subtotal > 0) {
-                                            console.log('Invoice has subtotal but no line items. Creating line item from subtotal:', subtotal);
-                                            // Create a single line item representing the subtotal
-                                            // This happens when invoice was created without line items being saved
-                                            setInvoiceLineItems([{
-                                              item_type: 'labor',
-                                              reference_id: null,
-                                              description: 'Service', // User can edit this
-                                              quantity: 1,
-                                              unit_price: subtotal,
-                                              total_price: subtotal,
-                                              taxable: true,
-                                              lineId: newLineId()
-                                            }]);
-                                          } else if (total > 0) {
-                                            // If no subtotal but there's a total, try to reverse calculate
-                                            const taxRate = invoice.tax_rate || (defaultTaxRate / 100);
-                                            const calculatedSubtotal = total / (1 + taxRate);
-                                            console.log('Invoice has total but no subtotal. Calculating from total:', total, '-> subtotal:', calculatedSubtotal);
-                                            setInvoiceLineItems([{
-                                              item_type: 'labor',
-                                              reference_id: null,
-                                              description: 'Service', // User can edit this
-                                              quantity: 1,
-                                              unit_price: calculatedSubtotal,
-                                              total_price: calculatedSubtotal,
-                                              taxable: true,
-                                              lineId: newLineId()
-                                            }]);
-                                            // Also update the form data to match
-                                            setInvoiceFormData(prev => ({
-                                              ...prev,
-                                              tax_rate: taxRate
-                                            }));
-                                          } else {
-                                            console.log('Invoice has no subtotal or total, creating empty line item');
-                                            // Start with empty line items so user can add
-                                            setInvoiceLineItems(createBlankInvoiceLineItems(2));
-                                          }
-                                        }
+                                        await loadInvoiceLineItemsForEdit(invoice);
                                         setInvoiceItemSearch({});
                                         // Respect the stored toggle only; stale card_fee_amount must not turn fees on.
                                         const applyFromInvoice = (invoice as any).apply_card_fee;
@@ -14220,18 +14684,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 <button
                                   onClick={async () => {
                                     try {
-                                      // Fetch existing line items
-                                      const { data: lineItems, error: lineItemsError } = await supabase
-                                        .from('invoice_line_items')
-                                        .select('*')
-                                        .eq('invoice_id', invoice.id)
-                                        .order('created_at', { ascending: true });
-
-                                      if (lineItemsError) {
-                                        console.error('Error fetching line items:', lineItemsError);
-                                      }
-
-                                      console.log('Fetched line items for invoice:', invoice.id, lineItems);
+                                      // Load line items (network-aware; no Service fallback on failure)
+                                      setInvoiceLineItemsLoadStatus('loading');
+                                      setInvoiceLineItemsLoadError(null);
 
                                       // Fetch payment history
                                       setLoadingPayments(true);
@@ -14342,64 +14797,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                         setInvoiceCustomerDiscounts([]);
                                       }
 
-                                      // Set up line items
-                                      if (lineItems && lineItems.length > 0) {
-                                        const mappedItems = await hydrateInvoiceLineItemsForEdit(lineItems);
-                                        if (process.env.NODE_ENV !== 'production') {
-                                          console.debug('Invoice line items hydrated for edit:', mappedItems.map((line) => ({
-                                            type: line.item_type,
-                                            reference_id: line.reference_id,
-                                            display: getInvoiceLineItemDisplayName(line),
-                                          })));
-                                        }
-                                      setInvoiceLineItems(ensureInvoiceLineItemPadding(mappedItems));
-                                      } else {
-                                        console.log('No line items found in database for invoice:', invoice.id);
-                                        // If invoice has a subtotal but no line items, create a line item from the subtotal
-                                        const subtotal = invoice.subtotal || 0;
-                                        const total = invoice.total_amount || 0;
-                                        const tax = invoice.tax_amount || 0;
-                                        
-                                        if (subtotal > 0) {
-                                          console.log('Invoice has subtotal but no line items. Creating line item from subtotal:', subtotal);
-                                          // Create a single line item representing the subtotal
-                                          // This happens when invoice was created without line items being saved
-                                          setInvoiceLineItems([{
-                                            item_type: 'labor',
-                                            reference_id: null,
-                                            description: 'Service', // User can edit this
-                                            quantity: 1,
-                                            unit_price: subtotal,
-                                            total_price: subtotal,
-                                            taxable: true,
-                                            lineId: newLineId()
-                                          }]);
-                                        } else if (total > 0) {
-                                          // If no subtotal but there's a total, try to reverse calculate
-                                          const taxRate = invoice.tax_rate || 0.06;
-                                          const calculatedSubtotal = total / (1 + taxRate);
-                                          console.log('Invoice has total but no subtotal. Calculating from total:', total, '-> subtotal:', calculatedSubtotal);
-                                          setInvoiceLineItems([{
-                                            item_type: 'labor',
-                                            reference_id: null,
-                                            description: 'Service', // User can edit this
-                                            quantity: 1,
-                                            unit_price: calculatedSubtotal,
-                                            total_price: calculatedSubtotal,
-                                            taxable: true,
-                                            lineId: newLineId()
-                                          }]);
-                                          // Also update the form data to match
-                                          setInvoiceFormData(prev => ({
-                                            ...prev,
-                                            tax_rate: taxRate
-                                          }));
-                                        } else {
-                                          console.log('Invoice has no subtotal or total, creating empty line item');
-                                          // Start with empty line items so user can add
-                                          setInvoiceLineItems(createBlankInvoiceLineItems(2));
-                                        }
-                                      }
+                                      await loadInvoiceLineItemsForEdit(invoice);
                                       setInvoiceItemSearch({});
                                       // Respect the stored toggle only; stale card_fee_amount must not turn fees on.
                                       const applyFromInvoiceDesktop = (invoice as any).apply_card_fee;
@@ -20961,6 +21359,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               setShowCreateInvoiceModal(false);
               setEditingInvoice(null);
               setEditingInvoicePayments([]);
+              setInvoiceLineItemsLoadStatus('idle');
+              setInvoiceLineItemsLoadError(null);
               setInvoiceFormData({
                 customer_id: '',
                 work_order_id: '',
@@ -21391,7 +21791,55 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   <h3 className="text-lg font-semibold text-gray-900">Line Items</h3>
                 </div>
 
-                <div ref={invoiceLineItemsScrollRef} className="bg-gray-50 rounded-lg p-4 min-w-0 overflow-x-auto">
+                {editingInvoice && invoiceLineItemsLoadStatus === 'loading' && (
+                  <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                    Loading saved line items…
+                  </div>
+                )}
+                {editingInvoice && invoiceLineItemsLoadStatus === 'reconnecting' && (
+                  <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 flex flex-wrap items-center justify-between gap-3">
+                    <span>
+                      {invoiceLineItemsLoadError || 'Reconnecting — reloading invoice items from the server…'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void retryInvoiceLineItemsLoad()}
+                      className="px-3 py-1.5 rounded-md border border-amber-300 bg-white text-amber-900 hover:bg-amber-100 transition-colors"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+                {editingInvoice && invoiceLineItemsLoadStatus === 'loaded-stale' && (
+                  <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 flex flex-wrap items-center justify-between gap-3">
+                    <span>
+                      Showing cached line items while offline. Update is disabled until items reload from the server.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void retryInvoiceLineItemsLoad()}
+                      className="px-3 py-1.5 rounded-md border border-amber-300 bg-white text-amber-900 hover:bg-amber-100 transition-colors"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+                {editingInvoice && (invoiceLineItemsLoadStatus === 'error' || invoiceLineItemsLoadStatus === 'timeout') && (
+                  <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 flex flex-wrap items-center justify-between gap-3">
+                    <span>
+                      {invoiceLineItemsLoadError || 'Unable to load line items. Update is disabled to protect saved items.'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void retryInvoiceLineItemsLoad()}
+                      className="px-3 py-1.5 rounded-md border border-red-300 bg-white text-red-900 hover:bg-red-100 transition-colors"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+
+                <div ref={invoiceLineItemsScrollRef} className={`bg-gray-50 rounded-lg p-4 min-w-0 overflow-x-auto ${editingInvoice && (invoiceLineItemsLoadStatus === 'loading' || invoiceLineItemsLoadStatus === 'error' || invoiceLineItemsLoadStatus === 'timeout') ? 'opacity-60 pointer-events-none' : ''}`}>
                   <div className="grid min-w-[920px] gap-3 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4" style={{ gridTemplateColumns: '72px 44px minmax(260px, 2fr) 64px 88px 84px 86px 78px 32px' }}>
                     <div>Type</div>
                     <div title="Include in tax (uncheck e.g. for labor when client pays cash)">Tax</div>
@@ -21408,7 +21856,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     {invoiceLineItems.map((item, idx) => {
                       const lineUiKey = item.lineId || String(idx);
                       const searchTerm = invoiceItemSearch[lineUiKey] || '';
-                      const selectedItemName = item.reference_id ? getInvoiceLineItemDisplayName(item) : null;
+                      const displayItemName = getInvoiceLineItemDisplayName(item);
                       const itemNote = getInvoiceLineItemNote(item);
                       const showNoteInput = Boolean(item.reference_id && (invoiceLineDescriptionOpen[lineUiKey] || itemNote));
                       const trimmedSearch = searchTerm.trim();
@@ -21431,7 +21879,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             value={item.item_type}
                             onChange={(e) => {
                               const t = e.target.value as 'labor' | 'part';
-                              setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, item_type: t, reference_id: null, description: '', item_name: null, item_number: null, unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
+                              setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...touchInvoiceLineItem(p), item_type: t, reference_id: null, description: '', savedDisplayLabel: '', item_name: null, item_number: null, unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
                               setInvoiceItemSearch(prev => ({ ...prev, [lineUiKey]: '' }));
                             }}
                             className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
@@ -21443,7 +21891,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             <input
                               type="checkbox"
                               checked={item.taxable !== false}
-                              onChange={(e) => setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, taxable: e.target.checked } : p))}
+                              onChange={(e) => setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...touchInvoiceLineItem(p), taxable: e.target.checked } : p))}
                               className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                             />
                           </label>
@@ -21458,16 +21906,16 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               }}
                               type="text"
                               placeholder="Search labor or part item"
-                              value={selectedItemName || searchTerm || (!item.reference_id ? item.description : '')}
+                              value={searchTerm || displayItemName || ''}
                               onChange={(e) => {
                                 const newValue = e.target.value;
                                 activeInvoiceItemAnchorRef.current = e.currentTarget;
                                 setActiveInvoiceItemDropdownKey(lineUiKey);
                                 // If user starts typing and there's a selected item, clear the selection to allow searching
-                                if (item.reference_id && newValue !== selectedItemName) {
-                                  setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, reference_id: null, description: newValue, item_name: null, item_number: null, unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
+                                if (item.reference_id && newValue !== displayItemName) {
+                                  setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...touchInvoiceLineItem(p), reference_id: null, description: newValue, savedDisplayLabel: newValue, item_name: null, item_number: null, unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
                                 } else if (!item.reference_id) {
-                                  setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, description: newValue } : p));
+                                  setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...touchInvoiceLineItem(p), description: newValue, savedDisplayLabel: newValue } : p));
                                 }
                                 setInvoiceItemSearch(prev => ({ ...prev, [lineUiKey]: newValue }));
                               }}
@@ -21523,13 +21971,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                                   ...(base?.lineId ? { lineId: base.lineId } : {}),
                                                 }),
                                                 applySelection: (p) => ({
-                                                  ...p,
+                                                  ...touchInvoiceLineItem(p),
                                                   item_type: 'labor',
                                                   reference_id: li.id,
                                                   description: '',
+                                                  savedDisplayLabel: li.service_name || '',
                                                   item_name: li.service_name || '',
                                                   item_number: null,
                                                   unit_price: finalPrice,
+                                                  userModified: true,
                                                 }),
                                               }
                                             );
@@ -21564,14 +22014,17 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                                   ...(base?.lineId ? { lineId: base.lineId } : {}),
                                                 }),
                                                 applySelection: (line) =>
-                                                  withComputedLineItemTotals(
-                                                    applyInventoryPartToInvoiceLineItem(line, {
-                                                      id: pi.id,
-                                                      part_name: pi.part_name,
-                                                      part_number: pi.part_number,
-                                                      selling_price: pi.selling_price,
-                                                    })
-                                                  ),
+                                                  withComputedLineItemTotals({
+                                                    ...touchInvoiceLineItem(
+                                                      applyInventoryPartToInvoiceLineItem(line, {
+                                                        id: pi.id,
+                                                        part_name: pi.part_name,
+                                                        part_number: pi.part_number,
+                                                        selling_price: pi.selling_price,
+                                                      })
+                                                    ),
+                                                    userModified: true,
+                                                  }),
                                               }
                                             );
                                             mergedPart = merged;
@@ -21708,7 +22161,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     type="text"
                                     placeholder="Optional note/description"
                                     value={itemNote}
-                                    onChange={(e) => setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...p, description: e.target.value } : p))}
+                                    onChange={(e) => setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...touchInvoiceLineItem(p), description: e.target.value } : p))}
                                     className="w-full rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-700 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
                                   />
                                 ) : (
@@ -21728,7 +22181,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             onChange={(e) => {
                               const q = Number(e.target.value) || 0;
                               setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? {
-                                ...p,
+                                ...touchInvoiceLineItem(p),
                                 quantity: q
                               } : p));
                             }}
@@ -21741,7 +22194,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               onChange={(e) => {
                                 const u = Number(e.target.value) || 0;
                                 setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? {
-                                  ...p,
+                                  ...touchInvoiceLineItem(p),
                                   unit_price: u
                                 } : p));
                               }}
@@ -21753,7 +22206,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             onChange={(e) => {
                               const discountType = e.target.value as 'none' | 'percentage' | 'fixed';
                               setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? {
-                                ...p,
+                                ...touchInvoiceLineItem(p),
                                 discount_type: discountType,
                                 discount_value: discountType === 'none' ? 0 : (p.discount_value || 0)
                               } : p));
@@ -21772,7 +22225,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             onChange={(e) => {
                               const discountValue = Number(e.target.value) || 0;
                               setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? {
-                                ...p,
+                                ...touchInvoiceLineItem(p),
                                 discount_value: discountValue
                               } : p));
                             }}
@@ -22251,6 +22704,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   setShowCreateInvoiceModal(false);
                   setEditingInvoice(null);
                   setEditingInvoicePayments([]);
+                  setInvoiceLineItemsLoadStatus('idle');
+                  setInvoiceLineItemsLoadError(null);
                   setInvoiceFormData({
                     customer_id: '',
                     work_order_id: '',
@@ -22272,8 +22727,32 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 Cancel
               </button>
               <button
-                disabled={invoiceSaveInProgress}
+                disabled={
+                  invoiceSaveInProgress ||
+                  Boolean(editingInvoice && !canMutateInvoiceLineItemsForSave(invoiceLineItemsLoadStatus))
+                }
+                title={
+                  editingInvoice && !canMutateInvoiceLineItemsForSave(invoiceLineItemsLoadStatus)
+                    ? invoiceLineItemsLoadStatus === 'loading' || invoiceLineItemsLoadStatus === 'reconnecting'
+                      ? 'Waiting for invoice line items to finish loading'
+                      : 'Line items must load successfully before updating'
+                    : undefined
+                }
                 onClick={async () => {
+                  if (editingInvoice && !canMutateInvoiceLineItemsForSave(invoiceLineItemsLoadStatus)) {
+                    logInvoiceLineItemNetwork('UPDATE BLOCKED LINE ITEMS UNSAFE', {
+                      invoiceId: editingInvoice.id,
+                      status: invoiceLineItemsLoadStatus,
+                      reason: 'Line items are not verified from a successful DB fetch',
+                    });
+                    alert(
+                      invoiceLineItemsLoadStatus === 'loading' || invoiceLineItemsLoadStatus === 'reconnecting'
+                        ? 'Line items are still loading or reconnecting. Please wait before updating this invoice.'
+                        : 'Line items could not be verified from the database. Retry after your connection is restored before updating.'
+                    );
+                    return;
+                  }
+
                   const { nonEmpty: nonEmptyLineItems, savable: savableLineItems } =
                     prepareSavableInvoiceLineItems(invoiceLineItemsRef.current, {
                       isEmpty: isInvoiceLineEmpty,
@@ -22362,17 +22841,95 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         ...updateData,
                         internal_notes: invoiceFormData.internal_notes || null
                       };
-                      const [updateResult, oldLineItemsResult] = await Promise.all([
-                        useOptimisticLock
-                          ? supabase.from('invoices').update(updatePayload).eq('id', editingInvoice.id).eq('updated_at', editingInvoice.updated_at!).select('id')
-                          : supabase.from('invoices').update(updatePayload).eq('id', editingInvoice.id),
-                        supabase
-                          .from('invoice_line_items')
-                          .select('*')
-                          .eq('invoice_id', editingInvoice.id)
-                      ]);
-                      let invoiceError = (updateResult as { error?: { message?: string; code?: string } | null }).error;
+
+                      const oldLineItemsResult = await supabase
+                        .from('invoice_line_items')
+                        .select('*')
+                        .eq('invoice_id', editingInvoice.id);
                       const oldLineItems = oldLineItemsResult.data;
+
+                      if (canMutateInvoiceLineItemsForSave(invoiceLineItemsLoadStatus)) {
+                        const priorRowsById = new Map<string, Record<string, unknown>>(
+                          (oldLineItems || [])
+                            .filter((row) => row?.id)
+                            .map((row) => [String(row.id), row as Record<string, unknown>])
+                        );
+                        const updatePayloadLines = buildInvoiceLineItemsPayload(
+                          editingInvoice.id,
+                          savableLineItems,
+                          { priorRowsById }
+                        );
+                        logInvoiceLineItemNetwork('UPDATE PAYLOAD LINE ITEMS', {
+                          invoiceId: editingInvoice.id,
+                          status: invoiceLineItemsLoadStatus,
+                          savableIds: savableLineItems.map((line) => line.id),
+                          lines: updatePayloadLines.map((line) => ({
+                            description: line.description,
+                            item_type: line.item_type,
+                            reference_id: line.reference_id,
+                            quantity: line.quantity,
+                            unit_price: line.unit_price,
+                            total_price: line.total_price,
+                          })),
+                        });
+
+                        const regressionCheck = wouldInvoiceLineItemSaveRegressToService(
+                          savableLineItems,
+                          priorRowsById
+                        );
+                        if (regressionCheck.blocked) {
+                          logInvoiceLineItemNetwork('UPDATE BLOCKED LINE ITEMS UNSAFE', {
+                            invoiceId: editingInvoice.id,
+                            status: invoiceLineItemsLoadStatus,
+                            reason: regressionCheck.reason,
+                          });
+                          showToast({
+                            type: 'error',
+                            message:
+                              regressionCheck.reason ||
+                              'Update blocked to prevent overwriting saved item names with a generic placeholder.',
+                          });
+                          setInvoiceSaveInProgress(false);
+                          return;
+                        }
+
+                        const lineItemsError = await replaceInvoiceLineItemsSafely(
+                          editingInvoice.id,
+                          oldLineItems,
+                          savableLineItems
+                        );
+                        if (lineItemsError) {
+                          logInvoiceLineItemNetwork('UPDATE BLOCKED LINE ITEMS UNSAFE', {
+                            invoiceId: editingInvoice.id,
+                            status: invoiceLineItemsLoadStatus,
+                            reason: 'Line item save failed; invoice header was not updated.',
+                            error: lineItemsError,
+                          });
+                          showToast({
+                            type: 'error',
+                            message:
+                              String((lineItemsError as { message?: string }).message || '') ||
+                              'Failed to save invoice line items. The invoice header was not changed.',
+                          });
+                          setInvoiceSaveInProgress(false);
+                          return;
+                        }
+                      } else {
+                        console.warn(
+                          'Skipped invoice line item save because line items did not load successfully:',
+                          invoiceLineItemsLoadStatus
+                        );
+                      }
+
+                      const updateResult = useOptimisticLock
+                        ? await supabase
+                            .from('invoices')
+                            .update(updatePayload)
+                            .eq('id', editingInvoice.id)
+                            .eq('updated_at', editingInvoice.updated_at!)
+                            .select('id')
+                        : await supabase.from('invoices').update(updatePayload).eq('id', editingInvoice.id);
+                      let invoiceError = (updateResult as { error?: { message?: string; code?: string } | null }).error;
 
                       // Optimistic lock: if another device updated this invoice, auto-retry with latest write
                       if (useOptimisticLock && !invoiceError) {
@@ -22476,18 +23033,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       if (invoiceError) {
                         console.error('Error updating invoice:', invoiceError, JSON.stringify(invoiceError || {}));
                         alert('Failed to update invoice. Please try again.');
-                        setInvoiceSaveInProgress(false);
-                        return;
-                      }
-
-                      const lineItemsError = await replaceInvoiceLineItemsSafely(
-                        editingInvoice.id,
-                        oldLineItems,
-                        savableLineItems
-                      );
-                      if (lineItemsError) {
-                        console.error('Could not save invoice line items:', lineItemsError);
-                        showToast({ type: 'error', message: 'Failed to save invoice line items. Please try again.' });
                         setInvoiceSaveInProgress(false);
                         return;
                       }
@@ -22726,6 +23271,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       setShowCreateInvoiceModal(false);
                       setEditingInvoice(null);
                       setEditingInvoicePayments([]);
+                      setInvoiceLineItemsLoadStatus('idle');
+                      setInvoiceLineItemsLoadError(null);
                       setInvoiceFormData({
                         customer_id: '',
                         work_order_id: '',
