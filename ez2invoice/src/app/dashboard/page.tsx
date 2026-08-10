@@ -22,6 +22,7 @@ import {
 } from '@/lib/invoices/searchInvoiceCatalogItems';
 import {
   inventoryPartMatchesQuery,
+  mergeInventorySearchResults,
   searchInventoryParts,
 } from '@/lib/inventory/searchInventoryParts';
 import {
@@ -6858,7 +6859,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     fetchInventory();
   }, [contextShopId]);
 
-  // Global inventory search (same parts table as invoice autocomplete; not limited to loaded rows)
+  // Global inventory search (same parts table as invoice autocomplete).
+  // Always show local matches immediately, then merge any additional server hits.
   useEffect(() => {
     if (activeTab !== 'inventory') return;
 
@@ -6868,6 +6870,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       setInventorySearching(false);
       return;
     }
+
+    const localMatches = inventory.filter((item) => inventoryPartMatchesQuery(item, term));
+    setInventorySearchResults(localMatches);
 
     let cancelled = false;
     const runSearch = async () => {
@@ -6883,36 +6888,31 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         if (cancelled) return;
 
         if (error) {
-          // Fall back to filtering already-loaded inventory so search never goes blank on query errors.
-          console.warn('Inventory server search failed; using local filter fallback:', error);
-          setInventorySearchResults(
-            inventory.filter((item) => inventoryPartMatchesQuery(item, term))
-          );
+          console.warn('Inventory server search failed; keeping local matches:', error);
+          setInventorySearchResults(localMatches);
           return;
         }
 
-        setInventorySearchResults(
-          parts.map((part) => ({
-            id: part.id,
-            part_number: part.part_number,
-            part_name: part.part_name,
-            description: part.description,
-            category: part.category,
-            supplier: part.supplier,
-            location: null,
-            quantity_in_stock: Number(part.quantity_in_stock) || 0,
-            minimum_stock_level: Number(part.minimum_stock_level) || 0,
-            selling_price: Number(part.selling_price) || 0,
-            cost: part.cost,
-            created_at: part.created_at,
-          }))
-        );
+        const serverMatches = parts.map((part) => ({
+          id: part.id,
+          part_number: part.part_number,
+          part_name: part.part_name,
+          description: part.description,
+          category: part.category,
+          supplier: part.supplier,
+          location: null as string | null,
+          quantity_in_stock: Number(part.quantity_in_stock) || 0,
+          minimum_stock_level: Number(part.minimum_stock_level) || 0,
+          selling_price: Number(part.selling_price) || 0,
+          cost: part.cost,
+          created_at: part.created_at,
+        }));
+
+        setInventorySearchResults(mergeInventorySearchResults(localMatches, serverMatches));
       } catch (error) {
         if (!cancelled) {
-          console.warn('Inventory search failed; using local filter fallback:', error);
-          setInventorySearchResults(
-            inventory.filter((item) => inventoryPartMatchesQuery(item, term))
-          );
+          console.warn('Inventory search failed; keeping local matches:', error);
+          setInventorySearchResults(localMatches);
         }
       } finally {
         if (!cancelled) setInventorySearching(false);
@@ -6923,9 +6923,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     return () => {
       cancelled = true;
     };
-    // inventory is read only for error fallback; do not re-run search on every inventory merge.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, debouncedInventoryQuery, contextShopId, isFounder]);
+  }, [activeTab, debouncedInventoryQuery, contextShopId, isFounder, inventory]);
 
   // Redirect from DOT inspections if not accessible
   useEffect(() => {
@@ -12732,7 +12731,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                   <input
                     value={inventoryQuery}
-                    onChange={(e)=>setInventoryQuery(e.target.value)}
+                    onChange={(e)=>{
+                      const next = e.target.value;
+                      setInventoryQuery(next);
+                      if (next.trim() && inventoryCategory !== 'All') {
+                        setInventoryCategory('All');
+                      }
+                    }}
                     placeholder="Search name, part #, description, supplier..."
                     className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                   />

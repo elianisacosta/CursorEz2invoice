@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { inventoryPartMatchesQuery } from './searchInventoryParts.ts';
+import { inventoryPartMatchesQuery, mergeInventorySearchResults } from './searchInventoryParts.ts';
 
 describe('inventoryPartMatchesQuery', () => {
   it('matches part number, name, description, and supplier', () => {
@@ -47,5 +47,18 @@ describe('inventoryPartMatchesQuery', () => {
       ),
       false
     );
+  });
+
+  it('merges local and server search hits by id without wiping local matches', () => {
+    const merged = mergeInventorySearchResults(
+      [{ id: 'a', part_name: 'Local Only' }],
+      [
+        { id: 'a', part_name: 'Server Updated' },
+        { id: 'b', part_name: 'Server Only' },
+      ]
+    );
+    assert.equal(merged.length, 2);
+    assert.equal(merged.find((row) => row.id === 'a')?.part_name, 'Server Updated');
+    assert.equal(merged.find((row) => row.id === 'b')?.part_name, 'Server Only');
   });
 });
