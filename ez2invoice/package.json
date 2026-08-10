@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test src/lib/invoices/invoiceLineItemPersistence.test.ts src/lib/invoices/searchInvoiceCatalogItems.test.ts src/lib/invoices/invoiceItemDropdownPosition.test.ts"
+    "test": "node --experimental-strip-types --test src/lib/invoices/invoiceLineItemPersistence.test.ts src/lib/invoices/searchInvoiceCatalogItems.test.ts src/lib/invoices/invoiceItemDropdownPosition.test.ts src/lib/inventory/searchInventoryParts.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.76.1",

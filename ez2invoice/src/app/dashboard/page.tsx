@@ -21,6 +21,10 @@ import {
   type InvoiceCatalogPartRow,
 } from '@/lib/invoices/searchInvoiceCatalogItems';
 import {
+  inventoryPartMatchesQuery,
+  searchInventoryParts,
+} from '@/lib/inventory/searchInventoryParts';
+import {
   DUPLICATE_LINE_ITEM_TOAST,
   laborLineItemSelection,
   mergeDuplicateLineItem,
@@ -1789,7 +1793,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [inventoryQuery, setInventoryQuery] = useState('');
+  const [inventorySearchResults, setInventorySearchResults] = useState<InventoryItem[] | null>(null);
+  const [inventorySearching, setInventorySearching] = useState(false);
   const [inventoryCategory, setInventoryCategory] = useState('All');
+  const debouncedInventoryQuery = useDebouncedValue(inventoryQuery, 300);
   const [partsSalesData, setPartsSalesData] = useState<any[]>([]);
   const [partsSalesLoading, setPartsSalesLoading] = useState(true);
   const [showAddInventoryModal, setShowAddInventoryModal] = useState(false);
@@ -6850,6 +6857,75 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   useEffect(() => {
     fetchInventory();
   }, [contextShopId]);
+
+  // Global inventory search (same parts table as invoice autocomplete; not limited to loaded rows)
+  useEffect(() => {
+    if (activeTab !== 'inventory') return;
+
+    const term = debouncedInventoryQuery.trim();
+    if (!term) {
+      setInventorySearchResults(null);
+      setInventorySearching(false);
+      return;
+    }
+
+    let cancelled = false;
+    const runSearch = async () => {
+      setInventorySearching(true);
+      try {
+        const shopId = await getShopId();
+        const { data: parts, error } = await searchInventoryParts(supabase, {
+          shopId,
+          isFounder,
+          searchTerm: term,
+          limit: 200,
+        });
+        if (cancelled) return;
+
+        if (error) {
+          // Fall back to filtering already-loaded inventory so search never goes blank on query errors.
+          console.warn('Inventory server search failed; using local filter fallback:', error);
+          setInventorySearchResults(
+            inventory.filter((item) => inventoryPartMatchesQuery(item, term))
+          );
+          return;
+        }
+
+        setInventorySearchResults(
+          parts.map((part) => ({
+            id: part.id,
+            part_number: part.part_number,
+            part_name: part.part_name,
+            description: part.description,
+            category: part.category,
+            supplier: part.supplier,
+            location: null,
+            quantity_in_stock: Number(part.quantity_in_stock) || 0,
+            minimum_stock_level: Number(part.minimum_stock_level) || 0,
+            selling_price: Number(part.selling_price) || 0,
+            cost: part.cost,
+            created_at: part.created_at,
+          }))
+        );
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Inventory search failed; using local filter fallback:', error);
+          setInventorySearchResults(
+            inventory.filter((item) => inventoryPartMatchesQuery(item, term))
+          );
+        }
+      } finally {
+        if (!cancelled) setInventorySearching(false);
+      }
+    };
+
+    void runSearch();
+    return () => {
+      cancelled = true;
+    };
+    // inventory is read only for error fallback; do not re-run search on every inventory merge.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, debouncedInventoryQuery, contextShopId, isFounder]);
 
   // Redirect from DOT inspections if not accessible
   useEffect(() => {
@@ -12654,7 +12730,17 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               <div className="flex items-center justify-between">
                 <div className="w-full max-w-md relative">
                   <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input value={inventoryQuery} onChange={(e)=>setInventoryQuery(e.target.value)} placeholder="Search inventory..." className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                  <input
+                    value={inventoryQuery}
+                    onChange={(e)=>setInventoryQuery(e.target.value)}
+                    placeholder="Search name, part #, description, supplier..."
+                    className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                  />
+                  {inventorySearching && (
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-500">
+                      Searching…
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-3">
                   <button 
@@ -12697,7 +12783,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               {/* Filters */}
               <div className="flex items-center gap-3">
                 <select value={inventoryCategory} onChange={(e)=>setInventoryCategory(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg">
-                  {['All', ...Array.from(new Set(inventory.map(i=>i.category||'General')))].map(c=> (
+                  {['All', ...Array.from(new Set([
+                    ...inventory.map((i) => i.category || 'General'),
+                    ...(inventorySearchResults || []).map((i) => i.category || 'General'),
+                  ]))].map(c=> (
                     <option key={c} value={c}>{c}</option>
                   ))}
                 </select>
@@ -12720,11 +12809,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     <div className="text-right min-w-0">Actions</div>
                   </div>
 
-                  {inventoryLoading ? (
+                  {inventoryLoading && inventorySearchResults === null && !inventoryQuery.trim() ? (
                     <div className="text-center text-gray-600 py-12">Loading...</div>
                   ) : (
-                    inventory
-                      .filter(i => !inventoryQuery || (i.part_name + ' ' + (i.part_number||'') + ' ' + (i.category||'') ).toLowerCase().includes(inventoryQuery.toLowerCase()))
+                    (inventorySearchResults !== null
+                      ? inventorySearchResults
+                      : inventory.filter((i) => inventoryPartMatchesQuery(i, inventoryQuery))
+                    )
                       .filter(i => inventoryCategory==='All' || (i.category||'General')===inventoryCategory)
                       .map(i => (
                         <div key={i.id}>
@@ -12868,8 +12959,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         </div>
                       ))
                   )}
-                  {(!inventoryLoading && inventory.length===0) && (
+                  {(!inventoryLoading && !inventorySearching && inventorySearchResults === null && inventory.length===0) && (
                     <div className="text-center text-gray-600 py-12">No inventory yet</div>
+                  )}
+                  {(!inventoryLoading && !inventorySearching && inventorySearchResults !== null && inventorySearchResults.length === 0 && inventoryQuery.trim()) && (
+                    <div className="text-center text-gray-600 py-12">
+                      No inventory items found for “{inventoryQuery.trim()}”.
+                    </div>
                   )}
                 </div>
               </div>
