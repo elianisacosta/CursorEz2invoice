@@ -56,7 +56,7 @@ export function normalizeInvoiceLineItem(raw: RawRecord): InvoiceDocumentLineIte
     description: pickString(raw.description, raw.name, raw.item_name, raw.title) || '',
     item_name: pickString(raw.item_name, raw.name) || null,
     item_number: pickString(raw.item_number, raw.part_number, raw.sku) || null,
-    invoice_note: pickString(raw.invoice_note, raw.note) || null,
+    invoice_note: pickString(raw.invoice_note, raw.notes, raw.note) || null,
     quantity,
     unit_price,
     total_price,

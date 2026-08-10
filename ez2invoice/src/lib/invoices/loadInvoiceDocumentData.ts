@@ -135,32 +135,28 @@ export async function loadInvoiceDocumentData(
   const partById = new Map((partResult.data || []).map((row: any) => [row.id, row]));
   lineItems = lineItems.map((item) => {
     const description = (item.description || '').trim();
+    const invoice_note = (item.invoice_note || '').trim() || null;
     if (item.item_type === 'labor' && item.reference_id) {
       const labor = laborById.get(item.reference_id);
-      const autoText = [labor?.service_name, labor?.description].filter(Boolean).map((value) => String(value).trim().toLowerCase());
       return {
         ...item,
         item_name: labor?.service_name || item.item_name || description || 'Labor',
-        invoice_note: labor && description && !autoText.includes(description.toLowerCase()) ? description : null,
+        invoice_note,
       };
     }
     if (item.item_type === 'part' && item.reference_id) {
       const part = partById.get(item.reference_id);
-      const partDisplay = [part?.part_number, part?.part_name].filter(Boolean).join(' — ');
-      const autoText = [part?.part_name, part?.part_number, part?.description, partDisplay]
-        .filter(Boolean)
-        .map((value) => String(value).trim().toLowerCase());
       return {
         ...item,
         item_name: part?.part_name || item.item_name || description || 'Part',
         item_number: part?.part_number || item.item_number || null,
-        invoice_note: part && description && !autoText.includes(description.toLowerCase()) ? description : null,
+        invoice_note,
       };
     }
     return {
       ...item,
       item_name: item.item_name || description || 'Item',
-      invoice_note: item.invoice_note || null,
+      invoice_note,
     };
   });
   let payments = normalizePayments(paymentData);

@@ -1,6 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { inventoryPartMatchesQuery, mergeInventorySearchResults } from './searchInventoryParts.ts';
+import {
+  INVENTORY_CATEGORY_ALL,
+  getInventoryStockBadge,
+  inventoryPartMatchesCategory,
+  inventoryPartMatchesQuery,
+  inventoryPartMatchesStockStatus,
+  mergeInventorySearchResults,
+} from './searchInventoryParts.ts';
 
 describe('inventoryPartMatchesQuery', () => {
   it('matches part number, name, description, and supplier', () => {
@@ -60,5 +67,58 @@ describe('inventoryPartMatchesQuery', () => {
     assert.equal(merged.length, 2);
     assert.equal(merged.find((row) => row.id === 'a')?.part_name, 'Server Updated');
     assert.equal(merged.find((row) => row.id === 'b')?.part_name, 'Server Only');
+  });
+});
+
+describe('inventoryPartMatchesStockStatus', () => {
+  const threshold = 5;
+
+  it('classifies in / low / out / negative stock by quantity vs threshold', () => {
+    assert.equal(
+      inventoryPartMatchesStockStatus({ quantity_in_stock: 10, minimum_stock_level: threshold }, 'in_stock'),
+      true
+    );
+    assert.equal(
+      inventoryPartMatchesStockStatus({ quantity_in_stock: 5, minimum_stock_level: threshold }, 'in_stock'),
+      false
+    );
+    assert.equal(
+      inventoryPartMatchesStockStatus({ quantity_in_stock: 3, minimum_stock_level: threshold }, 'low_stock'),
+      true
+    );
+    assert.equal(
+      inventoryPartMatchesStockStatus({ quantity_in_stock: 0, minimum_stock_level: threshold }, 'low_stock'),
+      false
+    );
+    assert.equal(
+      inventoryPartMatchesStockStatus({ quantity_in_stock: 0, minimum_stock_level: threshold }, 'out_of_stock'),
+      true
+    );
+    assert.equal(
+      inventoryPartMatchesStockStatus({ quantity_in_stock: -2, minimum_stock_level: threshold }, 'negative_stock'),
+      true
+    );
+    assert.equal(
+      inventoryPartMatchesStockStatus({ quantity_in_stock: -2, minimum_stock_level: threshold }, 'all'),
+      true
+    );
+  });
+});
+
+describe('inventoryPartMatchesCategory', () => {
+  it('treats All Categories as no filter and defaults blank category to General', () => {
+    assert.equal(inventoryPartMatchesCategory({ category: 'Tires' }, INVENTORY_CATEGORY_ALL), true);
+    assert.equal(inventoryPartMatchesCategory({ category: 'Tires' }, 'Tires'), true);
+    assert.equal(inventoryPartMatchesCategory({ category: 'Tires' }, 'Brakes'), false);
+    assert.equal(inventoryPartMatchesCategory({ category: null }, 'General'), true);
+  });
+});
+
+describe('getInventoryStockBadge', () => {
+  it('labels negative, out, low, and in stock distinctly', () => {
+    assert.equal(getInventoryStockBadge({ quantity_in_stock: -1, minimum_stock_level: 2 }).label, 'Negative Stock');
+    assert.equal(getInventoryStockBadge({ quantity_in_stock: 0, minimum_stock_level: 2 }).label, 'Out of Stock');
+    assert.equal(getInventoryStockBadge({ quantity_in_stock: 1, minimum_stock_level: 2 }).label, 'Low Stock');
+    assert.equal(getInventoryStockBadge({ quantity_in_stock: 5, minimum_stock_level: 2 }).label, 'In Stock');
   });
 });

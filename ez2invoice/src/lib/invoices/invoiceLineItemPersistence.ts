@@ -8,6 +8,8 @@ export interface PersistableInvoiceLineItem {
   item_type: InvoiceLineItemType;
   reference_id?: string | null;
   description?: string;
+  /** Optional per-line note; persisted in invoice_line_items.notes, never mixed into description. */
+  notes?: string | null;
   item_name?: string | null;
   item_number?: string | null;
   quantity: number;
@@ -26,6 +28,7 @@ export interface PersistableInvoiceLineItem {
 
 export type InvoiceLineItemDbSnapshot = {
   description: string;
+  notes: string | null;
   item_name: string | null;
   item_number: string | null;
   reference_id: string | null;
@@ -85,7 +88,8 @@ export function extractSavedDisplayLabelFromRow(
 ): string {
   const itemName = pickInvoiceLineRowString(row.item_name, row.name, row.service_name, row.part_name);
   const itemNumber = pickInvoiceLineRowString(row.item_number, row.part_number, row.sku);
-  const description = pickInvoiceLineRowString(row.description, row.title, row.note);
+  // description is the item/service name. Do not use notes/note — those are optional line notes.
+  const description = pickInvoiceLineRowString(row.description, row.title);
 
   const partStyleLabel = [itemNumber, itemName].filter(Boolean).join(' — ');
   if (partStyleLabel && !isGenericInvoiceLinePlaceholder(partStyleLabel)) {
@@ -485,16 +489,17 @@ export function serializeInvoiceLineItemRowForDebug(row: Record<string, unknown>
 export function captureInvoiceLineItemDbSnapshot(row: Record<string, unknown>): InvoiceLineItemDbSnapshot {
   const itemName =
     pickInvoiceLineRowString(row.item_name, row.name, row.service_name, row.part_name) || null;
+  const notes = pickInvoiceLineRowString(row.notes) || null;
   return {
     description: pickInvoiceLineRowString(
       row.description,
       row.title,
-      row.note,
       row.item_name,
       row.name,
       row.service_name,
       row.part_name
     ),
+    notes,
     item_name: itemName,
     item_number: pickInvoiceLineRowString(row.item_number, row.part_number, row.sku) || null,
     reference_id: row.reference_id
@@ -551,6 +556,7 @@ export function resolveInvoiceLineItemSavePayload<
       item_type: priorSnapshot.item_type,
       reference_id: priorSnapshot.reference_id,
       description: preservedDescription,
+      notes: priorSnapshot.notes,
       quantity: priorSnapshot.quantity,
       unit_price: priorSnapshot.unit_price,
       total_price: priorSnapshot.total_price,
@@ -584,7 +590,7 @@ export function resolveInvoiceLineItemSavePayload<
   return stripFrontendOnlyInvoiceLineFields(payload);
 }
 
-/** Columns that exist on invoice_line_items in the base schema (+ reference_id, taxable migrations). */
+/** Columns that exist on invoice_line_items in the base schema (+ reference_id, taxable, notes migrations). */
 export const INVOICE_LINE_ITEM_DB_CORE_FIELDS = [
   'invoice_id',
   'item_type',
@@ -595,9 +601,14 @@ export const INVOICE_LINE_ITEM_DB_CORE_FIELDS = [
   'total_price',
 ] as const;
 
+export function normalizeInvoiceLineItemNotes(value: unknown): string | null {
+  const text = String(value ?? '').trim();
+  return text ? text : null;
+}
+
 export function sanitizeInvoiceLineItemDbPayload(
   payload: Record<string, unknown>,
-  options: { includeTaxable?: boolean; includeDiscounts?: boolean } = {}
+  options: { includeTaxable?: boolean; includeDiscounts?: boolean; includeNotes?: boolean } = {}
 ): Record<string, unknown> {
   const description = String(payload.description ?? '').trim();
   const sanitized: Record<string, unknown> = {
@@ -617,6 +628,9 @@ export function sanitizeInvoiceLineItemDbPayload(
     sanitized.discount_value = Number(payload.discount_value) || 0;
     sanitized.discount_amount = Number(payload.discount_amount) || 0;
   }
+  if (options.includeNotes) {
+    sanitized.notes = normalizeInvoiceLineItemNotes(payload.notes);
+  }
   return sanitized;
 }
 
@@ -631,6 +645,7 @@ export function buildInvoiceLineItemDbPayloads<
   options: {
     includeTaxable?: boolean;
     includeDiscounts?: boolean;
+    includeNotes?: boolean;
     priorRowsById?: Map<string, Record<string, unknown>>;
   } = {}
 ): Record<string, unknown>[] {
@@ -647,6 +662,7 @@ export function buildInvoiceLineItemDbPayloads<
       item_type: item.item_type,
       reference_id: item.reference_id || null,
       description,
+      notes: normalizeInvoiceLineItemNotes(item.notes),
       quantity: Number(item.quantity) || 1,
       unit_price: Number(item.unit_price) || 0,
       total_price: Number(item.total_price) || 0,
@@ -659,6 +675,7 @@ export function buildInvoiceLineItemDbPayloads<
     return sanitizeInvoiceLineItemDbPayload(resolved, {
       includeTaxable: options.includeTaxable,
       includeDiscounts: options.includeDiscounts,
+      includeNotes: options.includeNotes !== false,
     });
   });
 }
@@ -752,7 +769,8 @@ export function mapInvoiceLineItemRowForEdit(
     : rawSavedDisplayLabel;
   const storedLabels = hydrateInvoiceLineItemLabelsFromRow(row);
   const dbId = row.id ? String(row.id) : undefined;
-  const description = pickInvoiceLineRowString(row.description, row.title, row.note) || storedLabels.description;
+  const description = pickInvoiceLineRowString(row.description, row.title) || storedLabels.description;
+  const notes = normalizeInvoiceLineItemNotes(row.notes);
 
   return {
     id: dbId,
@@ -760,6 +778,7 @@ export function mapInvoiceLineItemRowForEdit(
     item_type: itemType,
     reference_id: row.reference_id ? String(row.reference_id) : null,
     description,
+    notes,
     item_name:
       storedLabels.item_name ??
       (pickInvoiceLineRowString(row.item_name, row.name, row.service_name, row.part_name) || null),
@@ -888,15 +907,12 @@ export function buildPartLineDescriptionFallback(part: InventoryPartLike): strin
 
 /**
  * Stored description must survive reload even when reference_id lookup fails.
- * Optional user note takes priority; otherwise persist part/labor labels.
+ * Optional user notes are persisted separately in `notes` — never overwrite the item name.
  */
 export function buildInvoiceLineItemDescriptionForSave(
   item: PersistableInvoiceLineItem,
-  userNote = ''
+  _userNote = ''
 ): string {
-  const trimmedNote = userNote.trim();
-  if (trimmedNote) return trimmedNote;
-
   const savedLabel = item.savedDisplayLabel?.trim();
   if (savedLabel && !isGenericInvoiceLinePlaceholder(savedLabel)) return savedLabel;
 
@@ -909,8 +925,8 @@ export function buildInvoiceLineItemDescriptionForSave(
   if (itemName && !isGenericInvoiceLinePlaceholder(itemName)) return itemName;
 
   const description = (item.description || '').trim();
-  if (description) return description;
-  return '';
+  if (description && !isGenericInvoiceLinePlaceholder(description)) return description;
+  return description || '';
 }
 
 export function applyInventoryPartToInvoiceLineItem<T extends PersistableInvoiceLineItem>(
@@ -972,7 +988,7 @@ export function hydrateInvoiceLineItemLabelsFromRow(row: Record<string, unknown>
   const itemName = pickInvoiceLineRowString(row.item_name, row.name, row.service_name, row.part_name) || null;
   const itemNumber =
     pickInvoiceLineRowString(row.item_number, row.part_number, row.sku) || null;
-  const description = pickInvoiceLineRowString(row.description, row.title, row.note);
+  const description = pickInvoiceLineRowString(row.description, row.title);
 
   if (itemName || itemNumber) {
     return {

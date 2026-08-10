@@ -21,10 +21,23 @@ import {
   type InvoiceCatalogPartRow,
 } from '@/lib/invoices/searchInvoiceCatalogItems';
 import {
+  INVENTORY_CATEGORY_ALL,
+  getInventoryStockBadge,
+  inventoryPartMatchesCategory,
   inventoryPartMatchesQuery,
+  inventoryPartMatchesStockStatus,
   mergeInventorySearchResults,
   searchInventoryParts,
+  type InventoryStockStatusFilter,
 } from '@/lib/inventory/searchInventoryParts';
+import {
+  LABOR_CATEGORY_ALL,
+  averageHourlyLaborRate,
+  laborItemMatchesCategory,
+  laborItemMatchesQuery,
+  laborItemMatchesRateType,
+  type LaborRateTypeFilter,
+} from '@/lib/labor/laborFilters';
 import {
   DUPLICATE_LINE_ITEM_TOAST,
   laborLineItemSelection,
@@ -439,6 +452,8 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     item_type: 'labor' | 'part';
     reference_id?: string | null;
     description: string;
+    /** Optional per-line note; separate from description (item/service name). */
+    notes?: string | null;
     item_name?: string | null;
     item_number?: string | null;
     quantity: number;
@@ -463,6 +478,7 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     item_type: itemType,
     reference_id: null,
     description: '',
+    notes: '',
     quantity: 1,
     unit_price: 0,
     total_price: 0,
@@ -566,33 +582,9 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     const description = item.description?.trim() || '';
     return isGenericInvoiceLinePlaceholder(description) ? '' : description;
   };
-  const getInvoiceLineItemNote = (item: InvoiceLineItem) => {
-    const rawNote = item.description || '';
-    const normalizedNote = rawNote.trim();
-    if (!normalizedNote || !item.reference_id) return '';
-
-    if (item.item_type === 'labor') {
-      const labor = laborItemsById.get(String(item.reference_id));
-      if (!labor) return '';
-      const autoText = [item.item_name, labor?.service_name, labor?.description].filter(Boolean);
-      return autoText.some((value) => value?.trim().toLowerCase() === normalizedNote.toLowerCase()) ? '' : rawNote;
-    }
-
-    const part = inventoryById.get(String(item.reference_id));
-    if (!part) return '';
-    const autoText = [
-      part?.part_name,
-      part?.part_number,
-      part?.description,
-      formatPartDisplayName(part),
-      item.item_name,
-      item.item_number,
-      [item.item_number, item.item_name].filter(Boolean).join(' — '),
-    ].filter(Boolean);
-    return autoText.some((value) => value?.trim().toLowerCase() === normalizedNote.toLowerCase()) ? '' : rawNote;
-  };
+  const getInvoiceLineItemNote = (item: InvoiceLineItem) => String(item.notes ?? '');
   const getInvoiceLineItemStoredDescription = (item: InvoiceLineItem) =>
-    buildInvoiceLineItemDescriptionForSave(item, getInvoiceLineItemNote(item));
+    buildInvoiceLineItemDescriptionForSave(item);
   const areInvoiceLineItemsEqual = (a: InvoiceLineItem[], b: InvoiceLineItem[]) => {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i += 1) {
@@ -602,6 +594,7 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
       if (left.item_type !== right.item_type) return false;
       if ((left.reference_id || null) !== (right.reference_id || null)) return false;
       if ((left.description || '') !== (right.description || '')) return false;
+      if ((left.notes || '') !== (right.notes || '')) return false;
       if ((left.savedDisplayLabel || '') !== (right.savedDisplayLabel || '')) return false;
       if ((left.item_name || '') !== (right.item_name || '')) return false;
       if ((left.item_number || '') !== (right.item_number || '')) return false;
@@ -1761,15 +1754,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const [laborItems, setLaborItems] = useState<LaborItem[]>([]);
   const [laborLoading, setLaborLoading] = useState(false);
   const [laborQuery, setLaborQuery] = useState('');
-  const [laborRateFilter, setLaborRateFilter] = useState<'all'|'fixed'|'hourly'>('all');
-  const [laborCategoryFilter, setLaborCategoryFilter] = useState<string>('All');
+  const [laborRateFilter, setLaborRateFilter] = useState<LaborRateTypeFilter>('all');
+  const [laborCategoryFilter, setLaborCategoryFilter] = useState(LABOR_CATEGORY_ALL);
   const [showAddLaborModal, setShowAddLaborModal] = useState(false);
   const [editLaborItem, setEditLaborItem] = useState<LaborItem | null>(null);
   const [laborForm, setLaborForm] = useState({
     service_name: '',
     category: '',
     description: '',
-    rate_type: 'hourly' as 'fixed'|'hourly',
+    rate_type: 'fixed' as 'fixed'|'hourly',
     rate: 0,
     est_hours: '' as string | ''
   });
@@ -1796,7 +1789,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const [inventoryQuery, setInventoryQuery] = useState('');
   const [inventorySearchResults, setInventorySearchResults] = useState<InventoryItem[] | null>(null);
   const [inventorySearching, setInventorySearching] = useState(false);
-  const [inventoryCategory, setInventoryCategory] = useState('All');
+  const [inventoryCategory, setInventoryCategory] = useState(INVENTORY_CATEGORY_ALL);
+  const [inventoryStockStatus, setInventoryStockStatus] = useState<InventoryStockStatusFilter>('all');
   const debouncedInventoryQuery = useDebouncedValue(inventoryQuery, 300);
   const [partsSalesData, setPartsSalesData] = useState<any[]>([]);
   const [partsSalesLoading, setPartsSalesLoading] = useState(true);
@@ -1919,6 +1913,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     }).map((item) => ({
       ...item,
       description: item.description || '',
+      notes: item.notes || '',
       lineId: item.lineId || item.id || newLineId(),
     }));
   }, [inventoryById, laborItemsById]);
@@ -2298,12 +2293,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     options: {
       includeDiscounts?: boolean;
       includeTaxable?: boolean;
+      includeNotes?: boolean;
       priorRowsById?: Map<string, Record<string, unknown>>;
     } = {}
   ) => {
     return buildInvoiceLineItemDbPayloads(invoiceId, items, {
       includeTaxable: options.includeTaxable !== false,
       includeDiscounts: options.includeDiscounts !== false,
+      includeNotes: options.includeNotes !== false,
       priorRowsById: options.priorRowsById,
     });
   }, []);
@@ -2314,9 +2311,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     priorRowsById: Map<string, Record<string, unknown>>
   ) => {
     const attempts = [
-      { includeDiscounts: true, includeTaxable: true },
-      { includeDiscounts: false, includeTaxable: true },
-      { includeDiscounts: false, includeTaxable: false },
+      { includeDiscounts: true, includeTaxable: true, includeNotes: true },
+      { includeDiscounts: true, includeTaxable: true, includeNotes: false },
+      { includeDiscounts: false, includeTaxable: true, includeNotes: false },
+      { includeDiscounts: false, includeTaxable: false, includeNotes: false },
     ];
 
     let lastError: any = null;
@@ -2363,6 +2361,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           code === 'PGRST204' ||
           msg.includes('discount_') ||
           msg.includes('taxable') ||
+          msg.includes('notes') ||
           msg.includes('column') ||
           msg.includes('schema cache');
         if (!canRetry) break;
@@ -2389,9 +2388,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     priorRowsById?: Map<string, Record<string, unknown>>
   ) => {
     const attempts = [
-      { includeDiscounts: true, includeTaxable: true },
-      { includeDiscounts: false, includeTaxable: true },
-      { includeDiscounts: false, includeTaxable: false },
+      { includeDiscounts: true, includeTaxable: true, includeNotes: true },
+      { includeDiscounts: true, includeTaxable: true, includeNotes: false },
+      { includeDiscounts: false, includeTaxable: true, includeNotes: false },
+      { includeDiscounts: false, includeTaxable: false, includeNotes: false },
     ];
 
     let lastError: any = null;
@@ -2453,6 +2453,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         code === 'PGRST204' ||
         msg.includes('discount_') ||
         msg.includes('taxable') ||
+        msg.includes('notes') ||
         msg.includes('column') ||
         msg.includes('schema cache');
 
@@ -6858,6 +6859,34 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   useEffect(() => {
     fetchInventory();
   }, [contextShopId]);
+
+  const resetInventoryFilters = useCallback(() => {
+    setInventoryQuery('');
+    setInventoryCategory(INVENTORY_CATEGORY_ALL);
+    setInventoryStockStatus('all');
+    setInventorySearchResults(null);
+    setInventorySearching(false);
+  }, []);
+
+  // Always open Inventory with default filters (do not remember previous category/stock).
+  useEffect(() => {
+    if (activeTab === 'inventory') {
+      resetInventoryFilters();
+    }
+  }, [activeTab, resetInventoryFilters]);
+
+  const resetLaborFilters = useCallback(() => {
+    setLaborQuery('');
+    setLaborCategoryFilter(LABOR_CATEGORY_ALL);
+    setLaborRateFilter('all');
+  }, []);
+
+  // Always open Labor with default filters (do not remember previous category/rate).
+  useEffect(() => {
+    if (activeTab === 'labor') {
+      resetLaborFilters();
+    }
+  }, [activeTab, resetLaborFilters]);
 
   // Global inventory search (same parts table as invoice autocomplete).
   // Always show local matches immediately, then merge any additional server hits.
@@ -12731,13 +12760,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                   <input
                     value={inventoryQuery}
-                    onChange={(e)=>{
-                      const next = e.target.value;
-                      setInventoryQuery(next);
-                      if (next.trim() && inventoryCategory !== 'All') {
-                        setInventoryCategory('All');
-                      }
-                    }}
+                    onChange={(e)=> setInventoryQuery(e.target.value)}
                     placeholder="Search name, part #, description, supplier..."
                     className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                   />
@@ -12779,22 +12802,91 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
               {/* Stats */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6"><div className="text-2xl font-bold text-gray-900">{inventory.length}</div><div className="text-sm text-gray-600">Total Items</div></div>
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6"><div className="text-2xl font-bold text-gray-900">{inventory.filter(i=>i.quantity_in_stock <= i.minimum_stock_level).length}</div><div className="text-sm text-gray-600">Low Stock Alerts</div></div>
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6"><div className="text-2xl font-bold text-gray-900">${inventory.reduce((sum,i)=>sum + (i.quantity_in_stock * (i.selling_price||0)),0).toLocaleString()}</div><div className="text-sm text-gray-600">Total Value</div></div>
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6"><div className="text-2xl font-bold text-gray-900">{Array.from(new Set(inventory.map(i=>i.category||'General'))).length}</div><div className="text-sm text-gray-600">Categories</div></div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInventoryQuery('');
+                    setInventoryCategory(INVENTORY_CATEGORY_ALL);
+                    setInventoryStockStatus('all');
+                    setInventorySearchResults(null);
+                  }}
+                  className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 text-left hover:border-primary-300 hover:bg-primary-50/40 transition-colors"
+                  title="Show all inventory items"
+                >
+                  <div className="text-2xl font-bold text-gray-900">{inventory.length}</div>
+                  <div className="text-sm text-gray-600">Total Items</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInventoryQuery('');
+                    setInventoryCategory(INVENTORY_CATEGORY_ALL);
+                    setInventoryStockStatus('low_stock');
+                    setInventorySearchResults(null);
+                  }}
+                  className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 text-left hover:border-amber-300 hover:bg-amber-50/50 transition-colors"
+                  title="Show low stock items"
+                >
+                  <div className="text-2xl font-bold text-gray-900">
+                    {inventory.filter((i) => inventoryPartMatchesStockStatus(i, 'low_stock')).length}
+                  </div>
+                  <div className="text-sm text-gray-600">Low Stock Alerts</div>
+                </button>
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                  <div className="text-2xl font-bold text-gray-900">
+                    ${inventory.reduce((sum,i)=>sum + (i.quantity_in_stock * (i.selling_price||0)),0).toLocaleString()}
+                  </div>
+                  <div className="text-sm text-gray-600">Total Value</div>
+                </div>
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                  <div className="text-2xl font-bold text-gray-900">
+                    {Array.from(new Set(inventory.map(i=>i.category||'General'))).length}
+                  </div>
+                  <div className="text-sm text-gray-600">Categories</div>
+                </div>
               </div>
 
               {/* Filters */}
-              <div className="flex items-center gap-3">
-                <select value={inventoryCategory} onChange={(e)=>setInventoryCategory(e.target.value)} className="px-3 py-2 border border-gray-300 rounded-lg">
-                  {['All', ...Array.from(new Set([
-                    ...inventory.map((i) => i.category || 'General'),
-                    ...(inventorySearchResults || []).map((i) => i.category || 'General'),
-                  ]))].map(c=> (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
+              <div className="flex flex-wrap items-end gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Category</label>
+                  <select
+                    value={inventoryCategory}
+                    onChange={(e)=>setInventoryCategory(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg min-w-[180px]"
+                  >
+                    <option value={INVENTORY_CATEGORY_ALL}>All Categories</option>
+                    {Array.from(new Set([
+                      ...inventory.map((i) => i.category || 'General'),
+                      ...(inventorySearchResults || []).map((i) => i.category || 'General'),
+                    ]))
+                      .sort((a, b) => a.localeCompare(b))
+                      .map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Stock Status</label>
+                  <select
+                    value={inventoryStockStatus}
+                    onChange={(e)=>setInventoryStockStatus(e.target.value as InventoryStockStatusFilter)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg min-w-[180px]"
+                  >
+                    <option value="all">All Stock</option>
+                    <option value="in_stock">In Stock</option>
+                    <option value="low_stock">Low Stock</option>
+                    <option value="out_of_stock">Out of Stock</option>
+                    <option value="negative_stock">Negative Stock</option>
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={resetInventoryFilters}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  Clear Filters
+                </button>
               </div>
 
               {/* Table */}
@@ -12821,8 +12913,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       ? inventorySearchResults
                       : inventory.filter((i) => inventoryPartMatchesQuery(i, inventoryQuery))
                     )
-                      .filter(i => inventoryCategory==='All' || (i.category||'General')===inventoryCategory)
-                      .map(i => (
+                      .filter((i) => inventoryPartMatchesCategory(i, inventoryCategory))
+                      .filter((i) => inventoryPartMatchesStockStatus(i, inventoryStockStatus))
+                      .map(i => {
+                        const stockBadge = getInventoryStockBadge(i);
+                        return (
                         <div key={i.id}>
                           {/* Mobile Card View */}
                           <div className="md:hidden bg-white border border-gray-200 rounded-lg p-4 space-y-3 mb-3">
@@ -12838,8 +12933,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 <div className="font-semibold text-gray-900 text-lg mb-1">
                                   ${i.selling_price?.toFixed(2) || '0.00'}
                                 </div>
-                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${i.quantity_in_stock <= i.minimum_stock_level ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
-                                  {i.quantity_in_stock <= i.minimum_stock_level ? 'Low Stock' : 'In Stock'}
+                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${stockBadge.className}`}>
+                                  {stockBadge.label}
                                 </span>
                               </div>
                             </div>
@@ -12910,8 +13005,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             <div className="font-semibold text-gray-900 min-w-0 whitespace-nowrap">${i.selling_price?.toFixed(2) || '0.00'}</div>
                             <div className="text-sm text-gray-600 min-w-0 truncate">{i.supplier || '—'}</div>
                             <div className="min-w-0 flex items-center">
-                              <span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${i.quantity_in_stock <= i.minimum_stock_level ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
-                                {i.quantity_in_stock <= i.minimum_stock_level ? 'Low Stock' : 'In Stock'}
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${stockBadge.className}`}>
+                                {stockBadge.label}
                               </span>
                             </div>
                             <div className="flex items-center justify-end space-x-2 min-w-0 flex-shrink-0 flex-wrap gap-1">
@@ -12962,7 +13057,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             </div>
                           </div>
                         </div>
-                      ))
+                        );
+                      })
                   )}
                   {(!inventoryLoading && !inventorySearching && inventorySearchResults === null && inventory.length===0) && (
                     <div className="text-center text-gray-600 py-12">No inventory yet</div>
@@ -12970,6 +13066,18 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   {(!inventoryLoading && !inventorySearching && inventorySearchResults !== null && inventorySearchResults.length === 0 && inventoryQuery.trim()) && (
                     <div className="text-center text-gray-600 py-12">
                       No inventory items found for “{inventoryQuery.trim()}”.
+                    </div>
+                  )}
+                  {(!inventoryLoading && !inventorySearching && inventory.length > 0 && (
+                    inventorySearchResults !== null
+                      ? inventorySearchResults
+                      : inventory.filter((i) => inventoryPartMatchesQuery(i, inventoryQuery))
+                  )
+                    .filter((i) => inventoryPartMatchesCategory(i, inventoryCategory))
+                    .filter((i) => inventoryPartMatchesStockStatus(i, inventoryStockStatus))
+                    .length === 0 && !(inventorySearchResults !== null && inventorySearchResults.length === 0 && inventoryQuery.trim())) && (
+                    <div className="text-center text-gray-600 py-12">
+                      No inventory items match the current filters.
                     </div>
                   )}
                 </div>
@@ -13510,29 +13618,49 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
           {/* Labor Tab Content */}
           {activeTab === 'labor' && (
-            <div className="space-y-6">
+            <div className="space-y-5">
               {/* Header actions */}
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div className="w-full max-w-md relative">
                   <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input value={laborQuery} onChange={(e)=>setLaborQuery(e.target.value)} placeholder="Search labor..." className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                  <input
+                    value={laborQuery}
+                    onChange={(e) => setLaborQuery(e.target.value)}
+                    placeholder="Search name, category, description..."
+                    className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                  />
                 </div>
-                <div className="flex items-center gap-3">
-                  <button 
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                  <button
                     onClick={exportLabor}
                     className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
                   >
                     <FileText className="h-4 w-4" />
                     <span>Export CSV</span>
                   </button>
-                  <button 
+                  <button
                     onClick={handleImportLabor}
                     className="flex items-center space-x-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
                   >
                     <FileText className="h-4 w-4" />
                     <span>Import CSV</span>
                   </button>
-                  <button onClick={() => setShowAddLaborModal(true)} className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setLaborForm({
+                        service_name: '',
+                        category: '',
+                        description: '',
+                        rate_type: 'fixed',
+                        rate: 0,
+                        est_hours: '',
+                      });
+                      setLaborCategorySearch(null);
+                      setShowLaborCategoryDropdown(false);
+                      setShowAddLaborModal(true);
+                    }}
+                    className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 flex items-center gap-2"
+                  >
                     <Plus className="h-4 w-4" />
                     Add Labor Item
                   </button>
@@ -13540,33 +13668,85 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               </div>
 
               {/* Stats */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6"><div className="text-2xl font-bold text-gray-900">{laborItems.length}</div><div className="text-sm text-gray-600">Total Labor Items</div></div>
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6"><div className="text-2xl font-bold text-gray-900">{laborItems.filter(i=>i.rate_type==='fixed').length}</div><div className="text-sm text-gray-600">Fixed Rate Items</div></div>
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6"><div className="text-2xl font-bold text-gray-900">{laborItems.filter(i=>i.rate_type==='hourly').length}</div><div className="text-sm text-gray-600">Hourly Rate Items</div></div>
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6"><div className="text-2xl font-bold text-gray-900">$0.00</div><div className="text-sm text-gray-600">Avg. Hourly Rate</div></div>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-4 py-3">
+                  <div className="text-xl font-bold text-gray-900">{laborItems.length}</div>
+                  <div className="text-sm text-gray-600">Total Labor Items</div>
+                </div>
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-4 py-3">
+                  <div className="text-xl font-bold text-gray-900">
+                    {laborItems.filter((i) => i.rate_type === 'fixed').length}
+                  </div>
+                  <div className="text-sm text-gray-600">Fixed Rate Items</div>
+                </div>
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-4 py-3">
+                  <div className="text-xl font-bold text-gray-900">
+                    {laborItems.filter((i) => i.rate_type === 'hourly').length}
+                  </div>
+                  <div className="text-sm text-gray-600">Hourly Rate Items</div>
+                </div>
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-4 py-3">
+                  <div className="text-xl font-bold text-gray-900">
+                    ${averageHourlyLaborRate(laborItems).toFixed(2)}
+                  </div>
+                  <div className="text-sm text-gray-600">Avg. Hourly Rate</div>
+                </div>
               </div>
 
               {/* Filters */}
-              <div className="flex items-center gap-2">
-                {['All', ...Array.from(new Set(laborItems.map(i => i.category || 'General')))].map(cat => (
-                  <button key={cat} onClick={()=>setLaborCategoryFilter(cat)} className={`px-3 py-1 rounded-lg border ${laborCategoryFilter===cat?'bg-gray-900 text-white border-gray-900':'border-gray-300 text-gray-700 hover:bg-gray-50'}`}>{cat}</button>
-                ))}
-                <div className="ml-auto flex items-center gap-2">
-                  {(['all','fixed','hourly'] as const).map(rt => (
-                    <button key={rt} onClick={()=>setLaborRateFilter(rt)} className={`px-3 py-1 rounded-lg border ${laborRateFilter===rt?'bg-black text-white border-black':'border-gray-300 text-gray-700 hover:bg-gray-50'}`}>{rt[0].toUpperCase()+rt.slice(1)}</button>
-                  ))}
+              <div className="flex flex-wrap items-end gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Category</label>
+                  <select
+                    value={laborCategoryFilter}
+                    onChange={(e) => setLaborCategoryFilter(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg min-w-[180px] max-w-[260px]"
+                  >
+                    <option value={LABOR_CATEGORY_ALL}>All Categories</option>
+                    {Array.from(new Set(laborItems.map((i) => i.category || 'General')))
+                      .sort((a, b) => a.localeCompare(b))
+                      .map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                  </select>
                 </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Rate Type</label>
+                  <select
+                    value={laborRateFilter}
+                    onChange={(e) => setLaborRateFilter(e.target.value as LaborRateTypeFilter)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg min-w-[160px]"
+                  >
+                    <option value="all">All Rates</option>
+                    <option value="fixed">Fixed</option>
+                    <option value="hourly">Hourly</option>
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={resetLaborFilters}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  Clear Filters
+                </button>
               </div>
 
               {/* Table */}
               <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-                <div className="p-6 border-b border-gray-200">
+                <div className="px-4 py-3 sm:px-6 sm:py-4 border-b border-gray-200">
                   <h3 className="text-lg font-semibold text-gray-900">Labor Items</h3>
                 </div>
-                <div className="p-6">
+                <div className="p-4 sm:p-6 min-w-0 overflow-x-auto">
                   {/* Table Header - Desktop Only */}
-                  <div className="hidden md:grid gap-4 text-sm font-medium text-gray-500 uppercase tracking-wider mb-4 min-w-0 overflow-x-auto" style={{ gridTemplateColumns: 'minmax(180px, 2.5fr) minmax(100px, 1fr) minmax(100px, 1.2fr) minmax(90px, 1fr) minmax(150px, 1.8fr) minmax(180px, 2fr)' }}>
+                  <div
+                    className="hidden md:grid gap-3 text-sm font-medium text-gray-500 uppercase tracking-wider mb-3 min-w-0"
+                    style={{
+                      gridTemplateColumns:
+                        'minmax(160px, 2fr) minmax(110px, 1.2fr) minmax(90px, 0.9fr) minmax(80px, 0.8fr) minmax(140px, 1.8fr) minmax(96px, 0.9fr)',
+                    }}
+                  >
                     <div className="min-w-0">Service Name</div>
                     <div className="min-w-0">Category</div>
                     <div className="min-w-0">Rate Type</div>
@@ -13578,94 +13758,148 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   {laborLoading ? (
                     <div className="text-center text-gray-600 py-12">Loading...</div>
                   ) : (
-                    laborItems
-                      .filter(i => !laborQuery || i.service_name.toLowerCase().includes(laborQuery.toLowerCase()))
-                      .filter(i => laborCategoryFilter==='All' || (i.category||'General')===laborCategoryFilter)
-                      .filter(i => laborRateFilter==='all' || i.rate_type===laborRateFilter)
-                      .map(item => (
+                    (() => {
+                      const filteredLaborItems = laborItems
+                        .filter((i) => laborItemMatchesQuery(i, laborQuery))
+                        .filter((i) => laborItemMatchesCategory(i, laborCategoryFilter))
+                        .filter((i) => laborItemMatchesRateType(i, laborRateFilter));
+
+                      if (filteredLaborItems.length === 0) {
+                        return (
+                          <div className="text-center text-gray-600 py-12">
+                            {laborItems.length === 0
+                              ? 'No labor items yet'
+                              : 'No labor items match the current filters.'}
+                          </div>
+                        );
+                      }
+
+                      return filteredLaborItems.map((item) => (
                         <div key={item.id}>
                           {/* Mobile Card View */}
                           <div className="md:hidden bg-white border border-gray-200 rounded-lg p-4 space-y-3 mb-3">
-                            <div className="flex items-start justify-between">
-                              <div className="flex-1">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex-1 min-w-0">
                                 <div className="font-medium text-gray-900 text-sm mb-1">{item.service_name}</div>
                                 {item.description && (
-                                  <div className="text-xs text-gray-500 mb-1">{item.description}</div>
+                                  <div className="text-xs text-gray-500 mb-1 line-clamp-2">{item.description}</div>
                                 )}
                                 <div className="text-sm text-gray-600">{item.category || 'General'}</div>
                               </div>
-                              <div className="text-right">
+                              <div className="text-right shrink-0">
                                 <div className="font-semibold text-gray-900 text-lg mb-1">
                                   ${item.rate?.toFixed(2) || '0.00'}
                                 </div>
-                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${item.rate_type === 'fixed' ? 'bg-blue-100 text-blue-800' : 'bg-purple-100 text-purple-800'}`}>
+                                <span
+                                  className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                    item.rate_type === 'fixed'
+                                      ? 'bg-blue-100 text-blue-800'
+                                      : 'bg-purple-100 text-purple-800'
+                                  }`}
+                                >
                                   {item.rate_type === 'fixed' ? 'Fixed' : 'Hourly'}
                                 </span>
                               </div>
                             </div>
-                            <div className="flex items-center justify-end space-x-2 pt-2 border-t border-gray-100">
-                              <button 
-                                onClick={()=>setEditLaborItem(item)} 
-                                className="p-2 text-gray-400 hover:text-gray-600"
+                            <div className="flex items-center justify-end gap-1 pt-2 border-t border-gray-100">
+                              <button
+                                onClick={() => {
+                                  setLaborForm({
+                                    service_name: item.service_name,
+                                    category: item.category || '',
+                                    description: item.description || '',
+                                    rate_type: item.rate_type,
+                                    rate: item.rate,
+                                    est_hours: item.est_hours != null ? String(item.est_hours) : '',
+                                  });
+                                  setEditLaborItem(item);
+                                }}
+                                className="p-2.5 text-gray-500 hover:text-gray-800 hover:bg-gray-50 rounded-lg"
                                 title="Edit"
                               >
-                                <Edit className="h-4 w-4"/>
+                                <Edit className="h-4 w-4" />
                               </button>
-                              <button 
-                                onClick={async ()=>{ 
-                                  if(confirm('Delete labor item?')){ 
-                                    await supabase.from('labor_items').delete().eq('id', item.id); 
-                                    fetchLaborItems(); 
+                              <button
+                                onClick={async () => {
+                                  if (confirm('Delete labor item?')) {
+                                    await supabase.from('labor_items').delete().eq('id', item.id);
+                                    fetchLaborItems();
                                   }
-                                }} 
-                                className="p-2 text-gray-400 hover:text-red-600"
+                                }}
+                                className="p-2.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg"
                                 title="Delete"
                               >
-                                <Trash2 className="h-4 w-4"/>
+                                <Trash2 className="h-4 w-4" />
                               </button>
                             </div>
                           </div>
 
                           {/* Desktop Table View */}
-                          <div className="hidden md:grid gap-4 items-center py-3 border-b border-gray-100 hover:bg-gray-50 min-w-0" style={{ gridTemplateColumns: 'minmax(180px, 2.5fr) minmax(100px, 1fr) minmax(100px, 1.2fr) minmax(90px, 1fr) minmax(150px, 1.8fr) minmax(180px, 2fr)' }}>
+                          <div
+                            className="hidden md:grid gap-3 items-center py-3 border-b border-gray-100 hover:bg-gray-50 min-w-0"
+                            style={{
+                              gridTemplateColumns:
+                                'minmax(160px, 2fr) minmax(110px, 1.2fr) minmax(90px, 0.9fr) minmax(80px, 0.8fr) minmax(140px, 1.8fr) minmax(96px, 0.9fr)',
+                            }}
+                          >
                             <div className="min-w-0">
                               <div className="font-medium text-gray-900 truncate">{item.service_name}</div>
                             </div>
-                            <div className="text-sm text-gray-600 min-w-0 truncate">{item.category || 'General'}</div>
+                            <div className="text-sm text-gray-600 min-w-0 truncate">
+                              {item.category || 'General'}
+                            </div>
                             <div className="min-w-0 flex items-center">
-                              <span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${item.rate_type === 'fixed' ? 'bg-blue-100 text-blue-800' : 'bg-purple-100 text-purple-800'}`}>
+                              <span
+                                className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
+                                  item.rate_type === 'fixed'
+                                    ? 'bg-blue-100 text-blue-800'
+                                    : 'bg-purple-100 text-purple-800'
+                                }`}
+                              >
                                 {item.rate_type === 'fixed' ? 'Fixed' : 'Hourly'}
                               </span>
                             </div>
-                            <div className="font-semibold text-gray-900 min-w-0 whitespace-nowrap">${item.rate?.toFixed(2) || '0.00'}</div>
-                            <div className="text-sm text-gray-600 min-w-0 truncate">{item.description || '—'}</div>
-                            <div className="flex items-center justify-end space-x-2 min-w-0 flex-shrink-0">
-                              <button 
-                                onClick={()=>setEditLaborItem(item)} 
-                                className="p-2 text-gray-400 hover:text-gray-600"
+                            <div className="font-semibold text-gray-900 min-w-0 whitespace-nowrap">
+                              ${item.rate?.toFixed(2) || '0.00'}
+                            </div>
+                            <div className="text-sm text-gray-600 min-w-0 truncate">
+                              {item.description || '—'}
+                            </div>
+                            <div className="flex items-center justify-end gap-1 min-w-0">
+                              <button
+                                onClick={() => {
+                                  setLaborForm({
+                                    service_name: item.service_name,
+                                    category: item.category || '',
+                                    description: item.description || '',
+                                    rate_type: item.rate_type,
+                                    rate: item.rate,
+                                    est_hours: item.est_hours != null ? String(item.est_hours) : '',
+                                  });
+                                  setEditLaborItem(item);
+                                }}
+                                className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg"
                                 title="Edit"
                               >
-                                <Edit className="h-4 w-4"/>
+                                <Edit className="h-4 w-4" />
                               </button>
-                              <button 
-                                onClick={async ()=>{ 
-                                  if(confirm('Delete labor item?')){ 
-                                    await supabase.from('labor_items').delete().eq('id', item.id); 
-                                    fetchLaborItems(); 
+                              <button
+                                onClick={async () => {
+                                  if (confirm('Delete labor item?')) {
+                                    await supabase.from('labor_items').delete().eq('id', item.id);
+                                    fetchLaborItems();
                                   }
-                                }} 
-                                className="p-2 text-gray-400 hover:text-red-600"
+                                }}
+                                className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg"
                                 title="Delete"
                               >
-                                <Trash2 className="h-4 w-4"/>
+                                <Trash2 className="h-4 w-4" />
                               </button>
                             </div>
                           </div>
                         </div>
-                      ))
-                  )}
-                  {(!laborLoading && laborItems.length===0) && (
-                    <div className="text-center text-gray-600 py-12">No labor items yet</div>
+                      ));
+                    })()
                   )}
                 </div>
               </div>
@@ -21959,7 +22193,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       const searchTerm = invoiceItemSearch[lineUiKey] || '';
                       const displayItemName = getInvoiceLineItemDisplayName(item);
                       const itemNote = getInvoiceLineItemNote(item);
-                      const showNoteInput = Boolean(item.reference_id && (invoiceLineDescriptionOpen[lineUiKey] || itemNote));
+                      const canHaveLineNote = hasInvoiceLineInput(item);
+                      const showNoteInput = Boolean(canHaveLineNote && (invoiceLineDescriptionOpen[lineUiKey] || itemNote.trim()));
                       const trimmedSearch = searchTerm.trim();
                       const searchLower = trimmedSearch.toLowerCase();
                       const canSearchItems = trimmedSearch.length >= 2;
@@ -21980,7 +22215,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             value={item.item_type}
                             onChange={(e) => {
                               const t = e.target.value as 'labor' | 'part';
-                              setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...touchInvoiceLineItem(p), item_type: t, reference_id: null, description: '', savedDisplayLabel: '', item_name: null, item_number: null, unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
+                              setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...touchInvoiceLineItem(p), item_type: t, reference_id: null, description: '', notes: '', savedDisplayLabel: '', item_name: null, item_number: null, unit_price: 0, total_price: 0, discount_type: 'none', discount_value: 0, discount_amount: 0 } : p));
                               setInvoiceItemSearch(prev => ({ ...prev, [lineUiKey]: '' }));
                             }}
                             className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
@@ -22238,9 +22473,16 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                             setActiveInvoiceItemDropdownKey(null);
                                             setInvoiceItemDropdownPosition(null);
                                             const searchQuery = searchTerm.trim();
-                                            if (searchQuery) {
-                                              setLaborForm((prev) => ({ ...prev, service_name: searchQuery }));
-                                            }
+                                            setLaborForm({
+                                              service_name: searchQuery,
+                                              category: '',
+                                              description: '',
+                                              rate_type: 'fixed',
+                                              rate: 0,
+                                              est_hours: '',
+                                            });
+                                            setLaborCategorySearch(null);
+                                            setShowLaborCategoryDropdown(false);
                                             setShowAddLaborModal(true);
                                           }}
                                           className="w-full px-3 py-1.5 bg-primary-500 text-white rounded-lg hover:bg-primary-600 flex items-center justify-center gap-2 text-sm font-medium"
@@ -22255,14 +22497,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               </div>,
                               document.body
                             )}
-                            {item.reference_id && (
+                            {canHaveLineNote && (
                               <div className="mt-1">
                                 {showNoteInput ? (
                                   <input
                                     type="text"
                                     placeholder="Optional note/description"
                                     value={itemNote}
-                                    onChange={(e) => setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...touchInvoiceLineItem(p), description: e.target.value } : p))}
+                                    onChange={(e) => setInvoiceLineItems(prev => prev.map((p, i) => i === idx ? { ...touchInvoiceLineItem(p), notes: e.target.value } : p))}
                                     className="w-full rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-700 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
                                   />
                                 ) : (
@@ -25070,10 +25312,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <label className="block text-sm font-medium text-gray-700 mb-2">Description</label>
                 <textarea value={laborForm.description} onChange={(e)=>setLaborForm(prev=>({...prev,description:e.target.value}))} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" placeholder="Description of the service..." rows={3} />
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+              <div className={`grid grid-cols-1 sm:grid-cols-2 ${laborForm.rate_type === 'hourly' ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-4`}>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Rate Type</label>
-                  <select value={laborForm.rate_type} onChange={(e)=>setLaborForm(prev=>({...prev,rate_type:e.target.value as 'fixed'|'hourly'}))} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation">
+                  <select value={laborForm.rate_type} onChange={(e)=>setLaborForm(prev=>({...prev,rate_type:e.target.value as 'fixed'|'hourly', est_hours: e.target.value === 'fixed' ? '' : prev.est_hours}))} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation">
                     <option value="fixed">Fixed Rate</option>
                     <option value="hourly">Hourly Rate</option>
                   </select>
@@ -25082,10 +25324,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   <label className="block text-sm font-medium text-gray-700 mb-2">Rate ($)</label>
                   <input type="number" value={laborForm.rate} onChange={(e)=>setLaborForm(prev=>({...prev,rate:Number(e.target.value)}))} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" />
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Est. Hours (Optional)</label>
-                  <input type="number" value={laborForm.est_hours} onChange={(e)=>setLaborForm(prev=>({...prev,est_hours:e.target.value}))} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" />
-                </div>
+                {laborForm.rate_type === 'hourly' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Est. Hours (Optional)</label>
+                    <input type="number" value={laborForm.est_hours} onChange={(e)=>setLaborForm(prev=>({...prev,est_hours:e.target.value}))} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 touch-manipulation" />
+                  </div>
+                )}
               </div>
             </div>
             <div className="p-4 sm:p-6 border-t border-gray-200 flex flex-col-reverse sm:flex-row justify-end gap-3 flex-shrink-0">
@@ -25111,7 +25355,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   description: laborForm.description || null,
                   rate_type: laborForm.rate_type,
                   rate: Number(laborForm.rate) || 0,
-                  est_hours: laborForm.est_hours ? Number(laborForm.est_hours) : null,
+                  est_hours: laborForm.rate_type === 'hourly' && laborForm.est_hours ? Number(laborForm.est_hours) : null,
                   shop_id: shopId
                 }).select();
                 
@@ -25211,7 +25455,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   }
 
                   setShowAddLaborModal(false);
-                  setLaborForm({ service_name:'', category:'', description:'', rate_type:'hourly', rate:0, est_hours:'' });
+                  setLaborForm({ service_name:'', category:'', description:'', rate_type:'fixed', rate:0, est_hours:'' });
                   setLaborCategorySearch('');
                   setShowLaborCategoryDropdown(false);
                   setCreatingLaborFromInvoice(false);
@@ -26057,34 +26301,40 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <label className="block text-sm font-medium text-gray-700 mb-2">Description</label>
                 <textarea defaultValue={editLaborItem.description || ''} onChange={(e)=>setLaborForm(prev=>({...prev,description:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" rows={3} />
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className={`grid grid-cols-1 md:grid-cols-2 ${laborForm.rate_type === 'hourly' ? 'lg:grid-cols-3' : ''} gap-4`}>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Rate Type</label>
-                  <select defaultValue={editLaborItem.rate_type} onChange={(e)=>setLaborForm(prev=>({...prev,rate_type:e.target.value as 'fixed'|'hourly'}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
+                  <select value={laborForm.rate_type} onChange={(e)=>setLaborForm(prev=>({...prev,rate_type:e.target.value as 'fixed'|'hourly', est_hours: e.target.value === 'fixed' ? '' : prev.est_hours}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
                     <option value="fixed">Fixed Rate</option>
                     <option value="hourly">Hourly Rate</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Rate ($)</label>
-                  <input type="number" defaultValue={editLaborItem.rate} onChange={(e)=>setLaborForm(prev=>({...prev,rate:Number(e.target.value)}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                  <input type="number" value={laborForm.rate} onChange={(e)=>setLaborForm(prev=>({...prev,rate:Number(e.target.value)}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Est. Hours (Optional)</label>
-                  <input type="number" defaultValue={editLaborItem.est_hours ?? ''} onChange={(e)=>setLaborForm(prev=>({...prev,est_hours:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
-                </div>
+                {laborForm.rate_type === 'hourly' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Est. Hours (Optional)</label>
+                    <input type="number" value={laborForm.est_hours} onChange={(e)=>setLaborForm(prev=>({...prev,est_hours:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                  </div>
+                )}
               </div>
             </div>
             <div className="p-6 border-t border-gray-200 flex justify-end gap-3">
               <button onClick={()=>setEditLaborItem(null)} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
               <button onClick={async ()=>{
                 const updates:any = {
-                  service_name: laborForm.service_name || editLaborItem.service_name,
+                  service_name: laborForm.service_name.trim() || editLaborItem.service_name,
                   category: laborForm.category || editLaborItem.category,
                   description: laborForm.description || editLaborItem.description,
-                  rate_type: (laborForm.rate_type || editLaborItem.rate_type) as 'fixed'|'hourly',
-                  rate: laborForm.rate || editLaborItem.rate,
-                  est_hours: laborForm.est_hours ? Number(laborForm.est_hours) : editLaborItem.est_hours
+                  rate_type: laborForm.rate_type,
+                  rate: Number(laborForm.rate) || editLaborItem.rate,
+                  est_hours: laborForm.rate_type === 'hourly' && laborForm.est_hours
+                    ? Number(laborForm.est_hours)
+                    : laborForm.rate_type === 'hourly'
+                      ? editLaborItem.est_hours
+                      : null
                 };
                 const { error } = await supabase.from('labor_items').update(updates).eq('id', editLaborItem.id);
                 if(error){ console.error('Update labor item error:', error); return; }

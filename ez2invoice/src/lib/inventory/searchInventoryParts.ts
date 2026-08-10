@@ -146,3 +146,68 @@ export function inventoryPartMatchesQuery(
     .toLowerCase();
   return haystack.includes(term);
 }
+
+export type InventoryStockStatusFilter =
+  | 'all'
+  | 'in_stock'
+  | 'low_stock'
+  | 'out_of_stock'
+  | 'negative_stock';
+
+export const INVENTORY_CATEGORY_ALL = 'All Categories';
+
+export function inventoryPartMatchesStockStatus(
+  item: {
+    quantity_in_stock?: number | null;
+    minimum_stock_level?: number | null;
+  },
+  stockStatus: InventoryStockStatusFilter
+): boolean {
+  const quantity = Number(item.quantity_in_stock) || 0;
+  const threshold = Number(item.minimum_stock_level) || 0;
+
+  switch (stockStatus) {
+    case 'all':
+      return true;
+    case 'in_stock':
+      return quantity > threshold;
+    case 'low_stock':
+      return quantity > 0 && quantity <= threshold;
+    case 'out_of_stock':
+      return quantity === 0;
+    case 'negative_stock':
+      return quantity < 0;
+    default:
+      return true;
+  }
+}
+
+export function inventoryPartMatchesCategory(
+  item: { category?: string | null },
+  categoryFilter: string
+): boolean {
+  if (!categoryFilter || categoryFilter === INVENTORY_CATEGORY_ALL || categoryFilter === 'All') {
+    return true;
+  }
+  return (item.category || 'General') === categoryFilter;
+}
+
+export function getInventoryStockBadge(
+  item: {
+    quantity_in_stock?: number | null;
+    minimum_stock_level?: number | null;
+  }
+): { label: string; className: string } {
+  const quantity = Number(item.quantity_in_stock) || 0;
+  const threshold = Number(item.minimum_stock_level) || 0;
+  if (quantity < 0) {
+    return { label: 'Negative Stock', className: 'bg-purple-100 text-purple-800' };
+  }
+  if (quantity === 0) {
+    return { label: 'Out of Stock', className: 'bg-gray-100 text-gray-800' };
+  }
+  if (quantity <= threshold) {
+    return { label: 'Low Stock', className: 'bg-red-100 text-red-800' };
+  }
+  return { label: 'In Stock', className: 'bg-green-100 text-green-800' };
+}

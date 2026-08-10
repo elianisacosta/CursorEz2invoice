@@ -426,4 +426,113 @@ describe('invoiceLineItemPersistence', () => {
       false
     );
   });
+
+  it('persists optional notes separately from item description', () => {
+    const [payload] = buildInvoiceLineItemDbPayloads('inv-1', [
+      {
+        id: 'line-note-1',
+        item_type: 'labor',
+        reference_id: 'labor-1',
+        description: 'TAKE TIRE OUT',
+        savedDisplayLabel: 'TAKE TIRE OUT',
+        notes: 'customer requested tire removal only',
+        quantity: 1,
+        unit_price: 50,
+        total_price: 50,
+        userModified: true,
+      },
+    ]);
+    assert.equal(payload.description, 'TAKE TIRE OUT');
+    assert.equal(payload.notes, 'customer requested tire removal only');
+    assert.equal('item_name' in payload, false);
+  });
+
+  it('does not let a typed note replace the item name in description', () => {
+    const description = buildInvoiceLineItemDescriptionForSave(
+      {
+        item_type: 'labor',
+        reference_id: 'labor-1',
+        description: 'TAKE TIRE OUT',
+        savedDisplayLabel: 'TAKE TIRE OUT',
+        notes: 'optional note',
+        quantity: 1,
+        unit_price: 50,
+        total_price: 50,
+      },
+      'optional note that must not become description'
+    );
+    assert.equal(description, 'TAKE TIRE OUT');
+  });
+
+  it('loads notes from DB rows and preserves them on unchanged save', () => {
+    const mapped = mapInvoiceLineItemRowForEdit({
+      id: 'line-1',
+      item_type: 'labor',
+      reference_id: 'labor-1',
+      description: 'TAKE TIRE OUT',
+      notes: 'keep this note',
+      quantity: 1,
+      unit_price: 50,
+      total_price: 50,
+    });
+    assert.equal(mapped.description, 'TAKE TIRE OUT');
+    assert.equal(mapped.notes, 'keep this note');
+    assert.equal(mapped.savedDisplayLabel, 'TAKE TIRE OUT');
+
+    const [payload] = buildInvoiceLineItemDbPayloads('inv-1', [mapped as any], {
+      priorRowsById: new Map([
+        [
+          'line-1',
+          {
+            id: 'line-1',
+            description: 'TAKE TIRE OUT',
+            notes: 'keep this note',
+            item_type: 'labor',
+            reference_id: 'labor-1',
+            quantity: 1,
+            unit_price: 50,
+            total_price: 50,
+          },
+        ],
+      ]),
+    });
+    assert.equal(payload.description, 'TAKE TIRE OUT');
+    assert.equal(payload.notes, 'keep this note');
+  });
+
+  it('saves empty notes as null and ignores notes-only padding rows', () => {
+    const [payload] = buildInvoiceLineItemDbPayloads('inv-1', [
+      {
+        item_type: 'labor',
+        reference_id: 'labor-1',
+        description: 'TAKE TIRE OUT',
+        savedDisplayLabel: 'TAKE TIRE OUT',
+        notes: '   ',
+        quantity: 1,
+        unit_price: 50,
+        total_price: 50,
+        userModified: true,
+      },
+    ]);
+    assert.equal(payload.notes, null);
+
+    const prepared = prepareSavableInvoiceLineItems(
+      [
+        {
+          item_type: 'labor' as const,
+          reference_id: null,
+          description: '',
+          notes: 'orphan note',
+          quantity: 1,
+          unit_price: 0,
+          total_price: 0,
+        },
+      ],
+      {
+        isEmpty: (item) => isUiOnlyInvoiceLineItemEmpty(item),
+        withTotals: (item) => item,
+      }
+    );
+    assert.equal(prepared.savable.length, 0);
+  });
 });
