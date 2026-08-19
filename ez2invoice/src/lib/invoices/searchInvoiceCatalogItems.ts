@@ -71,7 +71,7 @@ export async function searchInvoiceCatalogItems(
   let partsQuery = supabase
     .from('parts')
     .select('id, part_name, part_number, description, category, selling_price, cost, quantity_in_stock, shop_id')
-    .or(`part_name.ilike.${pattern},part_number.ilike.${pattern},description.ilike.${pattern}`)
+    .or(`part_name.ilike.${pattern},part_number.ilike.${pattern},description.ilike.${pattern},supplier.ilike.${pattern}`)
     .order('part_name', { ascending: true })
     .limit(limit);
 

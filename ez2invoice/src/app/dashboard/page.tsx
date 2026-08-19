@@ -22,13 +22,12 @@ import {
 } from '@/lib/invoices/searchInvoiceCatalogItems';
 import {
   INVENTORY_CATEGORY_ALL,
+  INVENTORY_DEFAULT_PAGE_SIZE,
   getInventoryStockBadge,
-  inventoryPartMatchesCategory,
-  inventoryPartMatchesQuery,
-  inventoryPartMatchesStockStatus,
-  mergeInventorySearchResults,
-  searchInventoryParts,
+  listShopPartsPage,
+  loadShopInventorySummary,
   type InventoryStockStatusFilter,
+  type InventorySummary,
 } from '@/lib/inventory/searchInventoryParts';
 import {
   LABOR_CATEGORY_ALL,
@@ -1839,10 +1838,19 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [inventoryQuery, setInventoryQuery] = useState('');
-  const [inventorySearchResults, setInventorySearchResults] = useState<InventoryItem[] | null>(null);
-  const [inventorySearching, setInventorySearching] = useState(false);
   const [inventoryCategory, setInventoryCategory] = useState(INVENTORY_CATEGORY_ALL);
   const [inventoryStockStatus, setInventoryStockStatus] = useState<InventoryStockStatusFilter>('all');
+  const [inventoryPage, setInventoryPage] = useState(0);
+  const [inventoryPageSize, setInventoryPageSize] = useState(INVENTORY_DEFAULT_PAGE_SIZE);
+  const [inventoryFilteredCount, setInventoryFilteredCount] = useState(0);
+  const [inventorySummary, setInventorySummary] = useState<InventorySummary>({
+    totalItems: 0,
+    lowStockCount: 0,
+    totalValue: 0,
+    categories: [],
+  });
+  const inventoryListRequestIdRef = useRef(0);
+  const inventorySummaryRequestIdRef = useRef(0);
   const debouncedInventoryQuery = useDebouncedValue(inventoryQuery, 300);
   const [partsSalesData, setPartsSalesData] = useState<any[]>([]);
   const [partsSalesLoading, setPartsSalesLoading] = useState(true);
@@ -5444,41 +5452,57 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     fetchLaborItems();
   }, [contextShopId]);
 
-  // Fetch inventory (parts)
+  // Fetch one inventory page plus shop-wide stats. Never load the whole parts table into memory.
   const fetchInventory = async () => {
+    const listRequestId = ++inventoryListRequestIdRef.current;
+    const summaryRequestId = ++inventorySummaryRequestIdRef.current;
     setInventoryLoading(true);
     try {
       const shopId = await getShopId();
       if (!shopId && !isFounder) {
         console.warn('No shop_id found, skipping inventory fetch');
-        setInventory([]);
         return;
       }
 
-      let query = supabase
-        .from('parts')
-        .select('*');
-      
-      // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
-      // For regular users: only include data with matching shop_id
-      if (shopId) {
-        if (isFounder) {
-          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
+      const scope = { shopId, isFounder };
+      const [summaryResult, pageResult] = await Promise.all([
+        loadShopInventorySummary(supabase, scope),
+        listShopPartsPage(supabase, {
+          ...scope,
+          searchTerm: debouncedInventoryQuery,
+          category: inventoryCategory,
+          stockStatus: inventoryStockStatus,
+          page: inventoryPage,
+          pageSize: inventoryPageSize,
+        }),
+      ]);
+
+      if (inventorySummaryRequestIdRef.current === summaryRequestId) {
+        if (summaryResult.error) {
+          console.error('Error loading inventory stats:', summaryResult.error);
         } else {
-          query = query.eq('shop_id', shopId);
+          setInventorySummary(summaryResult.data);
         }
-      } else if (isFounder) {
-        // Founder but no shop_id yet - show all data (for old data without shop_id)
-        query = query.is('shop_id', null);
       }
 
-      const { data, error } = await query.order('created_at', { ascending: false });
-      if (data) setInventory(data as unknown as InventoryItem[]);
-      if (error) console.error('Error fetching inventory:', error);
+      if (inventoryListRequestIdRef.current !== listRequestId) return;
+      if (pageResult.error) {
+        console.error('Error fetching inventory:', pageResult.error);
+        return;
+      }
+
+      setInventory(pageResult.data as unknown as InventoryItem[]);
+      setInventoryFilteredCount(pageResult.count);
+      const lastPage = Math.max(0, Math.ceil(pageResult.count / inventoryPageSize) - 1);
+      if (inventoryPage > lastPage) {
+        setInventoryPage(lastPage);
+      }
     } catch (err) {
       console.error('Error in fetchInventory:', err);
     } finally {
-      setInventoryLoading(false);
+      if (inventoryListRequestIdRef.current === listRequestId) {
+        setInventoryLoading(false);
+      }
     }
   };
 
@@ -5526,7 +5550,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
   useEffect(() => {
     if (!showCreateInvoiceModal && !editingInvoice) return;
-    void fetchInventory();
     void fetchLaborItems();
   }, [showCreateInvoiceModal, editingInvoice?.id]);
 
@@ -6932,15 +6955,25 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   };
 
   useEffect(() => {
+    setInventoryPage(0);
+  }, [contextShopId, debouncedInventoryQuery, inventoryCategory, inventoryStockStatus, inventoryPageSize]);
+
+  useEffect(() => {
     fetchInventory();
-  }, [contextShopId]);
+  }, [
+    contextShopId,
+    inventoryPage,
+    inventoryPageSize,
+    debouncedInventoryQuery,
+    inventoryCategory,
+    inventoryStockStatus,
+  ]);
 
   const resetInventoryFilters = useCallback(() => {
     setInventoryQuery('');
     setInventoryCategory(INVENTORY_CATEGORY_ALL);
     setInventoryStockStatus('all');
-    setInventorySearchResults(null);
-    setInventorySearching(false);
+    setInventoryPage(0);
   }, []);
 
   // Always open Inventory with default filters (do not remember previous category/stock).
@@ -6962,73 +6995,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       resetLaborFilters();
     }
   }, [activeTab, resetLaborFilters]);
-
-  // Global inventory search (same parts table as invoice autocomplete).
-  // Always show local matches immediately, then merge any additional server hits.
-  useEffect(() => {
-    if (activeTab !== 'inventory') return;
-
-    const term = debouncedInventoryQuery.trim();
-    if (!term) {
-      setInventorySearchResults(null);
-      setInventorySearching(false);
-      return;
-    }
-
-    const localMatches = inventory.filter((item) => inventoryPartMatchesQuery(item, term));
-    setInventorySearchResults(localMatches);
-
-    let cancelled = false;
-    const runSearch = async () => {
-      setInventorySearching(true);
-      try {
-        const shopId = await getShopId();
-        const { data: parts, error } = await searchInventoryParts(supabase, {
-          shopId,
-          isFounder,
-          searchTerm: term,
-          limit: 200,
-        });
-        if (cancelled) return;
-
-        if (error) {
-          console.warn('Inventory server search failed; keeping local matches:', error);
-          setInventorySearchResults(localMatches);
-          return;
-        }
-
-        const serverMatches = parts.map((part) => ({
-          id: part.id,
-          part_number: part.part_number,
-          part_name: part.part_name,
-          description: part.description,
-          category: part.category,
-          supplier: part.supplier,
-          location: null as string | null,
-          quantity_in_stock: Number(part.quantity_in_stock) || 0,
-          minimum_stock_level: Number(part.minimum_stock_level) || 0,
-          selling_price: Number(part.selling_price) || 0,
-          cost: part.cost,
-          created_at: part.created_at,
-        }));
-
-        setInventorySearchResults(mergeInventorySearchResults(localMatches, serverMatches));
-      } catch (error) {
-        if (!cancelled) {
-          console.warn('Inventory search failed; keeping local matches:', error);
-          setInventorySearchResults(localMatches);
-        }
-      } finally {
-        if (!cancelled) setInventorySearching(false);
-      }
-    };
-
-    void runSearch();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, debouncedInventoryQuery, contextShopId, isFounder, inventory]);
 
   // Redirect from DOT inspections if not accessible
   useEffect(() => {
@@ -13011,7 +12977,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     placeholder="Search name, part #, description, supplier..."
                     className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                   />
-                  {inventorySearching && (
+                  {inventoryLoading && inventoryQuery.trim() && (
                     <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-500">
                       Searching…
                     </div>
@@ -13055,12 +13021,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     setInventoryQuery('');
                     setInventoryCategory(INVENTORY_CATEGORY_ALL);
                     setInventoryStockStatus('all');
-                    setInventorySearchResults(null);
+                    setInventoryPage(0);
                   }}
                   className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 text-left hover:border-primary-300 hover:bg-primary-50/40 transition-colors"
                   title="Show all inventory items"
                 >
-                  <div className="text-2xl font-bold text-gray-900">{inventory.length}</div>
+                  <div className="text-2xl font-bold text-gray-900">{inventorySummary.totalItems}</div>
                   <div className="text-sm text-gray-600">Total Items</div>
                 </button>
                 <button
@@ -13069,25 +13035,25 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     setInventoryQuery('');
                     setInventoryCategory(INVENTORY_CATEGORY_ALL);
                     setInventoryStockStatus('low_stock');
-                    setInventorySearchResults(null);
+                    setInventoryPage(0);
                   }}
                   className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 text-left hover:border-amber-300 hover:bg-amber-50/50 transition-colors"
                   title="Show low stock items"
                 >
                   <div className="text-2xl font-bold text-gray-900">
-                    {inventory.filter((i) => inventoryPartMatchesStockStatus(i, 'low_stock')).length}
+                    {inventorySummary.lowStockCount}
                   </div>
                   <div className="text-sm text-gray-600">Low Stock Alerts</div>
                 </button>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-2xl font-bold text-gray-900">
-                    ${inventory.reduce((sum,i)=>sum + (i.quantity_in_stock * (i.selling_price||0)),0).toLocaleString()}
+                    ${inventorySummary.totalValue.toLocaleString()}
                   </div>
                   <div className="text-sm text-gray-600">Total Value</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-2xl font-bold text-gray-900">
-                    {Array.from(new Set(inventory.map(i=>i.category||'General'))).length}
+                    {inventorySummary.categories.length}
                   </div>
                   <div className="text-sm text-gray-600">Categories</div>
                 </div>
@@ -13103,14 +13069,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     className="px-3 py-2 border border-gray-300 rounded-lg min-w-[180px]"
                   >
                     <option value={INVENTORY_CATEGORY_ALL}>All Categories</option>
-                    {Array.from(new Set([
-                      ...inventory.map((i) => i.category || 'General'),
-                      ...(inventorySearchResults || []).map((i) => i.category || 'General'),
-                    ]))
-                      .sort((a, b) => a.localeCompare(b))
-                      .map((c) => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
+                    {inventorySummary.categories.map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -13153,16 +13114,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     <div className="text-right min-w-0">Actions</div>
                   </div>
 
-                  {inventoryLoading && inventorySearchResults === null && !inventoryQuery.trim() ? (
+                  {inventoryLoading ? (
                     <div className="text-center text-gray-600 py-12">Loading...</div>
                   ) : (
-                    (inventorySearchResults !== null
-                      ? inventorySearchResults
-                      : inventory.filter((i) => inventoryPartMatchesQuery(i, inventoryQuery))
-                    )
-                      .filter((i) => inventoryPartMatchesCategory(i, inventoryCategory))
-                      .filter((i) => inventoryPartMatchesStockStatus(i, inventoryStockStatus))
-                      .map(i => {
+                    inventory.map(i => {
                         const stockBadge = getInventoryStockBadge(i);
                         return (
                         <div key={i.id}>
@@ -13307,24 +13262,55 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         );
                       })
                   )}
-                  {(!inventoryLoading && !inventorySearching && inventorySearchResults === null && inventory.length===0) && (
+                  {(!inventoryLoading && inventoryFilteredCount === 0 && !inventoryQuery.trim() && inventoryCategory === INVENTORY_CATEGORY_ALL && inventoryStockStatus === 'all') && (
                     <div className="text-center text-gray-600 py-12">No inventory yet</div>
                   )}
-                  {(!inventoryLoading && !inventorySearching && inventorySearchResults !== null && inventorySearchResults.length === 0 && inventoryQuery.trim()) && (
+                  {(!inventoryLoading && inventoryFilteredCount === 0 && inventoryQuery.trim()) && (
                     <div className="text-center text-gray-600 py-12">
                       No inventory items found for “{inventoryQuery.trim()}”.
                     </div>
                   )}
-                  {(!inventoryLoading && !inventorySearching && inventory.length > 0 && (
-                    inventorySearchResults !== null
-                      ? inventorySearchResults
-                      : inventory.filter((i) => inventoryPartMatchesQuery(i, inventoryQuery))
-                  )
-                    .filter((i) => inventoryPartMatchesCategory(i, inventoryCategory))
-                    .filter((i) => inventoryPartMatchesStockStatus(i, inventoryStockStatus))
-                    .length === 0 && !(inventorySearchResults !== null && inventorySearchResults.length === 0 && inventoryQuery.trim())) && (
+                  {(!inventoryLoading && inventoryFilteredCount === 0 && !inventoryQuery.trim() && (inventoryCategory !== INVENTORY_CATEGORY_ALL || inventoryStockStatus !== 'all')) && (
                     <div className="text-center text-gray-600 py-12">
                       No inventory items match the current filters.
+                    </div>
+                  )}
+                  {!inventoryLoading && inventoryFilteredCount > 0 && (
+                    <div className="flex items-center justify-between pt-4 text-sm text-gray-600">
+                      <div className="flex items-center gap-2">
+                        <span>Rows</span>
+                        <select
+                          value={inventoryPageSize}
+                          onChange={(e) => setInventoryPageSize(Number(e.target.value))}
+                          className="border border-gray-300 rounded-md px-2 py-1"
+                        >
+                          <option value={25}>25</option>
+                          <option value={50}>50</option>
+                          <option value={100}>100</option>
+                        </select>
+                        <span>
+                          Showing {inventoryFilteredCount === 0 ? 0 : inventoryPage * inventoryPageSize + 1}-
+                          {Math.min((inventoryPage + 1) * inventoryPageSize, inventoryFilteredCount)} of {inventoryFilteredCount}
+                        </span>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          disabled={inventoryPage === 0}
+                          onClick={() => setInventoryPage((page) => Math.max(0, page - 1))}
+                          className="px-3 py-1 border rounded disabled:opacity-50"
+                        >
+                          Previous
+                        </button>
+                        <button
+                          type="button"
+                          disabled={(inventoryPage + 1) * inventoryPageSize >= inventoryFilteredCount}
+                          onClick={() => setInventoryPage((page) => page + 1)}
+                          className="px-3 py-1 border rounded disabled:opacity-50"
+                        >
+                          Next
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>

@@ -2,11 +2,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   INVENTORY_CATEGORY_ALL,
+  buildInventorySearchOrFilter,
   getInventoryStockBadge,
   inventoryPartMatchesCategory,
   inventoryPartMatchesQuery,
   inventoryPartMatchesStockStatus,
+  inventoryStockFilterNeedsScan,
   mergeInventorySearchResults,
+  normalizeInventoryCategoryLabel,
 } from './searchInventoryParts.ts';
 
 describe('inventoryPartMatchesQuery', () => {
@@ -120,5 +123,29 @@ describe('getInventoryStockBadge', () => {
     assert.equal(getInventoryStockBadge({ quantity_in_stock: 0, minimum_stock_level: 2 }).label, 'Out of Stock');
     assert.equal(getInventoryStockBadge({ quantity_in_stock: 1, minimum_stock_level: 2 }).label, 'Low Stock');
     assert.equal(getInventoryStockBadge({ quantity_in_stock: 5, minimum_stock_level: 2 }).label, 'In Stock');
+  });
+});
+
+describe('inventory server search filters', () => {
+  it('includes supplier in the ILIKE filter along with name, number, and description', () => {
+    const filter = buildInventorySearchOrFilter('meritor') || '';
+    assert.equal(filter.includes('part_name.ilike.%meritor%'), true);
+    assert.equal(filter.includes('part_number.ilike.%meritor%'), true);
+    assert.equal(filter.includes('description.ilike.%meritor%'), true);
+    assert.equal(filter.includes('supplier.ilike.%meritor%'), true);
+  });
+
+  it('scans in-stock and low-stock filters because they compare two columns', () => {
+    assert.equal(inventoryStockFilterNeedsScan('all'), false);
+    assert.equal(inventoryStockFilterNeedsScan('out_of_stock'), false);
+    assert.equal(inventoryStockFilterNeedsScan('negative_stock'), false);
+    assert.equal(inventoryStockFilterNeedsScan('low_stock'), true);
+    assert.equal(inventoryStockFilterNeedsScan('in_stock'), true);
+  });
+
+  it('treats blank categories as General', () => {
+    assert.equal(normalizeInventoryCategoryLabel(null), 'General');
+    assert.equal(normalizeInventoryCategoryLabel('  '), 'General');
+    assert.equal(normalizeInventoryCategoryLabel('FILTER'), 'FILTER');
   });
 });
