@@ -39,6 +39,26 @@ import {
   type LaborRateTypeFilter,
 } from '@/lib/labor/laborFilters';
 import {
+  CUSTOMER_PAGE_SIZE,
+  CUSTOMER_PICKER_BROWSE_LIMIT,
+  canQueryShopCustomers,
+  countShopCustomers,
+  customerMatchesQuery,
+  hasExactCustomerLookupMatch,
+  isCurrentCustomerRequest,
+  isPhoneSearchQuery,
+  listShopCustomersPage,
+  mergeCustomersById,
+  replaceCustomerById,
+  searchShopCustomers,
+  selectedCustomerId,
+} from '@/lib/customers/searchCustomers';
+import {
+  loadCustomerActivityStats,
+  sumCustomerActivityStats,
+  type CustomerActivityStats,
+} from '@/lib/customers/customerStats';
+import {
   DUPLICATE_LINE_ITEM_TOAST,
   laborLineItemSelection,
   mergeDuplicateLineItem,
@@ -1440,40 +1460,47 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [customersLoading, setCustomersLoading] = useState(false);
   const [customerQuery, setCustomerQuery] = useState('');
-  const normalizePhoneForLookup = (value: string) => String(value || '').replace(/\D/g, '');
-  const normalizeTextForLookup = (value: string) => String(value || '').toLowerCase().trim().replace(/\s+/g, ' ');
-  const isPhoneSearchQuery = (query: string) => {
-    const trimmed = query.trim();
-    const normalized = normalizePhoneForLookup(trimmed);
-    return normalized.length >= 3 && !/[a-z]/i.test(trimmed);
-  };
-  const getCustomerLookupNameFields = (customer: Customer) => {
-    const firstName = normalizeTextForLookup(customer.first_name || '');
-    const lastName = normalizeTextForLookup(customer.last_name || '');
-    const fullName = normalizeTextForLookup([customer.first_name, customer.last_name].filter(Boolean).join(' '));
-    const companyName = normalizeTextForLookup(customer.company || '');
-    return [firstName, lastName, fullName, companyName].filter(Boolean);
-  };
-  const matchesCustomerLookup = (customer: Customer, query: string) => {
-    const normalizedQuery = normalizeTextForLookup(query);
-    if (!normalizedQuery) return true;
-    if (isPhoneSearchQuery(query)) {
-      const normalizedQueryPhone = normalizePhoneForLookup(query);
-      const customerPhone = normalizePhoneForLookup(customer.phone || '');
-      return normalizedQueryPhone.length > 0 && customerPhone.includes(normalizedQueryPhone);
-    }
-    return getCustomerLookupNameFields(customer).some(name => name.includes(normalizedQuery));
-  };
-  const hasExactCustomerLookupMatch = (customer: Customer, query: string) => {
-    const normalizedQuery = normalizeTextForLookup(query);
-    if (!normalizedQuery) return false;
-    if (isPhoneSearchQuery(query)) {
-      const normalizedQueryPhone = normalizePhoneForLookup(query);
-      const customerPhone = normalizePhoneForLookup(customer.phone || '');
-      return normalizedQueryPhone.length > 0 && customerPhone === normalizedQueryPhone;
-    }
-    return getCustomerLookupNameFields(customer).some(name => name === normalizedQuery);
-  };
+  const [customerTotalCount, setCustomerTotalCount] = useState(0);
+  const [customerPage, setCustomerPage] = useState(0);
+  const [customerLookupExtras, setCustomerLookupExtras] = useState<Customer[]>([]);
+  const rememberCustomers = useCallback((rows: Customer[]) => {
+    if (!rows.length) return;
+    setCustomerLookupExtras((prev) => mergeCustomersById(prev, rows) as Customer[]);
+  }, []);
+  const applyCustomerRecordUpdate = useCallback((updatedCustomer: Customer) => {
+    rememberCustomers([updatedCustomer]);
+    setCustomers((prev) => replaceCustomerById(prev, updatedCustomer));
+    setCustomerSearchResults((prev) => (prev ? replaceCustomerById(prev, updatedCustomer) : prev));
+    setInvoiceCustomerResults((prev) => replaceCustomerById(prev, updatedCustomer));
+    setWorkOrderCustomerResults((prev) => replaceCustomerById(prev, updatedCustomer));
+    setEstimateCustomerResults((prev) => replaceCustomerById(prev, updatedCustomer));
+    setAnalyticsCustomerResults((prev) => replaceCustomerById(prev, updatedCustomer));
+  }, [rememberCustomers]);
+  const [customerSearchResults, setCustomerSearchResults] = useState<Customer[] | null>(null);
+  const [customerStatsMap, setCustomerStatsMap] = useState<Record<string, CustomerActivityStats>>({});
+  const [customerStatsEpoch, setCustomerStatsEpoch] = useState(0);
+  const customerStatsRequestIdRef = useRef(0);
+  const [customersSearching, setCustomersSearching] = useState(false);
+  const [invoiceCustomerResults, setInvoiceCustomerResults] = useState<Customer[]>([]);
+  const [invoiceCustomersSearching, setInvoiceCustomersSearching] = useState(false);
+  const [workOrderCustomerResults, setWorkOrderCustomerResults] = useState<Customer[]>([]);
+  const [workOrderCustomersSearching, setWorkOrderCustomersSearching] = useState(false);
+  const [estimateCustomerResults, setEstimateCustomerResults] = useState<Customer[]>([]);
+  const [estimateCustomersSearching, setEstimateCustomersSearching] = useState(false);
+  const [analyticsCustomerResults, setAnalyticsCustomerResults] = useState<Customer[]>([]);
+  const [analyticsCustomersSearching, setAnalyticsCustomersSearching] = useState(false);
+  const matchesCustomerLookup = customerMatchesQuery;
+  const customersListRequestIdRef = useRef(0);
+  const customerSearchRequestIdRef = useRef(0);
+  const invoiceCustomerSearchRequestIdRef = useRef(0);
+  const workOrderCustomerSearchRequestIdRef = useRef(0);
+  const estimateCustomerSearchRequestIdRef = useRef(0);
+  const analyticsCustomerSearchRequestIdRef = useRef(0);
+  const duplicatePhoneRequestIdRef = useRef(0);
+  const customersRef = useRef(customers);
+  const customerLookupExtrasRef = useRef(customerLookupExtras);
+  customersRef.current = customers;
+  customerLookupExtrasRef.current = customerLookupExtras;
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
   const [showEditCustomerModal, setShowEditCustomerModal] = useState<null | Customer>(null);
   // Analytics customer lookup
@@ -1482,19 +1509,6 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   const [selectedAnalyticsCustomer, setSelectedAnalyticsCustomer] = useState<Customer | null>(null);
   const [analyticsCustomerDetails, setAnalyticsCustomerDetails] = useState<any>(null);
   const [analyticsCustomerLoading, setAnalyticsCustomerLoading] = useState(false);
-
-  // Update invoice customer search display when customer is selected
-  useEffect(() => {
-    if (invoiceFormData.customer_id && customers.length > 0) {
-      const selectedCustomer = customers.find(c => c.id === invoiceFormData.customer_id);
-      if (selectedCustomer) {
-        const displayName = getCustomerDisplayName(selectedCustomer);
-        setInvoiceCustomerSearch(displayName);
-      }
-    } else if (!invoiceFormData.customer_id) {
-      setInvoiceCustomerSearch('');
-    }
-  }, [invoiceFormData.customer_id, customers]);
 
   // Reset invoice customer search when modal opens/closes
   useEffect(() => {
@@ -1693,6 +1707,42 @@ const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
 const [invoiceCustomerSearch, setInvoiceCustomerSearch] = useState('');
 const [showInvoiceCustomerDropdown, setShowInvoiceCustomerDropdown] = useState(false);
 const debouncedInvoiceCustomerSearch = useDebouncedValue(invoiceCustomerSearch, 300);
+const debouncedCustomerQuery = useDebouncedValue(customerQuery, 300);
+const debouncedWorkOrderCustomerSearch = useDebouncedValue(customerSearchQuery, 300);
+const visibleCustomers = useMemo(() => {
+  const term = customerQuery.trim();
+  if (!term) return customers;
+  return (customerSearchResults || []).filter((customer) => customerMatchesQuery(customer, term));
+}, [customerQuery, customerSearchResults, customers]);
+const visibleCustomerIdsKey = visibleCustomers.map((customer) => String(customer.id)).join(',');
+
+useEffect(() => {
+  const requestId = ++customerStatsRequestIdRef.current;
+  const customerIds = visibleCustomers.map((customer) => String(customer.id));
+  if (customerIds.length === 0) {
+    return;
+  }
+  let cancelled = false;
+  (async () => {
+    const shopId = await getShopId();
+    if (cancelled || !isCurrentCustomerRequest(customerStatsRequestIdRef.current, requestId)) return;
+    if (!canQueryShopCustomers(shopId, isFounder)) return;
+    const { data, error } = await loadCustomerActivityStats(supabase, {
+      shopId,
+      isFounder,
+      customerIds,
+    });
+    if (cancelled || !isCurrentCustomerRequest(customerStatsRequestIdRef.current, requestId)) return;
+    if (error) {
+      console.error('Error loading customer stats:', error);
+      return;
+    }
+    setCustomerStatsMap((prev) => ({ ...prev, ...data }));
+  })();
+  return () => {
+    cancelled = true;
+  };
+}, [visibleCustomerIdsKey, contextShopId, isFounder, customerStatsEpoch]);
 const debouncedInvoiceItemSearch = useDebouncedValue(invoiceItemSearch, 300);
 const [creatingCustomerFromInvoice, setCreatingCustomerFromInvoice] = useState(false);
 const [creatingPartFromInvoice, setCreatingPartFromInvoice] = useState(false);
@@ -1704,6 +1754,8 @@ const [creatingLaborForLineItem, setCreatingLaborForLineItem] = useState<number 
 const [creatingLaborForLineId, setCreatingLaborForLineId] = useState<string | null>(null);
 const [estimateCustomerSearch, setEstimateCustomerSearch] = useState('');
 const [showEstimateCustomerDropdown, setShowEstimateCustomerDropdown] = useState(false);
+const debouncedEstimateCustomerSearch = useDebouncedValue(estimateCustomerSearch, 300);
+const debouncedAnalyticsCustomerSearch = useDebouncedValue(analyticsCustomerSearch, 300);
 const [creatingCustomerFromEstimate, setCreatingCustomerFromEstimate] = useState(false);
 const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useState(false);
 
@@ -1814,8 +1866,27 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     cost: 0
   });
   const customersById = useMemo(
-    () => new Map(customers.map((customer) => [String(customer.id), customer])),
-    [customers]
+    () =>
+      new Map(
+        mergeCustomersById(
+          customers,
+          customerLookupExtras,
+          customerSearchResults || [],
+          invoiceCustomerResults,
+          workOrderCustomerResults,
+          estimateCustomerResults,
+          analyticsCustomerResults
+        ).map((customer) => [String(customer.id), customer])
+      ),
+    [
+      customers,
+      customerLookupExtras,
+      customerSearchResults,
+      invoiceCustomerResults,
+      workOrderCustomerResults,
+      estimateCustomerResults,
+      analyticsCustomerResults,
+    ]
   );
   const laborItemsById = useMemo(
     () => new Map(laborItems.map((labor) => [String(labor.id), labor])),
@@ -1861,11 +1932,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         .maybeSingle();
       if (!error && data) {
         const hydratedCustomer = data as unknown as Customer;
-        setCustomers((prev) =>
-          prev.some((customer) => String(customer.id) === String(customerId))
-            ? prev
-            : [hydratedCustomer, ...prev]
-        );
+        rememberCustomers([hydratedCustomer]);
         setInvoiceCustomerSearch(getCustomerDisplayName(hydratedCustomer));
       }
     } catch (error) {
@@ -1873,7 +1940,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         console.warn('Could not hydrate invoice customer label:', error);
       }
     }
-  }, [customersById]);
+  }, [customersById, rememberCustomers]);
+
+  useEffect(() => {
+    if (!invoiceFormData.customer_id || showInvoiceCustomerDropdown) return;
+    const selectedCustomer = customersById.get(String(invoiceFormData.customer_id));
+    if (selectedCustomer) {
+      setInvoiceCustomerSearch(getCustomerDisplayName(selectedCustomer));
+    }
+  }, [invoiceFormData.customer_id, showInvoiceCustomerDropdown, customersById]);
 
   const hydrateInvoiceLineItemsForEdit = useCallback(async (rows: any[]): Promise<InvoiceLineItem[]> => {
     const rawRows = Array.isArray(rows) ? rows : [];
@@ -2640,19 +2715,19 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
   // Update estimate customer search display when customer is selected
   useEffect(() => {
-    if (estimateCustomerId && customers.length > 0) {
-      const selectedCustomer = customers.find(c => c.id === estimateCustomerId);
-      if (selectedCustomer) {
-        const individualName = [selectedCustomer.first_name, selectedCustomer.last_name].filter(Boolean).join(' ');
-        const displayName = selectedCustomer.is_fleet 
-          ? selectedCustomer.company || individualName || 'Unknown'
-          : individualName || selectedCustomer.company || 'Unknown';
-        setEstimateCustomerSearch(displayName);
-      }
-    } else if (!estimateCustomerId) {
-      setEstimateCustomerSearch('');
+    if (!estimateCustomerId || showEstimateCustomerDropdown) return;
+    const selectedCustomer =
+      customers.find((c) => c.id === estimateCustomerId) ||
+      customerLookupExtras.find((c) => c.id === estimateCustomerId) ||
+      estimateCustomerResults.find((c) => c.id === estimateCustomerId);
+    if (selectedCustomer) {
+      const individualName = [selectedCustomer.first_name, selectedCustomer.last_name].filter(Boolean).join(' ');
+      const displayName = selectedCustomer.is_fleet 
+        ? selectedCustomer.company || individualName || 'Unknown'
+        : individualName || selectedCustomer.company || 'Unknown';
+      setEstimateCustomerSearch(displayName);
     }
-  }, [estimateCustomerId, customers]);
+  }, [estimateCustomerId, showEstimateCustomerDropdown, customers, customerLookupExtras, estimateCustomerResults]);
 
   // Reset estimate customer search when modal opens/closes
   useEffect(() => {
@@ -7483,47 +7558,227 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     fetchPartsSales();
   }, [activeTab, inventory]);
 
-  // Fetch customers from Supabase
-  const fetchCustomers = async () => {
+  // Fetch a page of customers from Supabase. Search uses searchShopCustomers, not this list.
+  const fetchCustomers = useCallback(async (page = customerPage) => {
+    const requestId = ++customersListRequestIdRef.current;
     setCustomersLoading(true);
     try {
       const shopId = await getShopId();
+      if (!isCurrentCustomerRequest(customersListRequestIdRef.current, requestId)) return;
       if (!shopId && !isFounder) {
         console.warn('No shop_id found, skipping customers fetch');
-        setCustomers([]);
         return;
       }
 
-      let query = supabase
-        .from('customers')
-        .select('*');
-      
-      // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
-      // For regular users: only include data with matching shop_id
-      if (shopId) {
-        if (isFounder) {
-          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
-        } else {
-          query = query.eq('shop_id', shopId);
-        }
-      } else if (isFounder) {
-        // Founder but no shop_id yet - show all data (for old data without shop_id)
-        query = query.is('shop_id', null);
+      const scope = { shopId, isFounder };
+      const [countResult, pageResult] = await Promise.all([
+        countShopCustomers(supabase, scope),
+        listShopCustomersPage(supabase, { ...scope, page, pageSize: CUSTOMER_PAGE_SIZE }),
+      ]);
+
+      if (!isCurrentCustomerRequest(customersListRequestIdRef.current, requestId)) return;
+
+      if (countResult.error) {
+        console.error('Error counting customers:', countResult.error);
+      } else {
+        setCustomerTotalCount(countResult.count);
       }
 
-      const { data, error } = await query.order('created_at', { ascending: false });
-      if (data) setCustomers(data as unknown as Customer[]);
-      if (error) console.error('Error fetching customers:', error);
+      if (pageResult.error) {
+        console.error('Error fetching customers:', pageResult.error);
+        return;
+      }
+
+      setCustomers(pageResult.data as unknown as Customer[]);
+      rememberCustomers(pageResult.data as unknown as Customer[]);
     } catch (err) {
       console.error('Error in fetchCustomers:', err);
     } finally {
-      setCustomersLoading(false);
+      if (isCurrentCustomerRequest(customersListRequestIdRef.current, requestId)) {
+        setCustomersLoading(false);
+      }
     }
-  };
+  }, [customerPage, isFounder, rememberCustomers]);
 
   useEffect(() => {
-    fetchCustomers();
+    setCustomerPage(0);
   }, [contextShopId]);
+
+  useEffect(() => {
+    fetchCustomers(customerPage);
+  }, [contextShopId, customerPage, fetchCustomers]);
+
+  useEffect(() => {
+    const term = debouncedCustomerQuery.trim();
+    const requestId = ++customerSearchRequestIdRef.current;
+    if (!term) {
+      setCustomerSearchResults(null);
+      setCustomersSearching(false);
+      return;
+    }
+
+    let cancelled = false;
+    setCustomersSearching(true);
+    (async () => {
+      const shopId = await getShopId();
+      if (cancelled || !isCurrentCustomerRequest(customerSearchRequestIdRef.current, requestId)) return;
+      if (!canQueryShopCustomers(shopId, isFounder)) {
+        setCustomersSearching(false);
+        return;
+      }
+      const { data, error } = await searchShopCustomers(supabase, {
+        shopId,
+        isFounder,
+        searchTerm: term,
+      });
+      if (cancelled || !isCurrentCustomerRequest(customerSearchRequestIdRef.current, requestId)) return;
+      if (error) {
+        console.error('Error searching customers:', error);
+        const localMatches = mergeCustomersById(customersRef.current, customerLookupExtrasRef.current).filter((customer) =>
+          customerMatchesQuery(customer, term)
+        );
+        setCustomerSearchResults(localMatches as Customer[]);
+      } else {
+        setCustomerSearchResults(data as unknown as Customer[]);
+        rememberCustomers(data as unknown as Customer[]);
+      }
+      setCustomersSearching(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedCustomerQuery, contextShopId, isFounder, rememberCustomers]);
+
+  useEffect(() => {
+    const term = debouncedInvoiceCustomerSearch.trim();
+    const requestId = ++invoiceCustomerSearchRequestIdRef.current;
+    const selectedName = invoiceFormData.customer_id
+      ? getCustomerDisplayName(
+          customersRef.current.find((c) => c.id === invoiceFormData.customer_id) ||
+            customerLookupExtrasRef.current.find((c) => c.id === invoiceFormData.customer_id)
+        )
+      : '';
+    if (!term || term === selectedName || (term.length < 2 && !isPhoneSearchQuery(term))) {
+      setInvoiceCustomerResults([]);
+      setInvoiceCustomersSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setInvoiceCustomersSearching(true);
+    (async () => {
+      const shopId = await getShopId();
+      if (cancelled || !isCurrentCustomerRequest(invoiceCustomerSearchRequestIdRef.current, requestId)) return;
+      if (!canQueryShopCustomers(shopId, isFounder)) {
+        setInvoiceCustomersSearching(false);
+        return;
+      }
+      const { data, error } = await searchShopCustomers(supabase, { shopId, isFounder, searchTerm: term });
+      if (cancelled || !isCurrentCustomerRequest(invoiceCustomerSearchRequestIdRef.current, requestId)) return;
+      if (error) console.error('Error searching invoice customers:', error);
+      else {
+        setInvoiceCustomerResults(data as unknown as Customer[]);
+        rememberCustomers(data as unknown as Customer[]);
+      }
+      setInvoiceCustomersSearching(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedInvoiceCustomerSearch, contextShopId, isFounder, invoiceFormData.customer_id, rememberCustomers]);
+
+  useEffect(() => {
+    const term = debouncedWorkOrderCustomerSearch.trim();
+    const requestId = ++workOrderCustomerSearchRequestIdRef.current;
+    if (!term) {
+      setWorkOrderCustomerResults([]);
+      setWorkOrderCustomersSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setWorkOrderCustomersSearching(true);
+    (async () => {
+      const shopId = await getShopId();
+      if (cancelled || !isCurrentCustomerRequest(workOrderCustomerSearchRequestIdRef.current, requestId)) return;
+      if (!canQueryShopCustomers(shopId, isFounder)) {
+        setWorkOrderCustomersSearching(false);
+        return;
+      }
+      const { data, error } = await searchShopCustomers(supabase, { shopId, isFounder, searchTerm: term });
+      if (cancelled || !isCurrentCustomerRequest(workOrderCustomerSearchRequestIdRef.current, requestId)) return;
+      if (error) console.error('Error searching work order customers:', error);
+      else {
+        setWorkOrderCustomerResults(data as unknown as Customer[]);
+        rememberCustomers(data as unknown as Customer[]);
+      }
+      setWorkOrderCustomersSearching(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedWorkOrderCustomerSearch, contextShopId, isFounder, rememberCustomers]);
+
+  useEffect(() => {
+    const term = debouncedEstimateCustomerSearch.trim();
+    const requestId = ++estimateCustomerSearchRequestIdRef.current;
+    if (!term) {
+      setEstimateCustomerResults([]);
+      setEstimateCustomersSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setEstimateCustomersSearching(true);
+    (async () => {
+      const shopId = await getShopId();
+      if (cancelled || !isCurrentCustomerRequest(estimateCustomerSearchRequestIdRef.current, requestId)) return;
+      if (!canQueryShopCustomers(shopId, isFounder)) {
+        setEstimateCustomersSearching(false);
+        return;
+      }
+      const { data, error } = await searchShopCustomers(supabase, { shopId, isFounder, searchTerm: term });
+      if (cancelled || !isCurrentCustomerRequest(estimateCustomerSearchRequestIdRef.current, requestId)) return;
+      if (error) console.error('Error searching estimate customers:', error);
+      else {
+        setEstimateCustomerResults(data as unknown as Customer[]);
+        rememberCustomers(data as unknown as Customer[]);
+      }
+      setEstimateCustomersSearching(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedEstimateCustomerSearch, contextShopId, isFounder, rememberCustomers]);
+
+  useEffect(() => {
+    const term = debouncedAnalyticsCustomerSearch.trim();
+    const requestId = ++analyticsCustomerSearchRequestIdRef.current;
+    if (!term) {
+      setAnalyticsCustomerResults([]);
+      setAnalyticsCustomersSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setAnalyticsCustomersSearching(true);
+    (async () => {
+      const shopId = await getShopId();
+      if (cancelled || !isCurrentCustomerRequest(analyticsCustomerSearchRequestIdRef.current, requestId)) return;
+      if (!canQueryShopCustomers(shopId, isFounder)) {
+        setAnalyticsCustomersSearching(false);
+        return;
+      }
+      const { data, error } = await searchShopCustomers(supabase, { shopId, isFounder, searchTerm: term });
+      if (cancelled || !isCurrentCustomerRequest(analyticsCustomerSearchRequestIdRef.current, requestId)) return;
+      if (error) console.error('Error searching analytics customers:', error);
+      else {
+        setAnalyticsCustomerResults(data as unknown as Customer[]);
+        rememberCustomers(data as unknown as Customer[]);
+      }
+      setAnalyticsCustomersSearching(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedAnalyticsCustomerSearch, contextShopId, isFounder, rememberCustomers]);
 
   // Check for duplicate phone number
   const checkDuplicatePhone = async (phone: string) => {
@@ -7545,29 +7800,34 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         setCheckingPhone(false);
         return;
       }
-      
-      // Fetch all customers and check if any phone matches
-      const { data: existingCustomers } = await supabase
-        .from('customers')
-        .select('id, first_name, last_name, company, phone, email, is_fleet')
-        .eq('shop_id', shopId)
-        .not('phone', 'is', null);
-
-      if (existingCustomers) {
-        const duplicate = existingCustomers.find(customer => {
-          if (!customer.phone) return false;
-          const customerPhoneNormalized = customer.phone.replace(/\D/g, '');
-          // Check if the normalized phone numbers match (at least 7 digits)
-          return customerPhoneNormalized.length >= 7 && 
-                 normalizedPhone.length >= 7 &&
-                 customerPhoneNormalized === normalizedPhone;
-        });
-
-        // Cast to Customer type (email is nullable so this is safe)
-        setDuplicatePhoneCustomer((duplicate as Customer) || null);
-      } else {
-        setDuplicatePhoneCustomer(null);
+      if (!canQueryShopCustomers(shopId, isFounder)) {
+        setCheckingPhone(false);
+        return;
       }
+      
+      const requestId = ++duplicatePhoneRequestIdRef.current;
+      const { data: existingCustomers, error } = await searchShopCustomers(supabase, {
+        shopId,
+        isFounder,
+        searchTerm: phone,
+        limit: CUSTOMER_PAGE_SIZE,
+      });
+      if (!isCurrentCustomerRequest(duplicatePhoneRequestIdRef.current, requestId)) return;
+      if (error) {
+        console.error('Error checking duplicate phone:', error);
+        setDuplicatePhoneCustomer(null);
+        return;
+      }
+
+      const duplicate = existingCustomers.find((customer) => {
+        if (!customer.phone) return false;
+        const customerPhoneNormalized = customer.phone.replace(/\D/g, '');
+        return customerPhoneNormalized.length >= 7 &&
+               normalizedPhone.length >= 7 &&
+               customerPhoneNormalized === normalizedPhone;
+      });
+
+      setDuplicatePhoneCustomer((duplicate as Customer) || null);
     } catch (error) {
       console.error('Error checking duplicate phone:', error);
       setDuplicatePhoneCustomer(null);
@@ -8596,28 +8856,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     }
   }, [activeTab, invoicesEstimatesIntegrationEnabled, isFounder]);
 
-  // Customer stats from invoices and work orders (for Customers tab)
-  const { customerStatsMap, totalRevenue, totalVisits } = useMemo(() => {
-    const map: Record<string, { visits: number; totalSpent: number; lastVisit: string | null }> = {};
-    let revenue = 0;
-    let visits = 0;
-    for (const c of customers) {
-      const customerInvoices = invoices.filter((inv: any) => inv.customer_id === c.id);
-      const customerWorkOrders = workOrders.filter((wo: any) => wo.customer_id === c.id);
-      const totalSpent = customerInvoices.reduce((sum: number, inv: any) => sum + (inv.total_amount || 0), 0);
-      const visitCount = Math.max(customerInvoices.length, customerWorkOrders.length);
-      const allDates = [
-        ...customerInvoices.map((inv: any) => inv.created_at),
-        ...customerWorkOrders.map((wo: any) => wo.completed_at || wo.created_at)
-      ].filter(Boolean);
-      const lastVisitDate = allDates.sort((a: any, b: any) => new Date(b).getTime() - new Date(a).getTime())[0];
-      const lastVisit = lastVisitDate ? formatDateInTimezone(lastVisitDate) : null;
-      map[c.id] = { visits: visitCount, totalSpent, lastVisit };
-      revenue += totalSpent;
-      visits += visitCount;
+  const { totalRevenue, totalVisits } = useMemo(() => {
+    const visibleStats: Record<string, CustomerActivityStats> = {};
+    for (const customer of visibleCustomers) {
+      const stats = customerStatsMap[String(customer.id)];
+      if (stats) visibleStats[String(customer.id)] = stats;
     }
-    return { customerStatsMap: map, totalRevenue: revenue, totalVisits: visits };
-  }, [customers, invoices, workOrders]);
+    return sumCustomerActivityStats(visibleStats);
+  }, [visibleCustomers, customerStatsMap]);
 
   const navigationItems = [
     { id: 'overview', name: 'Overview', icon: LayoutDashboard },
@@ -11211,6 +11457,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         invoice = newInvoice;
         console.log('Invoice created successfully:', invoice);
         showToast({ type: 'success', message: 'Invoice created' });
+        setCustomerStatsEpoch((value) => value + 1);
       }
 
       // Update work order status to completed
@@ -13143,7 +13390,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                  <div className="text-2xl font-bold text-gray-900">{customers.length}</div>
+                  <div className="text-2xl font-bold text-gray-900">{customerTotalCount}</div>
                   <div className="text-sm text-gray-600">Total Customers</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -13171,32 +13418,33 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     <div className="text-right min-w-0">Actions</div>
                   </div>
 
-                  {customersLoading ? (
+                  {customersLoading || (customerQuery.trim() && customersSearching && customerSearchResults === null) ? (
                     <div className="text-center text-gray-600 py-12">Loading customers...</div>
                   ) : (
-                    (customers.filter(c => {
-                      const q = customerQuery.toLowerCase();
-                      const name = [c.first_name, c.last_name].filter(Boolean).join(' ').toLowerCase();
-                      return !q || name.includes(q) || (c.email||'').toLowerCase().includes(q) || (c.phone||'').includes(q);
-                    })).length === 0 ? (
-                      <div className="text-center text-gray-600 py-12">No customers yet</div>
-                    ) : (
-                      customers.filter(c => {
-                        const q = customerQuery.toLowerCase();
-                        const name = [c.first_name, c.last_name].filter(Boolean).join(' ').toLowerCase();
-                        return !q || name.includes(q) || (c.email||'').toLowerCase().includes(q) || (c.phone||'').includes(q);
-                      }).map((c) => (
+                    (() => {
+                      if (visibleCustomers.length === 0) {
+                        return (
+                          <div className="text-center text-gray-600 py-12">
+                            {customerQuery.trim() ? 'No customers found' : 'No customers yet'}
+                          </div>
+                        );
+                      }
+                      return (
+                        <>
+                      {visibleCustomers.map((c) => {
+                        const rowStats = customerStatsMap[String(c.id)];
+                        return (
                         <div key={c.id} className="grid gap-4 items-center py-3 border-b border-gray-100 last:border-b-0 min-w-0" style={{ gridTemplateColumns: 'minmax(160px, 2fr) minmax(180px, 2.2fr) minmax(70px, 0.8fr) minmax(100px, 1.2fr) minmax(110px, 1.2fr) minmax(200px, 2.5fr)' }}>
                           <div className="min-w-0">
-                            <div className="font-medium text-gray-900 truncate">{[c.first_name, c.last_name].filter(Boolean).join(' ') || '—'}</div>
+                            <div className="font-medium text-gray-900 truncate">{getCustomerDisplayName(c) || '—'}</div>
                           </div>
                           <div className="text-gray-700 min-w-0">
                             <div className="truncate">{c.email || '—'}</div>
                             <div className="text-gray-500 truncate">{formatPhoneNumber(c.phone)}</div>
                           </div>
-                          <div className="min-w-0 whitespace-nowrap">{customerStatsMap[c.id]?.visits ?? 0}</div>
-                          <div className="min-w-0 whitespace-nowrap">{formatCurrency(customerStatsMap[c.id]?.totalSpent ?? 0)}</div>
-                          <div className="min-w-0 whitespace-nowrap">{customerStatsMap[c.id]?.lastVisit ?? '—'}</div>
+                          <div className="min-w-0 whitespace-nowrap">{rowStats ? rowStats.visits : '—'}</div>
+                          <div className="min-w-0 whitespace-nowrap">{rowStats ? formatCurrency(rowStats.totalSpent) : '—'}</div>
+                          <div className="min-w-0 whitespace-nowrap">{rowStats?.lastVisitAt ? formatDateInTimezone(rowStats.lastVisitAt) : '—'}</div>
                           <div className="text-right min-w-0 flex-shrink-0">
                             <div className="inline-flex items-center gap-1 flex-wrap justify-end">
                               {c.is_fleet ? (
@@ -13223,6 +13471,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   .select('id')
                                   .eq('customer_id', c.id)
                                   .limit(1);
+
                                 
                                 if (invoicesError) {
                                   console.error('Error checking invoices:', invoicesError);
@@ -13261,8 +13510,37 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             </div>
                           </div>
                         </div>
-                      ))
-                    )
+                        );
+                      })}
+                        {!customerQuery.trim() && customerTotalCount > CUSTOMER_PAGE_SIZE && (
+                          <div className="flex items-center justify-between pt-4 text-sm text-gray-600">
+                            <span>
+                              Showing {customerPage * CUSTOMER_PAGE_SIZE + 1}-
+                              {Math.min((customerPage + 1) * CUSTOMER_PAGE_SIZE, customerTotalCount)} of {customerTotalCount}
+                            </span>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                disabled={customerPage === 0}
+                                onClick={() => setCustomerPage((page) => Math.max(0, page - 1))}
+                                className="px-3 py-1 border rounded disabled:opacity-50"
+                              >
+                                Previous
+                              </button>
+                              <button
+                                type="button"
+                                disabled={(customerPage + 1) * CUSTOMER_PAGE_SIZE >= customerTotalCount}
+                                onClick={() => setCustomerPage((page) => page + 1)}
+                                className="px-3 py-1 border rounded disabled:opacity-50"
+                              >
+                                Next
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        </>
+                      );
+                    })()
                   )}
                 </div>
               </div>
@@ -17306,7 +17584,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
             const unpaidChange = lastWeekUnpaid > 0 ? ((unpaidTotal - lastWeekUnpaid) / lastWeekUnpaid) * 100 : 0;
             
             // Customer Insights
-            const totalCustomers = customers.length;
+            const totalCustomers = customerTotalCount;
             const lastQuarterStart = new Date(now.getFullYear(), now.getMonth() - 3, 1);
             const lastQuarterCustomers = customers.filter(c => {
               if (!c.created_at) return false;
@@ -18834,7 +19112,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
                               {(() => {
                                 const searchTerm = analyticsCustomerSearch.toLowerCase();
-                                const filtered = customers.filter(c => {
+                                const filtered = mergeCustomersById(
+                                  mergeCustomersById(customers, customerLookupExtras).filter((c) => {
                                   const fullName = [c.first_name, c.last_name].filter(Boolean).join(' ').toLowerCase();
                                   const company = (c.company || '').toLowerCase();
                                   const email = (c.email || '').toLowerCase();
@@ -18843,7 +19122,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                          company.includes(searchTerm) || 
                                          email.includes(searchTerm) ||
                                          phone.includes(searchTerm);
-                                });
+                                  }),
+                                  analyticsCustomerResults.filter((c) => customerMatchesQuery(c, analyticsCustomerSearch))
+                                );
                                 
                                 if (filtered.length === 0) {
                                   return (
@@ -21796,15 +22077,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       placeholder="Search by name or phone number..."
                       className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                     />
-                    {showInvoiceCustomerDropdown && customers.length > 0 && (
+                    {showInvoiceCustomerDropdown && (customers.length > 0 || invoiceCustomerSearch.trim().length > 0 || invoiceCustomerResults.length > 0) && (
                       <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
                         {(() => {
                           // Filter customers by name (individual or company) or phone number
                           const searchLower = debouncedInvoiceCustomerSearch.toLowerCase().trim();
                           
-                          // If no search query, show all customers
+                          // If no search query, show recent customers
                           if (!searchLower) {
-                            return customers.slice(0, 25).map((customer) => {
+                            return customers.slice(0, CUSTOMER_PICKER_BROWSE_LIMIT).map((customer) => {
                               const displayName = getCustomerDisplayName(customer);
                               
                               return (
@@ -21814,7 +22095,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     e.preventDefault();
                                     setInvoiceFormData(prev => ({
                                       ...prev,
-                                      customer_id: customer.id,
+                                      customer_id: selectedCustomerId(customer),
                                       // Avoid mismatching an existing work order to a different customer
                                       work_order_id: ''
                                     }));
@@ -21823,8 +22104,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       
                       // Fetch fleet discounts for this customer
                                     if (customer.id) {
-                                      const selectedCustomer = customers.find(c => c.id === customer.id);
-                        if (selectedCustomer?.is_fleet) {
+                                      if (customer.is_fleet) {
                           try {
                                           const shopId = await getShopId();
                                           if (shopId) {
@@ -21870,17 +22150,30 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           }
                           
                           const searchQuery = debouncedInvoiceCustomerSearch.trim();
-                          if (invoiceCustomerSearch.trim().length > 0 && searchQuery.length < 2) {
+                          if (invoiceCustomerSearch.trim().length > 0 && searchQuery.length < 2 && !isPhoneSearchQuery(invoiceCustomerSearch)) {
                             return (
                               <div className="px-4 py-3 text-sm text-gray-500">
                                 Type at least 2 characters to search customers
                               </div>
                             );
                           }
-                          const filteredCustomers = customers.filter(customer => matchesCustomerLookup(customer, searchQuery));
+                          const filteredCustomers = mergeCustomersById(
+                            mergeCustomersById(customers, customerLookupExtras).filter((customer) =>
+                              matchesCustomerLookup(customer, searchQuery)
+                            ),
+                            invoiceCustomerResults.filter((customer) => matchesCustomerLookup(customer, searchQuery))
+                          );
                           const hasExactMatch = filteredCustomers.some(customer => hasExactCustomerLookupMatch(customer, searchQuery));
                           const isPhoneNumber = isPhoneSearchQuery(searchQuery);
                           const shouldShowCreateOption = searchQuery.length > 0 && !hasExactMatch;
+
+                          if (invoiceCustomersSearching && filteredCustomers.length === 0) {
+                            return (
+                              <div className="px-4 py-3 text-sm text-gray-500">
+                                Searching customers…
+                              </div>
+                            );
+                          }
 
                           if (filteredCustomers.length === 0) {
                             return (
@@ -21925,7 +22218,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   e.preventDefault();
                                   setInvoiceFormData(prev => ({
                                     ...prev,
-                                    customer_id: customer.id,
+                                    customer_id: selectedCustomerId(customer),
                                     // Avoid mismatching an existing work order to a different customer
                                     work_order_id: ''
                                   }));
@@ -21934,8 +22227,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   
                                   // Fetch fleet discounts for this customer
                                   if (customer.id) {
-                                    const selectedCustomer = customers.find(c => c.id === customer.id);
-                                    if (selectedCustomer?.is_fleet) {
+                                  if (customer.is_fleet) {
                                       try {
                                         const shopId = await getShopId();
                                         if (shopId) {
@@ -23439,6 +23731,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       );
 
                       showToast({ type: 'success', message: 'Invoice updated' });
+                      setCustomerStatsEpoch((value) => value + 1);
                       void fetchInvoices(); // refresh list in background; UI already updated optimistically
 
                       // Keep drawer open so user can print the updated invoice immediately
@@ -23608,6 +23901,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       }
 
                       showToast({ type: 'success', message: 'Invoice created' });
+                      setCustomerStatsEpoch((value) => value + 1);
                       fetchInvoices();
                       
                       // Close modal and reset form
@@ -23720,7 +24014,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 </div>
                               );
                             }
-                            return customers.map((customer) => {
+                            return customers.slice(0, CUSTOMER_PICKER_BROWSE_LIMIT).map((customer) => {
                               const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
                               const customerName = customer.company || individualName || 'Unknown';
                               const displayName = customer.is_fleet 
@@ -23735,7 +24029,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     setFormData(prev => ({ 
                                       ...prev, 
                                       customer: customerName,
-                                      customerId: customer.id
+                                      customerId: selectedCustomerId(customer)
                                     }));
                                     setCustomerSearchQuery(displayName);
                                     setShowCustomerDropdown(false);
@@ -23811,7 +24105,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           }
                           
                           const searchQuery = customerSearchQuery.trim();
-                          const filteredCustomers = customers.filter(customer => matchesCustomerLookup(customer, searchQuery));
+                          const filteredCustomers = mergeCustomersById(
+                            mergeCustomersById(customers, customerLookupExtras).filter((customer) =>
+                              matchesCustomerLookup(customer, searchQuery)
+                            ),
+                            workOrderCustomerResults.filter((customer) => matchesCustomerLookup(customer, searchQuery))
+                          );
                           const hasExactMatch = filteredCustomers.some(customer => hasExactCustomerLookupMatch(customer, searchQuery));
                           const isPhoneNumber = isPhoneSearchQuery(searchQuery);
                           const shouldShowCreateOption = searchQuery.length > 0 && !hasExactMatch;
@@ -23861,7 +24160,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   setFormData(prev => ({ 
                                     ...prev, 
                                     customer: customerName,
-                                    customerId: customer.id
+                                    customerId: selectedCustomerId(customer)
                                   }));
                                   setCustomerSearchQuery(displayName);
                                   setShowCustomerDropdown(false);
@@ -26420,7 +26719,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 </div>
                               );
                             }
-                            return customers.map((customer) => {
+                            return customers.slice(0, CUSTOMER_PICKER_BROWSE_LIMIT).map((customer) => {
                               const individualName = [customer.first_name, customer.last_name].filter(Boolean).join(' ');
                               const customerName = customer.company || individualName || 'Unknown';
                               const displayName = customer.is_fleet 
@@ -26432,7 +26731,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   key={customer.id}
                                   onPointerDown={(e) => {
                                     e.preventDefault();
-                                    setEstimateCustomerId(customer.id);
+                                    setEstimateCustomerId(selectedCustomerId(customer));
                                     setEstimateCustomerSearch(displayName);
                                     setShowEstimateCustomerDropdown(false);
                                   }}
@@ -26453,7 +26752,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           }
                           
                           const searchQuery = estimateCustomerSearch.trim();
-                          const filteredCustomers = customers.filter(customer => matchesCustomerLookup(customer, searchQuery));
+                          const filteredCustomers = mergeCustomersById(
+                            mergeCustomersById(customers, customerLookupExtras).filter((customer) =>
+                              matchesCustomerLookup(customer, searchQuery)
+                            ),
+                            estimateCustomerResults.filter((customer) => matchesCustomerLookup(customer, searchQuery))
+                          );
                           const hasExactMatch = filteredCustomers.some(customer => hasExactCustomerLookupMatch(customer, searchQuery));
                           const isPhoneNumber = isPhoneSearchQuery(searchQuery);
                           const shouldShowCreateOption = searchQuery.length > 0 && !hasExactMatch;
@@ -26500,7 +26804,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 key={customer.id}
                                 onPointerDown={(e) => {
                                   e.preventDefault();
-                                  setEstimateCustomerId(customer.id);
+                                  setEstimateCustomerId(selectedCustomerId(customer));
                                   setEstimateCustomerSearch(displayName);
                                   setShowEstimateCustomerDropdown(false);
                                 }}
@@ -28131,6 +28435,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 setCustomerNotes([]);
                 setAddCustomerFleetTrucks([]);
                 setAddCustomerFleetDiscounts([]);
+                rememberCustomers([newCustomer as Customer]);
+                setCustomers((prev) => mergeCustomersById([newCustomer as Customer], prev) as Customer[]);
+                setCustomerSearchResults((prev) => {
+                  if (!prev) return prev;
+                  if (customerQuery.trim() && !customerMatchesQuery(newCustomer as Customer, customerQuery)) return prev;
+                  return mergeCustomersById([newCustomer as Customer], prev) as Customer[];
+                });
+                setCustomerTotalCount((count) => count + 1);
                 fetchCustomers();
                 
                 // If created from invoice modal, auto-select the new customer
@@ -28665,8 +28977,20 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   is_fleet: (typeof customerForm.is_fleet === 'boolean') ? customerForm.is_fleet : showEditCustomerModal.is_fleet || false
                 }).eq('id', showEditCustomerModal.id);
                 if(error){ console.error('Update customer error:', error); return; }
+                const updatedCustomer: Customer = {
+                  ...showEditCustomerModal,
+                  first_name: first,
+                  last_name: last,
+                  email: customerForm.email || showEditCustomerModal.email || null,
+                  phone: customerForm.phone || showEditCustomerModal.phone || null,
+                  address: customerForm.address || showEditCustomerModal.address || null,
+                  city: customerForm.city || showEditCustomerModal.city || null,
+                  state: customerForm.state || showEditCustomerModal.state || null,
+                  zip_code: customerForm.zip_code || showEditCustomerModal.zip_code || null,
+                  is_fleet: (typeof customerForm.is_fleet === 'boolean') ? customerForm.is_fleet : showEditCustomerModal.is_fleet || false
+                };
+                applyCustomerRecordUpdate(updatedCustomer);
                 setShowEditCustomerModal(null);
-                fetchCustomers();
               }} className="w-full rounded-lg bg-primary-500 px-4 py-2.5 text-white hover:bg-primary-600 sm:w-auto sm:py-2">Save</button>
             </div>
           </div>
