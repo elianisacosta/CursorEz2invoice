@@ -318,6 +318,11 @@ import {
   scrollInvoiceItemInputIntoView,
   type InvoiceItemDropdownPosition,
 } from '@/lib/invoices/invoiceItemDropdownPosition';
+import {
+  fetchCustomersByIds,
+  fetchShopInvoicesFallback,
+  fetchShopInvoicesFromBalancesView,
+} from '@/lib/invoices/listShopInvoices';
 
 export default function Dashboard() {
   const { isFounder, subscriptionBypass, simulatedTier, currentTier, canAccessFeature, getBayLimit, setSubscriptionBypass, setSimulatedTier } = useFounder();
@@ -1082,17 +1087,25 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
     }
 
     try {
-      const { data: payments, error } = await supabase
-        .from('invoice_payments')
-        .select('*')
-        .in('invoice_id', invoiceIds);
+      const uniqueIds = [...new Set(invoiceIds.filter(Boolean))];
+      const payments: any[] = [];
+      const chunkSize = 200;
+      for (let index = 0; index < uniqueIds.length; index += chunkSize) {
+        const chunk = uniqueIds.slice(index, index + chunkSize);
+        const { data, error } = await supabase
+          .from('invoice_payments')
+          .select('*')
+          .in('invoice_id', chunk);
 
-      if (error) {
-        console.log('Could not fetch invoice payments:', error);
-        return;
+        if (error) {
+          console.log('Could not fetch invoice payments:', error);
+          return;
+        }
+
+        if (data) payments.push(...data);
       }
 
-      setInvoicePayments(payments || []);
+      setInvoicePayments(payments);
     } catch (error) {
       console.log('Could not fetch invoice payments:', error);
     }
@@ -3060,23 +3073,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     try {
       const shopId = await getShopId();
       const sortDir = overrideSortDir ?? invoiceSortDir;
-      const ascending = sortDir === 'asc';
-      // Use view for balance consistency; fallback to invoices if view doesn't exist yet
-      let query = supabase
-        .from('invoice_balances_v')
-        .select('*')
-        .order('invoice_number_numeric', { ascending })
-        .order('created_at', { ascending });
-
-      if (shopId) {
-        if (isFounder) {
-          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
-        } else {
-          query = query.eq('shop_id', shopId);
-        }
-      }
-
-      const { data: viewData, error: viewError } = await query;
+      const shopScope = { shopId, isFounder, sortDir };
+      // Paginate through PostgREST (1000-row cap) so full invoice history is available client-side.
+      const { data: viewData, error: viewError } = await fetchShopInvoicesFromBalancesView(supabase, shopScope);
 
       if (viewError) {
         const code = (viewError as any)?.code || '';
@@ -3085,18 +3084,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         const isColumnMissing = code === 'PGRST204' || /invoice_number_numeric|column.*does not exist|schema cache/i.test(msg || '');
         const useFallback = isViewMissing || isColumnMissing;
         if (useFallback) {
-          // Fallback: fetch from invoices (pre-view behavior)
-          const fallbackAsc = sortDir === 'asc';
-          let fallbackQuery = supabase
-            .from('invoices')
-            .select('*, customer:customers(id, first_name, last_name, email, phone, company)')
-            .order('invoice_number', { ascending: fallbackAsc })
-            .order('created_at', { ascending: fallbackAsc });
-          if (shopId) {
-            if (isFounder) fallbackQuery = fallbackQuery.or(`shop_id.eq.${shopId},shop_id.is.null`);
-            else fallbackQuery = fallbackQuery.eq('shop_id', shopId);
-          }
-          const { data: invData, error: invError } = await fallbackQuery;
+          const { data: invData, error: invError } = await fetchShopInvoicesFallback(supabase, shopScope);
           if (!invError && invData) {
             const list = invData as unknown as Invoice[];
             await replaceInvoicePaymentsForInvoices(list.map((inv) => inv.id).filter(Boolean));
@@ -3118,16 +3106,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       if (viewData && viewData.length >= 0) {
         const customerIds = [...new Set((viewData as any[]).map((r: any) => r.customer_id).filter(Boolean))] as string[];
-        let customerMap: Record<string, Invoice['customer']> = {};
-        if (customerIds.length > 0) {
-          const { data: customers } = await supabase
-            .from('customers')
-            .select('id, first_name, last_name, email, phone, company')
-            .in('id', customerIds);
-          if (customers) {
-            customerMap = (customers as any[]).reduce((acc, c) => ({ ...acc, [c.id]: c }), {});
-          }
-        }
+        const customerMap = await fetchCustomersByIds(supabase, customerIds);
         const invoicesWithCustomer: Invoice[] = (viewData as any[]).map((row: any) => ({
           ...row,
           customer: row.customer_id ? customerMap[row.customer_id] ?? null : null
