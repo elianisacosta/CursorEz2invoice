@@ -320,9 +320,38 @@ import {
 } from '@/lib/invoices/invoiceItemDropdownPosition';
 import {
   fetchCustomersByIds,
+  fetchAllRowsByInvoiceIds,
+  fetchAllInventoryHistoryForPart,
+  fetchAllCustomerInvoices,
+  fetchAllCustomerWorkOrders,
   fetchShopInvoicesFallback,
   fetchShopInvoicesFromBalancesView,
+  listShopInvoicesPage,
+  INVOICE_DEFAULT_PAGE_SIZE,
 } from '@/lib/invoices/listShopInvoices';
+import {
+  ESTIMATE_DEFAULT_PAGE_SIZE,
+  fetchAllShopEstimates,
+  listShopEstimatesPage,
+  loadShopEstimateSummary,
+  searchShopEstimates,
+  type EstimateSummary,
+} from '@/lib/estimates/listShopEstimates';
+import {
+  fetchAllShopWorkOrders,
+  listShopWorkOrdersPage,
+  loadShopWorkOrderSummary,
+  resolveWorkOrderCustomerIdsByPhone,
+  WORK_ORDER_DEFAULT_PAGE_SIZE,
+  type WorkOrderSummary,
+} from '@/lib/workOrders/listShopWorkOrders';
+import {
+  fetchAllShopLaborItems,
+  listShopLaborPage,
+  loadShopLaborSummary,
+  LABOR_DEFAULT_PAGE_SIZE,
+  type LaborSummary,
+} from '@/lib/labor/listShopLaborItems';
 
 export default function Dashboard() {
   const { isFounder, subscriptionBypass, simulatedTier, currentTier, canAccessFeature, getBayLimit, setSubscriptionBypass, setSimulatedTier } = useFounder();
@@ -1452,6 +1481,19 @@ const addDaysToDateString = (baseDate: string | undefined | null, days: number):
   const [selectedBayForMechanic, setSelectedBayForMechanic] = useState<string | null>(null);
   const [workOrderFilter, setWorkOrderFilter] = useState<'all' | 'waiting' | 'in_progress' | 'on_hold' | 'completed'>('all');
   const [workOrderPhoneSearch, setWorkOrderPhoneSearch] = useState('');
+  const [workOrderPage, setWorkOrderPage] = useState(0);
+  const [workOrderPageSize, setWorkOrderPageSize] = useState(WORK_ORDER_DEFAULT_PAGE_SIZE);
+  const [workOrderListRows, setWorkOrderListRows] = useState<WorkOrder[]>([]);
+  const [workOrderFilteredCount, setWorkOrderFilteredCount] = useState(0);
+  const [workOrderSummary, setWorkOrderSummary] = useState<WorkOrderSummary>({
+    totalCount: 0,
+    waitingCount: 0,
+    inProgressCount: 0,
+    onHoldCount: 0,
+    completedCount: 0,
+  });
+  const debouncedWorkOrderPhoneSearch = useDebouncedValue(workOrderPhoneSearch, 300);
+  const workOrderListRequestIdRef = useRef(0);
   const [isCreatingWorkOrder, setIsCreatingWorkOrder] = useState(false);
   
   // Customers state
@@ -1818,6 +1860,17 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const [laborItems, setLaborItems] = useState<LaborItem[]>([]);
   const [laborLoading, setLaborLoading] = useState(false);
   const [laborQuery, setLaborQuery] = useState('');
+  const [laborPage, setLaborPage] = useState(0);
+  const [laborPageSize, setLaborPageSize] = useState(LABOR_DEFAULT_PAGE_SIZE);
+  const [laborFilteredCount, setLaborFilteredCount] = useState(0);
+  const [laborSummary, setLaborSummary] = useState<LaborSummary>({
+    totalCount: 0,
+    fixedCount: 0,
+    hourlyCount: 0,
+    averageHourlyRate: 0,
+  });
+  const debouncedLaborQuery = useDebouncedValue(laborQuery, 300);
+  const laborListRequestIdRef = useRef(0);
   const [laborRateFilter, setLaborRateFilter] = useState<LaborRateTypeFilter>('all');
   const [laborCategoryFilter, setLaborCategoryFilter] = useState(LABOR_CATEGORY_ALL);
   const [showAddLaborModal, setShowAddLaborModal] = useState(false);
@@ -2811,11 +2864,27 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const estimateTotal = +(estimateSubtotal + estimateTaxAmount + estimateCardFee).toFixed(2);
   const [estimateSearchQuery, setEstimateSearchQuery] = useState('');
   const [estimateStatusFilter, setEstimateStatusFilter] = useState('all');
+  const [estimatePage, setEstimatePage] = useState(0);
+  const [estimateFilteredCount, setEstimateFilteredCount] = useState(0);
+  const [estimateSummary, setEstimateSummary] = useState<EstimateSummary>({
+    totalCount: 0,
+    totalValue: 0,
+    rejectedCount: 0,
+    acceptedCount: 0,
+  });
+  const debouncedEstimateSearch = useDebouncedValue(estimateSearchQuery, 300);
+  const estimateListRequestIdRef = useRef(0);
+  const [integrationEstimates, setIntegrationEstimates] = useState<Estimate[]>([]);
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState('All Status');
   const [invoiceSearchQuery, setInvoiceSearchQuery] = useState('');
   const [invoiceSortDir, setInvoiceSortDir] = useState<'asc' | 'desc'>('desc'); // Invoice ID column: desc = newest first (20, 19, 18...)
-  const [invoicePageSize, setInvoicePageSize] = useState(25);
+  const [invoicePageSize, setInvoicePageSize] = useState(INVOICE_DEFAULT_PAGE_SIZE);
   const [invoiceCurrentPage, setInvoiceCurrentPage] = useState(1);
+  const [invoiceListTotalCount, setInvoiceListTotalCount] = useState(0);
+  const [invoiceListLoading, setInvoiceListLoading] = useState(false);
+  const debouncedInvoiceSearch = useDebouncedValue(invoiceSearchQuery, 300);
+  const invoiceListRequestIdRef = useRef(0);
+  const [invoiceListUsesServerPage, setInvoiceListUsesServerPage] = useState(false);
   const [selectedEstimate, setSelectedEstimate] = useState<Estimate | null>(null);
   const [showViewEstimateModal, setShowViewEstimateModal] = useState(false);
   const [estimateLineItems, setEstimateLineItems] = useState<any[]>([]);
@@ -2994,70 +3063,19 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       const shopId = await getShopId();
       if (!shopId && !isFounder) {
         console.warn('No shop_id found, skipping estimates fetch');
-        setEstimates([]);
+        setIntegrationEstimates([]);
         return;
       }
-
-      let query = supabase
-        .from('estimates')
-        .select(`
-          *,
-          customer:customers(id, first_name, last_name, email, phone, company)
-        `);
-      
-      // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
-      // For regular users: only include data with matching shop_id
-      if (shopId) {
-        if (isFounder) {
-          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
-        } else {
-          query = query.eq('shop_id', shopId);
-        }
-      } else if (isFounder) {
-        // Founder but no shop_id yet - show all data (for old data without shop_id)
-        query = query.is('shop_id', null);
-      }
-
-      const { data, error } = await query.order('created_at', { ascending: false });
-      
-      // Ensure shop_id is included in the data
-      if (data) {
-        data.forEach((est: any) => {
-          if (!est.shop_id) {
-            // shop_id might not be in the select, but it should be in *
-            // This is just a safety check
-          }
-        });
-      }
-      if (data) setEstimates(data as unknown as Estimate[]);
-
+      const scope = { shopId, isFounder };
+      const { data, error } = await fetchAllShopEstimates(supabase, scope);
       if (error) {
-        // Check if error object stringifies to empty object first
-        const errorStringified = JSON.stringify(error);
-        const isEmptyErrorObject = errorStringified === '{}' || errorStringified === 'null';
-        
-        // Check if it's a table not found error (common during development)
-        const errorCode = (error as any)?.code || '';
-        const errorMessage = (error as any)?.message || '';
-        const hasTableNotFoundError =
-          errorCode === 'PGRST116' ||
-          errorMessage.includes('relation "estimates" does not exist') ||
-          errorMessage.includes('table "estimates" does not exist') ||
-          errorCode === '42P01';
-        
-        // If error is empty object or has no meaningful code/message, treat as empty error
-        const isActuallyEmpty = isEmptyErrorObject || (!errorCode && !errorMessage && Object.keys(error as any).length === 0);
-        
-        if (isActuallyEmpty || hasTableNotFoundError) {
-          // Silently handle empty errors and table-not-found errors (expected during development)
-        } else {
-          // Only log actual unexpected errors with meaningful content
-          const hasMeaningfulError = errorCode || (errorMessage && errorMessage.trim().length > 0);
-          if (hasMeaningfulError) {
-            console.error('Error fetching estimates:', error);
-          }
-        }
-        // Soft fallback: keep empty list in UI
+        console.error('Error fetching estimates:', error);
+        setIntegrationEstimates([]);
+        return;
+      }
+      setIntegrationEstimates(data as unknown as Estimate[]);
+      if (activeTab === 'estimates') {
+        void fetchEstimateList();
       }
     } catch (e) {
       console.error('fetchEstimates', e);
@@ -3065,7 +3083,76 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       setEstimatesLoading(false);
     }
   };
+
+  const fetchEstimateList = async () => {
+    const requestId = ++estimateListRequestIdRef.current;
+    setEstimatesLoading(true);
+    try {
+      const shopId = await getShopId();
+      if (!shopId && !isFounder) return;
+      const scope = { shopId, isFounder };
+      const searchTerm = debouncedEstimateSearch.trim();
+      let customerIds: string[] | undefined;
+      if (searchTerm) {
+        const { data: customerMatches } = await searchShopCustomers(supabase, {
+          ...scope,
+          searchTerm,
+          limit: 100,
+        });
+        customerIds = customerMatches.map((customer) => customer.id);
+      }
+      const [summaryResult, pageResult] = await Promise.all([
+        loadShopEstimateSummary(supabase, scope),
+        listShopEstimatesPage(supabase, {
+          ...scope,
+          searchTerm,
+          status: estimateStatusFilter,
+          customerIds,
+          page: estimatePage,
+          pageSize: ESTIMATE_DEFAULT_PAGE_SIZE,
+        }),
+      ]);
+      if (estimateListRequestIdRef.current !== requestId) return;
+      if (summaryResult.error) {
+        console.error('Error loading estimate summary:', summaryResult.error);
+      } else {
+        setEstimateSummary(summaryResult.data);
+      }
+      if (pageResult.error) {
+        console.error('Error fetching estimate list:', pageResult.error);
+        return;
+      }
+      const rows =
+        searchTerm && customerIds?.length
+          ? pageResult.data.filter((row) =>
+              !searchTerm ||
+              (row.estimate_number || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+              customerIds!.includes(String(row.customer_id || ''))
+            )
+          : pageResult.data;
+      setEstimates(rows as unknown as Estimate[]);
+      setEstimateFilteredCount(pageResult.count);
+      const lastPage = Math.max(0, Math.ceil(pageResult.count / ESTIMATE_DEFAULT_PAGE_SIZE) - 1);
+      if (estimatePage > lastPage) setEstimatePage(lastPage);
+    } catch (e) {
+      console.error('fetchEstimateList', e);
+    } finally {
+      if (estimateListRequestIdRef.current === requestId) {
+        setEstimatesLoading(false);
+      }
+    }
+  };
   useEffect(()=>{ fetchEstimates(); }, [contextShopId]);
+
+  useEffect(() => {
+    setEstimatePage(0);
+  }, [contextShopId, debouncedEstimateSearch, estimateStatusFilter]);
+
+  useEffect(() => {
+    if (activeTab === 'estimates') {
+      fetchEstimateList();
+    }
+  }, [activeTab, contextShopId, estimatePage, debouncedEstimateSearch, estimateStatusFilter]);
 
   // Fetch invoices from Supabase; payment-derived totals are recalculated from invoice_payments.
   const fetchInvoices = async (overrideSortDir?: 'asc' | 'desc') => {
@@ -3167,12 +3254,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       
       const invoiceIds = invoices.map(inv => inv.id);
       
-      // Fetch invoice line items
+      // Fetch invoice line items (paginate past PostgREST 1000-row cap)
       try {
-        const { data: lineItems, error: lineItemsError } = await supabase
-          .from('invoice_line_items')
-          .select('*')
-          .in('invoice_id', invoiceIds);
+        const { data: lineItems, error: lineItemsError } = await fetchAllRowsByInvoiceIds<any>(
+          supabase,
+          'invoice_line_items',
+          invoiceIds
+        );
         if (!lineItemsError) {
           setAllInvoiceLineItems(lineItems || []);
           const grouped = new Map<string, any[]>();
@@ -3197,12 +3285,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         console.log('Could not fetch invoice line items:', error);
       }
       
-      // Fetch invoice payments
+      // Fetch invoice payments (paginate past PostgREST 1000-row cap)
       try {
-        const { data: payments } = await supabase
-          .from('invoice_payments')
-          .select('*')
-          .in('invoice_id', invoiceIds);
+        const { data: payments } = await fetchAllRowsByInvoiceIds<any>(
+          supabase,
+          'invoice_payments',
+          invoiceIds
+        );
         setInvoicePayments(payments || []);
       } catch (error) {
         console.log('Could not fetch invoice payments:', error);
@@ -4696,7 +4785,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     }
   };
 
-  // Fetch work orders from Supabase
+  // Fetch work orders from Supabase (full shop set for bays/analytics; list tab uses fetchWorkOrderList).
   const fetchWorkOrders = async () => {
     setWorkOrdersLoading(true);
     try {
@@ -4707,136 +4796,74 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         return;
       }
 
-      let query = supabase
-        .from('work_orders')
-        .select(`
-          *,
-          customers (first_name, last_name, email, phone),
-          trucks (make, model, vin, license_plate, year),
-          service_bays (bay_name, bay_number)
-        `);
-      
-      // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
-      // For regular users: only include data with matching shop_id
-      if (shopId) {
-        if (isFounder) {
-          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
-        } else {
-          query = query.eq('shop_id', shopId);
-        }
-      } else if (isFounder) {
-        // Founder but no shop_id yet - show all data (for old data without shop_id)
-        query = query.is('shop_id', null);
-      }
-
-      const { data, error } = await query.order('created_at', { ascending: false });
-
+      const { data, error } = await fetchAllShopWorkOrders(supabase, { shopId, isFounder });
       if (error) {
         console.error('Error fetching work orders:', error);
-        console.error('Error details:', JSON.stringify(error, null, 2));
-        console.error('Error message:', error.message);
-        console.error('Error code:', error.code);
-        console.error('Error hint:', error.hint);
         setWorkOrders([]);
         return;
       }
-
-      // Transform Supabase data to WorkOrder format
-      // Sort by created_at ascending to assign sequential numbers (oldest = 1)
-      const sortedData = [...(data || [])].sort((a: any, b: any) => {
-        const dateA = new Date(a.created_at || 0).getTime();
-        const dateB = new Date(b.created_at || 0).getTime();
-        return dateA - dateB; // Oldest first
-      });
-      
-      const transformedWorkOrders: WorkOrder[] = sortedData.map((wo: any, index: number) => {
-        // Use DB work_order_number when it's short (e.g. "Work Order 6"); if long (WO-timestamp) use sequential
-        const sequentialNumber = index + 1;
-        const dbNumber = wo.work_order_number && String(wo.work_order_number).trim();
-        const isLongFormat = dbNumber && /^WO-\d{10,}$/.test(dbNumber);
-        const workOrderNumber = (dbNumber && !isLongFormat) ? dbNumber : `Work Order ${sequentialNumber}`;
-        
-        // Extract service title and description from the description field
-        // Format is usually "Service Title - Description" or just "Service Title"
-        const descriptionParts = wo.description ? wo.description.split(' - ') : [];
-        const serviceTitle = descriptionParts[0] || wo.description || '';
-        const description = descriptionParts.length > 1 ? descriptionParts.slice(1).join(' - ') : '';
-        
-        return {
-          id: wo.id,
-          customer: wo.customers ? `${wo.customers.first_name || ''} ${wo.customers.last_name || ''}`.trim() : 'Unknown',
-          truck: wo.trucks ? `${wo.trucks.make || ''} ${wo.trucks.model || ''}`.trim() : 'Unknown',
-          status: wo.status || 'pending',
-          bay: wo.service_bays ? (wo.service_bays.bay_name || `Bay ${wo.service_bays.bay_number}`) : 'Bay TBD',
-          work_order_number: workOrderNumber,
-          customer_id: wo.customer_id,
-          truck_id: wo.truck_id,
-          bay_id: wo.bay_id,
-          priority: wo.priority,
-          description: description || wo.description || '',
-          notes: wo.notes || '',
-          created_at: wo.created_at,
-          // Use license_plate field for truck number (displayed as "Truck #"), NOT VIN
-          truck_number: (wo.trucks?.license_plate || '').trim(),
-          // Debug: log truck number retrieval
-          // console.log('Work Order', wo.id, 'truck_number:', (wo.trucks?.license_plate || '').trim(), 'trucks:', wo.trucks),
-          vin: wo.trucks?.vin || '',
-          make: wo.trucks?.make || '',
-          model: wo.trucks?.model || '',
-          year: wo.trucks?.year || null,
-          estimated_hours: wo.estimated_hours || null,
-          service_title: serviceTitle,
-          customer_phone: wo.customers?.phone || '',
-          mechanic: wo.employee_id || wo.mechanic || null, // Map employee_id to mechanic field
-          updated_at: wo.updated_at || null
-        };
-      });
-
-      // Debug: Log phone numbers for troubleshooting
-      if (transformedWorkOrders.length > 0) {
-        console.log('Work orders with phone numbers:', transformedWorkOrders.map(wo => ({
-          id: wo.id,
-          customer: wo.customer,
-          phone: wo.customer_phone,
-          hasPhone: !!wo.customer_phone
-        })));
-      }
-      
-      // Re-sort by created_at descending for display (newest first)
-      transformedWorkOrders.sort((a, b) => {
-        const dateA = new Date(a.created_at || 0).getTime();
-        const dateB = new Date(b.created_at || 0).getTime();
-        return dateB - dateA; // Newest first
-      });
-
-      // Debug logging
-      console.log('Transformed work orders:', transformedWorkOrders);
-      transformedWorkOrders.forEach((wo, idx) => {
-        console.log(`Work Order ${idx + 1}:`, {
-          id: wo.id,
-          work_order_number: wo.work_order_number,
-          truck_number: wo.truck_number,
-          truck_id: wo.truck_id,
-          created_at: wo.created_at,
-          customer: wo.customer,
-          truck: wo.truck,
-          bay_id: wo.bay_id,
-          raw_trucks_data: (data || [])[idx]?.trucks
-        });
-        if (!wo.truck_number || wo.truck_number.trim() === '') {
-          console.warn(`⚠️ Work Order ${wo.work_order_number} (${wo.id}) has no truck_number!`, {
-            truck_id: wo.truck_id,
-            trucks_data: (data || [])[idx]?.trucks
-          });
-        }
-      });
-
-      setWorkOrders(transformedWorkOrders);
+      setWorkOrders(data as unknown as WorkOrder[]);
+      void fetchWorkOrderList();
     } catch (error) {
       console.error('Error in fetchWorkOrders:', error);
       setWorkOrders([]);
     } finally {
       setWorkOrdersLoading(false);
+    }
+  };
+
+  const fetchWorkOrderList = async () => {
+    const requestId = ++workOrderListRequestIdRef.current;
+    setWorkOrdersLoading(true);
+    try {
+      const shopId = await getShopId();
+      if (!shopId && !isFounder) return;
+      const scope = { shopId, isFounder };
+      let customerIds: string[] | undefined;
+      const phoneSearch = debouncedWorkOrderPhoneSearch.trim();
+      if (phoneSearch) {
+        customerIds = await resolveWorkOrderCustomerIdsByPhone(supabase, {
+          ...scope,
+          phoneSearch,
+        });
+        if (customerIds.length === 0) {
+          if (workOrderListRequestIdRef.current === requestId) {
+            setWorkOrderListRows([]);
+            setWorkOrderFilteredCount(0);
+          }
+          return;
+        }
+      }
+      const [summaryResult, pageResult] = await Promise.all([
+        loadShopWorkOrderSummary(supabase, scope),
+        listShopWorkOrdersPage(supabase, {
+          ...scope,
+          statusFilter: workOrderFilter,
+          customerIds,
+          page: workOrderPage,
+          pageSize: workOrderPageSize,
+        }),
+      ]);
+      if (workOrderListRequestIdRef.current !== requestId) return;
+      if (summaryResult.error) {
+        console.error('Error loading work order summary:', summaryResult.error);
+      } else {
+        setWorkOrderSummary(summaryResult.data);
+      }
+      if (pageResult.error) {
+        console.error('Error fetching work order list:', pageResult.error);
+        return;
+      }
+      setWorkOrderListRows(pageResult.data as unknown as WorkOrder[]);
+      setWorkOrderFilteredCount(pageResult.count);
+      const lastPage = Math.max(0, Math.ceil(pageResult.count / workOrderPageSize) - 1);
+      if (workOrderPage > lastPage) setWorkOrderPage(lastPage);
+    } catch (error) {
+      console.error('Error in fetchWorkOrderList:', error);
+    } finally {
+      if (workOrderListRequestIdRef.current === requestId) {
+        setWorkOrdersLoading(false);
+      }
     }
   };
 
@@ -5162,6 +5189,41 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     }
   }, [contextShopId]);
 
+  useEffect(() => {
+    setWorkOrderPage(0);
+  }, [contextShopId, workOrderFilter, debouncedWorkOrderPhoneSearch, workOrderPageSize]);
+
+  useEffect(() => {
+    if (activeTab === 'work-orders') {
+      fetchWorkOrderList();
+    }
+  }, [
+    activeTab,
+    contextShopId,
+    workOrderPage,
+    workOrderPageSize,
+    workOrderFilter,
+    debouncedWorkOrderPhoneSearch,
+  ]);
+
+  useEffect(() => {
+    setLaborPage(0);
+  }, [contextShopId, debouncedLaborQuery, laborCategoryFilter, laborRateFilter, laborPageSize]);
+
+  useEffect(() => {
+    if (activeTab === 'labor') {
+      fetchLaborList();
+    }
+  }, [
+    activeTab,
+    contextShopId,
+    laborPage,
+    laborPageSize,
+    debouncedLaborQuery,
+    laborCategoryFilter,
+    laborRateFilter,
+  ]);
+
   // Refetch bays when workOrders changes to update work order numbers
   useEffect(() => {
     if (workOrders.length > 0) {
@@ -5358,78 +5420,68 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     fetchEmployees();
   }, [contextShopId]);
 
-  // Fetch labor items
-  const fetchLaborItems = async () => {
-    setLaborLoading(true);
+  // Fetch labor items for invoice/estimate forms (full catalog, paginated past 1000-row cap).
+  const fetchLaborCatalog = async () => {
     try {
       const shopId = await getShopId();
-      
-      if (!shopId && !isFounder) {
-        console.warn('No shop_id found, skipping labor items fetch');
-        setLaborItems([]);
-        return;
-      }
-
-      let query = supabase
-        .from('labor_items')
-        .select('*');
-      
-      // For founders: include data with shop_id OR shop_id IS NULL (to get old data)
-      // For regular users: only include data with matching shop_id
-      if (shopId) {
-        if (isFounder) {
-          // Founder: get data with matching shop_id OR null shop_id (old data)
-          query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
-        } else {
-          query = query.eq('shop_id', shopId);
-        }
-      } else if (isFounder) {
-        // Founder but no shop_id yet - only show old data without shop_id
-        // Don't filter at all would show everything, so we filter for null shop_id
-        query = query.is('shop_id', null);
-      }
-
-      const { data, error } = await query.order('created_at', { ascending: false });
-      
-      if (error) {
-        // Check if it's an RLS error, empty error object, or missing column error
-        const errorStringified = JSON.stringify(error);
-        const isEmptyErrorObject = errorStringified === '{}' || errorStringified === 'null' || errorStringified === '{}';
-        const errorCode = (error as any)?.code || '';
-        const errorMessage = (error as any)?.message || '';
-        const errorKeys = Object.keys(error || {});
-        const hasNoErrorProperties = errorKeys.length === 0;
-        const isMissingColumnError = errorCode === '42703' || errorMessage?.includes('does not exist') || errorMessage?.includes('column');
-        
-        // If it's an empty error, RLS error, or missing column error, silently set empty array
-        // This prevents Next.js error overlay from appearing for harmless schema/RLS errors
-        if (isEmptyErrorObject || hasNoErrorProperties || errorCode === '42501' || errorCode === '42703' || errorMessage?.includes('row-level security') || errorMessage?.includes('RLS') || isMissingColumnError) {
-          // DO NOT log schema/RLS errors - silently handle them
-          setLaborItems([]);
-        } else if (errorMessage && errorMessage.trim().length > 0) {
-          // Only log errors that have actual error messages and aren't schema/RLS related
-          console.error('Error fetching labor items:', error);
-          setLaborItems([]);
-        } else {
-          // Silent handling for errors without messages
-          setLaborItems([]);
-        }
-      } else if (data) {
-        setLaborItems(data as unknown as LaborItem[]);
-      } else {
-        setLaborItems([]);
+      if (!shopId && !isFounder) return;
+      const { data, error } = await fetchAllShopLaborItems(supabase, { shopId, isFounder });
+      if (!error && data) {
+        setLaborItems((prev) => {
+          const byId = new Map(prev.map((item) => [String(item.id), item]));
+          (data as unknown as LaborItem[]).forEach((item) => byId.set(String(item.id), item));
+          return Array.from(byId.values());
+        });
       }
     } catch (err) {
-      console.error('Error in fetchLaborItems:', err);
-      setLaborItems([]);
-    } finally {
-      setLaborLoading(false);
+      console.error('Error in fetchLaborCatalog:', err);
     }
   };
 
-  useEffect(() => {
-    fetchLaborItems();
-  }, [contextShopId]);
+  const fetchLaborList = async () => {
+    const requestId = ++laborListRequestIdRef.current;
+    setLaborLoading(true);
+    try {
+      const shopId = await getShopId();
+      if (!shopId && !isFounder) {
+        setLaborItems([]);
+        return;
+      }
+      const scope = { shopId, isFounder };
+      const [summaryResult, pageResult] = await Promise.all([
+        loadShopLaborSummary(supabase, scope),
+        listShopLaborPage(supabase, {
+          ...scope,
+          searchTerm: debouncedLaborQuery,
+          category: laborCategoryFilter,
+          rateType: laborRateFilter,
+          page: laborPage,
+          pageSize: laborPageSize,
+        }),
+      ]);
+      if (laborListRequestIdRef.current !== requestId) return;
+      if (summaryResult.error) {
+        console.error('Error loading labor summary:', summaryResult.error);
+      } else {
+        setLaborSummary(summaryResult.data);
+      }
+      if (pageResult.error) {
+        console.error('Error fetching labor list:', pageResult.error);
+        return;
+      }
+      setLaborItems(pageResult.data as unknown as LaborItem[]);
+      setLaborFilteredCount(pageResult.count);
+      const lastPage = Math.max(0, Math.ceil(pageResult.count / laborPageSize) - 1);
+      if (laborPage > lastPage) setLaborPage(lastPage);
+    } catch (err) {
+      console.error('Error in fetchLaborList:', err);
+      setLaborItems([]);
+    } finally {
+      if (laborListRequestIdRef.current === requestId) {
+        setLaborLoading(false);
+      }
+    }
+  };
 
   // Fetch one inventory page plus shop-wide stats. Never load the whole parts table into memory.
   const fetchInventory = async () => {
@@ -5529,7 +5581,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
   useEffect(() => {
     if (!showCreateInvoiceModal && !editingInvoice) return;
-    void fetchLaborItems();
+    void fetchLaborCatalog();
   }, [showCreateInvoiceModal, editingInvoice?.id]);
 
   useEffect(() => {
@@ -5958,8 +6010,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   };
 
   // Export estimates to CSV
-  const exportEstimates = () => {
-    if (!estimates.length) {
+  const exportEstimates = async () => {
+    const shopId = await getShopId();
+    if (!shopId && !isFounder) {
+      showToast({ type: 'error', message: 'No estimates to export.' });
+      return;
+    }
+    const { data: exportRows, error } = await fetchAllShopEstimates(supabase, { shopId, isFounder });
+    if (error || !exportRows.length) {
       showToast({ type: 'error', message: 'No estimates to export.' });
       return;
     }
@@ -5976,7 +6034,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       'Status'
     ];
 
-    const rows = estimates.map((estimate) => {
+    const rows = exportRows.map((estimate) => {
       const customerName = estimate.customer 
         ? [estimate.customer.first_name, estimate.customer.last_name].filter(Boolean).join(' ') || estimate.customer.company || 'Unknown'
         : 'No Customer';
@@ -6019,7 +6077,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
     
-    showToast({ type: 'success', message: `Exported ${estimates.length} estimate(s) to CSV.` });
+    showToast({ type: 'success', message: `Exported ${exportRows.length} estimate(s) to CSV.` });
   };
 
   // Export inventory to CSV
@@ -6524,7 +6582,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         }
 
         // Refresh labor items list
-        fetchLaborItems();
+        fetchLaborList();
 
         // Show results
         if (successCount > 0) {
@@ -6901,11 +6959,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const fetchInventoryHistory = async (partId: string) => {
     setInventoryHistoryLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('inventory_history')
-        .select('*')
-        .eq('part_id', partId)
-        .order('created_at', { ascending: false });
+      const { data, error } = await fetchAllInventoryHistoryForPart(supabase, partId);
       
       if (data) {
         // Deduplicate records: keep only the first occurrence of records with same part_id, notes (invoice ID), and quantity_change
@@ -8727,11 +8781,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const filteredEstimatesForInvoiceList = useMemo(() => {
     if (!invoicesEstimatesIntegrationEnabled) return [];
     if (invoiceStatusFilter !== 'All Status') return [];
-    return estimates.filter((estimate) =>
+    return integrationEstimates.filter((estimate) =>
       estimateMatchesInvoiceListSearch(estimate, invoiceSearchQuery)
     );
   }, [
-    estimates,
+    integrationEstimates,
     invoiceSearchQuery,
     invoiceStatusFilter,
     invoicesEstimatesIntegrationEnabled,
@@ -12733,24 +12787,24 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-2xl font-bold text-gray-900">
-                    ${estimates.reduce((sum, e) => sum + (e.total_amount || 0), 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    ${estimateSummary.totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </div>
                   <div className="text-sm text-gray-600">Total Estimate Value</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-2xl font-bold text-red-600">
-                    {estimates.filter(e => e.status === 'rejected').length}
+                    {estimateSummary.rejectedCount}
                   </div>
                   <div className="text-sm text-gray-600">Rejected</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-2xl font-bold text-green-600">
-                    {estimates.filter(e => e.status === 'accepted').length}
+                    {estimateSummary.acceptedCount}
                   </div>
                   <div className="text-sm text-gray-600">Approved</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                  <div className="text-2xl font-bold text-gray-900">{estimates.length}</div>
+                  <div className="text-2xl font-bold text-gray-900">{estimateSummary.totalCount}</div>
                   <div className="text-sm text-gray-600">Total Estimates</div>
                 </div>
               </div>
@@ -12825,15 +12879,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       
                       {/* Filtered Estimates */}
                       {(() => {
-                        const filtered = estimates.filter(e => {
-                          const matchesSearch = !estimateSearchQuery || 
-                            (e.estimate_number || e.id.slice(0, 8)).toLowerCase().includes(estimateSearchQuery.toLowerCase()) ||
-                            (e.customer?.first_name || '').toLowerCase().includes(estimateSearchQuery.toLowerCase()) ||
-                            (e.customer?.last_name || '').toLowerCase().includes(estimateSearchQuery.toLowerCase()) ||
-                            (e.customer?.company || '').toLowerCase().includes(estimateSearchQuery.toLowerCase());
-                          const matchesStatus = estimateStatusFilter === 'all' || e.status === estimateStatusFilter;
-                          return matchesSearch && matchesStatus;
-                        });
+                        const filtered = estimates;
 
                         if (filtered.length === 0) {
                           return (
@@ -12841,11 +12887,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                               <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                               <h3 className="text-lg font-medium text-gray-900 mb-2">No estimates found</h3>
                               <p className="text-gray-600 mb-6">
-                                {estimates.length === 0 
+                                {estimateSummary.totalCount === 0
                                   ? "Create your first estimate to get started with customer approvals."
                                   : "No estimates match your search criteria."}
                               </p>
-                              {estimates.length === 0 && (
+                              {estimateSummary.totalCount === 0 && (
                                 <button
                                   onClick={() => setShowCreateEstimateModal(true)}
                                   className="bg-primary-500 text-white px-6 py-3 rounded-lg hover:bg-primary-600 transition-colors flex items-center space-x-2 mx-auto"
@@ -13517,28 +13563,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               {/* Work Order Stats */}
               {(() => {
                 // Define counts based on the desired status model
-                const waitingOrders = workOrders.filter(wo => {
-                  const status = wo.status?.toLowerCase() || '';
-                  // Waiting: status is 'pending' or 'waiting'
-                  return status === 'pending' || status === 'waiting';
-                });
-
-                const inProgressOrders = workOrders.filter(wo => {
-                  const status = wo.status?.toLowerCase() || '';
-                  return status === 'in_progress' || status === 'in progress';
-                });
-
-                const onHoldOrders = workOrders.filter(wo => {
-                  const status = wo.status?.toLowerCase() || '';
-                  return status === 'on_hold' || status === 'on hold' || status === 'onhold';
-                });
-
-                const completedOrders = workOrders.filter(wo => {
-                  const status = wo.status?.toLowerCase() || '';
-                  return status === 'completed';
-                });
-
-                const totalOrders = workOrders.length;
+                const waitingOrders = { length: workOrderSummary.waitingCount };
+                const inProgressOrders = { length: workOrderSummary.inProgressCount };
+                const onHoldOrders = { length: workOrderSummary.onHoldCount };
+                const completedOrders = { length: workOrderSummary.completedCount };
+                const totalOrders = workOrderSummary.totalCount;
 
                 return (
                   <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
@@ -13619,7 +13648,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       <h3 className="text-lg font-semibold text-gray-900">Work Orders</h3>
                       {isFounder && (
                         <p className="text-sm text-gray-600 mt-1">
-                          Founder Mode: {workOrders.length} total orders
+                          Founder Mode: {workOrderSummary.totalCount} total orders
                         </p>
                       )}
                     </div>
@@ -13650,59 +13679,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 </div>
                 <div className="p-6 min-w-0 overflow-x-auto">
                   {(() => {
-                    // Filter work orders based on selected filter
-                    let filteredOrders = workOrders;
-                    
-                    if (workOrderFilter !== 'all') {
-                      filteredOrders = workOrders.filter(order => {
-                        const status = order.status?.toLowerCase() || '';
-                        
-                        switch (workOrderFilter) {
-                          case 'waiting':
-                            // Waiting: status is 'pending' or 'waiting'
-                            return status === 'pending' || status === 'waiting';
-                          case 'in_progress':
-                            return status === 'in_progress' || status === 'in progress';
-                          case 'on_hold':
-                            return status === 'on_hold' || status === 'on hold' || status === 'onhold';
-                          case 'completed':
-                            return status === 'completed';
-                          default:
-                            return true;
-                        }
-                      });
-                    }
-
-                    // Filter by phone number if search query exists
-                    if (workOrderPhoneSearch.trim()) {
-                      const phoneSearch = workOrderPhoneSearch.trim();
-                      filteredOrders = filteredOrders.filter(order => {
-                        const phone = order.customer_phone || '';
-                        if (!phone || phone.trim() === '') {
-                          return false;
-                        }
-                        
-                        // Remove all non-digit characters for comparison
-                        const normalizePhone = (p: string) => p.replace(/\D/g, '');
-                        
-                        const normalizedPhone = normalizePhone(phone);
-                        const normalizedSearch = normalizePhone(phoneSearch);
-                        
-                        // Debug logging
-                        if (normalizedPhone && normalizedSearch) {
-                          console.log('Phone search:', {
-                            originalPhone: phone,
-                            normalizedPhone,
-                            searchTerm: phoneSearch,
-                            normalizedSearch,
-                            matches: normalizedPhone.includes(normalizedSearch) || normalizedSearch.includes(normalizedPhone)
-                          });
-                        }
-                        
-                        // Match if either contains the other (handles partial matches)
-                        return normalizedPhone.includes(normalizedSearch) || normalizedSearch.includes(normalizedPhone);
-                      });
-                    }
+                    const filteredOrders = workOrderListRows;
 
                     // Calculate time elapsed helper
                     const getTimeElapsed = (createdAt?: string): string => {
@@ -13913,24 +13890,24 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               {/* Stats */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-4 py-3">
-                  <div className="text-xl font-bold text-gray-900">{laborItems.length}</div>
+                  <div className="text-xl font-bold text-gray-900">{laborSummary.totalCount}</div>
                   <div className="text-sm text-gray-600">Total Labor Items</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-4 py-3">
                   <div className="text-xl font-bold text-gray-900">
-                    {laborItems.filter((i) => i.rate_type === 'fixed').length}
+                    {laborSummary.fixedCount}
                   </div>
                   <div className="text-sm text-gray-600">Fixed Rate Items</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-4 py-3">
                   <div className="text-xl font-bold text-gray-900">
-                    {laborItems.filter((i) => i.rate_type === 'hourly').length}
+                    {laborSummary.hourlyCount}
                   </div>
                   <div className="text-sm text-gray-600">Hourly Rate Items</div>
                 </div>
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-4 py-3">
                   <div className="text-xl font-bold text-gray-900">
-                    ${averageHourlyLaborRate(laborItems).toFixed(2)}
+                    ${laborSummary.averageHourlyRate.toFixed(2)}
                   </div>
                   <div className="text-sm text-gray-600">Avg. Hourly Rate</div>
                 </div>
@@ -14002,15 +13979,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                     <div className="text-center text-gray-600 py-12">Loading...</div>
                   ) : (
                     (() => {
-                      const filteredLaborItems = laborItems
-                        .filter((i) => laborItemMatchesQuery(i, laborQuery))
-                        .filter((i) => laborItemMatchesCategory(i, laborCategoryFilter))
-                        .filter((i) => laborItemMatchesRateType(i, laborRateFilter));
+                      const filteredLaborItems = laborItems;
 
                       if (filteredLaborItems.length === 0) {
                         return (
                           <div className="text-center text-gray-600 py-12">
-                            {laborItems.length === 0
+                            {laborFilteredCount === 0
                               ? 'No labor items yet'
                               : 'No labor items match the current filters.'}
                           </div>
@@ -14066,7 +14040,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 onClick={async () => {
                                   if (confirm('Delete labor item?')) {
                                     await supabase.from('labor_items').delete().eq('id', item.id);
-                                    fetchLaborItems();
+                                    fetchLaborList();
                                   }
                                 }}
                                 className="p-2.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg"
@@ -14130,7 +14104,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 onClick={async () => {
                                   if (confirm('Delete labor item?')) {
                                     await supabase.from('labor_items').delete().eq('id', item.id);
-                                    fetchLaborItems();
+                                    fetchLaborList();
                                   }
                                 }}
                                 className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg"
@@ -19116,37 +19090,35 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                           const shopId = await getShopId();
                                           if (!shopId) return;
                                           
-                                          // Fetch invoices for this customer
-                                          const { data: customerInvoices } = await supabase
-                                            .from('invoices')
-                                            .select('*')
-                                            .eq('customer_id', customer.id)
-                                            .eq('shop_id', shopId)
-                                            .order('created_at', { ascending: false });
-                                          
-                                          // Fetch work orders for this customer
-                                          const { data: customerWorkOrders } = await supabase
-                                            .from('work_orders')
-                                            .select('*')
-                                            .eq('customer_id', customer.id)
-                                            .eq('shop_id', shopId)
-                                            .order('created_at', { ascending: false });
+                                          const scope = { shopId, isFounder };
+                                          const [invoiceResult, workOrderResult] = await Promise.all([
+                                            fetchAllCustomerInvoices(supabase, {
+                                              ...scope,
+                                              customerId: customer.id,
+                                            }),
+                                            fetchAllCustomerWorkOrders(supabase, {
+                                              ...scope,
+                                              customerId: customer.id,
+                                            }),
+                                          ]);
+                                          const customerInvoices = invoiceResult.data || [];
+                                          const customerWorkOrders = workOrderResult.data || [];
                                           
                                           // Calculate totals
-                                          const totalSpent = customerInvoices?.reduce((sum, inv) => sum + (inv.total_amount || 0), 0) || 0;
-                                          const totalPaid = customerInvoices?.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0) || 0;
+                                          const totalSpent = customerInvoices.reduce((sum, inv) => sum + (Number(inv.total_amount) || 0), 0);
+                                          const totalPaid = customerInvoices.reduce((sum, inv) => sum + (Number(inv.paid_amount) || 0), 0);
                                           const balanceDue = totalSpent - totalPaid;
                                           
                                           setAnalyticsCustomerDetails({
                                             customer,
-                                            invoices: customerInvoices || [],
-                                            workOrders: customerWorkOrders || [],
+                                            invoices: customerInvoices,
+                                            workOrders: customerWorkOrders,
                                             totalSpent,
                                             totalPaid,
                                             balanceDue,
-                                            invoiceCount: customerInvoices?.length || 0,
-                                            workOrderCount: customerWorkOrders?.length || 0,
-                                            lastVisit: customerWorkOrders?.[0]?.created_at || customerInvoices?.[0]?.created_at || null
+                                            invoiceCount: customerInvoices.length,
+                                            workOrderCount: customerWorkOrders.length,
+                                            lastVisit: (customerWorkOrders[0] as { created_at?: string })?.created_at || (customerInvoices[0] as { created_at?: string })?.created_at || null
                                           });
                                         } catch (error) {
                                           console.error('Error fetching customer details:', error);
@@ -25724,7 +25696,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   setShowLaborCategoryDropdown(false);
                   setCreatingLaborFromInvoice(false);
                   setCreatingLaborForLineItem(null);
-                  await fetchLaborItems();
+                  await fetchLaborList();
                 }
               }} className="px-4 py-3 sm:py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 touch-manipulation min-h-[44px] sm:min-h-0">Create Labor Item</button>
             </div>
@@ -26603,7 +26575,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 const { error } = await supabase.from('labor_items').update(updates).eq('id', editLaborItem.id);
                 if(error){ console.error('Update labor item error:', error); return; }
                 setEditLaborItem(null);
-                fetchLaborItems();
+                fetchLaborList();
               }} className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600">Save</button>
             </div>
           </div>
