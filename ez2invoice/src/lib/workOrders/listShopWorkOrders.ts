@@ -5,8 +5,8 @@ import {
   fetchAllPagedRows,
   pageRange,
   type ShopScope,
-} from '../postgrestPagination.ts';
-import { buildPhoneDigitIlikePattern } from '../customers/searchCustomers.ts';
+} from '@/lib/postgrestPagination';
+import { buildPhoneDigitIlikePattern } from '@/lib/customers/searchCustomers';
 
 export { POSTGREST_PAGE_SIZE };
 export const WORK_ORDER_DEFAULT_PAGE_SIZE = 25;

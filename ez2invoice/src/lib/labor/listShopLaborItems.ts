@@ -5,7 +5,7 @@ import {
   fetchAllPagedRows,
   pageRange,
   type ShopScope,
-} from '../postgrestPagination.ts';
+} from '@/lib/postgrestPagination';
 
 export { POSTGREST_PAGE_SIZE };
 export const LABOR_DEFAULT_PAGE_SIZE = 25;

@@ -4,7 +4,7 @@ import {
   fetchAllPagedRows,
   pageRange,
   type ShopScope,
-} from '../postgrestPagination.ts';
+} from '@/lib/postgrestPagination';
 
 /** @deprecated use POSTGREST_PAGE_SIZE */
 export const INVOICE_FETCH_PAGE_SIZE = POSTGREST_PAGE_SIZE;
