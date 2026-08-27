@@ -103,8 +103,8 @@ export function transformWorkOrderRow(wo: Record<string, unknown>, sequentialNum
   const customers = wo.customers as Record<string, unknown> | null | undefined;
   const trucks = wo.trucks as Record<string, unknown> | null | undefined;
   const serviceBays = wo.service_bays as Record<string, unknown> | null | undefined;
-  const dbNumber = wo.work_order_number && String(wo.work_order_number).trim();
-  const isLongFormat = dbNumber && /^WO-\d{10,}$/.test(dbNumber);
+  const dbNumber = wo.work_order_number != null ? String(wo.work_order_number).trim() : '';
+  const isLongFormat = dbNumber.length > 0 && /^WO-\d{10,}$/.test(dbNumber);
   const workOrderNumber =
     dbNumber && !isLongFormat
       ? dbNumber
@@ -153,7 +153,11 @@ function applyWorkOrderListFilters<
     in: (column: string, values: string[]) => T;
   }
 >(query: T, options: WorkOrderListFilters): T {
-  let next = applyShopScope(query as unknown as Parameters<typeof applyShopScope>[0], options.shopId, options.isFounder) as T;
+  let next = applyShopScope(
+    query as unknown as Parameters<typeof applyShopScope>[0],
+    options.shopId,
+    options.isFounder
+  ) as unknown as T;
   const statusOr = buildWorkOrderStatusOrFilter(options.statusFilter || 'all');
   if (statusOr) next = next.or(statusOr);
   if (options.customerIds && options.customerIds.length > 0) {

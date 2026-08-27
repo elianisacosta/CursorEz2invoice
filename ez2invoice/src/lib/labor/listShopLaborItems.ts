@@ -62,7 +62,11 @@ function applyLaborListFilters<
     eq: (column: string, value: string) => T;
   }
 >(query: T, options: LaborListFilters): T {
-  let next = applyShopScope(query as unknown as Parameters<typeof applyShopScope>[0], options.shopId, options.isFounder) as T;
+  let next = applyShopScope(
+    query as unknown as Parameters<typeof applyShopScope>[0],
+    options.shopId,
+    options.isFounder
+  ) as unknown as T;
   const trimmed = (options.searchTerm || '').trim();
   if (trimmed) {
     const pattern = `%${escapeIlikePattern(trimmed)}%`;

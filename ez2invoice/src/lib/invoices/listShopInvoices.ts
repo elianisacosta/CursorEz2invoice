@@ -112,7 +112,11 @@ function applyInvoiceListFilters<
     gt: (column: string, value: number) => T;
   }
 >(query: T, options: InvoiceListFilters): T {
-  let next = applyInvoiceShopScope(query as unknown as Parameters<typeof applyInvoiceShopScope>[0], options.shopId, options.isFounder) as T;
+  let next = applyInvoiceShopScope(
+    query as unknown as Parameters<typeof applyInvoiceShopScope>[0],
+    options.shopId,
+    options.isFounder
+  ) as unknown as T;
   const trimmed = (options.searchTerm || '').trim();
   if (trimmed) {
     const pattern = `%${escapeIlikePattern(trimmed)}%`;
