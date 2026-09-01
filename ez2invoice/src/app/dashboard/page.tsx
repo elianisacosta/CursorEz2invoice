@@ -347,6 +347,11 @@ import {
 } from '@/lib/invoices/listShopInvoices';
 import { logInvoiceListPerformance } from '@/lib/invoices/invoiceListPerformance';
 import {
+  resolveInvoiceListFetchMode,
+  shouldShowInvoiceListSkeleton,
+  shouldShowInvoiceSummarySkeleton,
+} from '@/lib/invoices/invoiceListRefresh';
+import {
   ALL_LOCATIONS_FILTER,
   NO_LOCATION_FILTER,
   buildManualLocationPatch,
@@ -2798,7 +2803,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     } | null;
   }
   const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [invoicesLoading, setInvoicesLoading] = useState(false);
   const lastOptimisticInvoiceRef = useRef<{ id: string; total_amount: number; apply_card_fee: boolean; card_fee_amount: number; balance_due: number } | null>(null);
   const [accountsReceivableView, setAccountsReceivableView] = useState<'outstanding' | 'aging'>('outstanding');
   const [accountsReceivableFilter, setAccountsReceivableFilter] = useState<'all' | AgingBucket>('all');
@@ -2918,7 +2922,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const [invoicePageSize, setInvoicePageSize] = useState(INVOICE_DEFAULT_PAGE_SIZE);
   const [invoiceCurrentPage, setInvoiceCurrentPage] = useState(1);
   const [invoiceListTotalCount, setInvoiceListTotalCount] = useState(0);
-  const [invoiceListLoading, setInvoiceListLoading] = useState(false);
+  const [invoiceInitialLoading, setInvoiceInitialLoading] = useState(false);
+  const [invoiceListRefreshing, setInvoiceListRefreshing] = useState(false);
+  const [invoiceSummaryLoaded, setInvoiceSummaryLoaded] = useState(false);
   const [invoiceSummary, setInvoiceSummary] = useState<InvoiceSummary>({
     totalDueToday: 0,
     totalPaid: 0,
@@ -2939,6 +2945,9 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const [savingLocationInvoiceId, setSavingLocationInvoiceId] = useState<string | null>(null);
   const debouncedInvoiceSearch = useDebouncedValue(invoiceSearchQuery, 300);
   const invoiceListRequestIdRef = useRef(0);
+  const invoicesRef = useRef(invoices);
+  const skipNextInvoiceFetchRef = useRef(false);
+  invoicesRef.current = invoices;
   const [invoiceListUsesServerPage] = useState(true);
   const [selectedEstimate, setSelectedEstimate] = useState<Estimate | null>(null);
   const [showViewEstimateModal, setShowViewEstimateModal] = useState(false);
@@ -3210,40 +3219,74 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   }, [activeTab, contextShopId, estimatePage, debouncedEstimateSearch, estimateStatusFilter]);
 
   // Fetch invoices from Supabase; payment-derived totals are recalculated from invoice_payments.
-  const fetchInvoiceList = async (overrideSortDir?: 'asc' | 'desc') => {
-    const requestId = ++invoiceListRequestIdRef.current;
-    setInvoiceListLoading(true);
-    setInvoicesLoading(true);
-    try {
-      const shopId = await getShopId();
-      if (!shopId && !isFounder) return;
-      const scope = { shopId, isFounder };
-      const sortDir = overrideSortDir ?? invoiceSortDir;
-      const searchTerm = debouncedInvoiceSearch.trim();
-      let customerIds: string[] | undefined;
-      if (searchTerm) {
-        const { data: customerMatches } = await searchShopCustomers(supabase, {
-          ...scope,
-          searchTerm,
-          limit: 100,
-        });
-        customerIds = customerMatches.map((customer) => customer.id);
-      }
-      const listFilters: InvoiceListFilters = {
+  type FetchInvoiceListOptions = {
+    /** Keep existing rows visible; do not show full-page skeleton */
+    background?: boolean;
+    /** Skip summary aggregation (row-only updates) */
+    includeSummary?: boolean;
+    overrideSortDir?: 'asc' | 'desc';
+  };
+
+  const buildCurrentInvoiceListFilters = async (
+    overrideSortDir?: 'asc' | 'desc'
+  ): Promise<{
+    scope: { shopId: string | null; isFounder: boolean };
+    listFilters: InvoiceListFilters;
+    searchTerm: string;
+  } | null> => {
+    const shopId = await getShopId();
+    if (!shopId && !isFounder) return null;
+    const scope = { shopId, isFounder };
+    const sortDir = overrideSortDir ?? invoiceSortDir;
+    const searchTerm = debouncedInvoiceSearch.trim();
+    let customerIds: string[] | undefined;
+    if (searchTerm) {
+      const { data: customerMatches } = await searchShopCustomers(supabase, {
         ...scope,
         searchTerm,
-        statusFilter: invoiceStatusFilter as InvoiceListStatusFilter,
-        locationFilter: invoiceLocationFilter,
-        customerIds,
-        sortDir,
-      };
+        limit: 100,
+      });
+      customerIds = customerMatches.map((customer) => customer.id);
+    }
+    const listFilters: InvoiceListFilters = {
+      ...scope,
+      searchTerm,
+      statusFilter: invoiceStatusFilter as InvoiceListStatusFilter,
+      locationFilter: invoiceLocationFilter,
+      customerIds,
+      sortDir,
+    };
+    return { scope, listFilters, searchTerm };
+  };
+
+  const fetchInvoiceList = async (options?: FetchInvoiceListOptions) => {
+    const requestId = ++invoiceListRequestIdRef.current;
+    const fetchMode = resolveInvoiceListFetchMode({
+      background: options?.background,
+      visibleRowCount: invoicesRef.current.length,
+    });
+    const includeSummary = options?.includeSummary ?? true;
+
+    if (fetchMode === 'initial') {
+      setInvoiceInitialLoading(true);
+    } else {
+      setInvoiceListRefreshing(true);
+    }
+
+    try {
+      const filterContext = await buildCurrentInvoiceListFilters(options?.overrideSortDir);
+      if (!filterContext) return;
+      const { listFilters } = filterContext;
+
       const summaryStarted = performance.now();
       const pageStarted = performance.now();
       const [summaryResult, pageResult] = await Promise.all([
-        loadShopInvoiceSummary(supabase, {
-          ...listFilters,
-          cardFeePercentage: cardProcessingFeePercentage,
-        }),
+        includeSummary
+          ? loadShopInvoiceSummary(supabase, {
+              ...listFilters,
+              cardFeePercentage: cardProcessingFeePercentage,
+            })
+          : Promise.resolve({ data: null, error: null }),
         listShopInvoicesPage(supabase, {
           ...listFilters,
           page: invoiceCurrentPage - 1,
@@ -3253,10 +3296,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       const summaryMs = performance.now() - summaryStarted;
       const pageMs = performance.now() - pageStarted;
       if (invoiceListRequestIdRef.current !== requestId) return;
-      if (summaryResult.error) {
-        console.error('Error loading invoice summary:', summaryResult.error);
-      } else {
-        setInvoiceSummary(summaryResult.data);
+      if (includeSummary) {
+        if (summaryResult.error) {
+          console.error('Error loading invoice summary:', summaryResult.error);
+        } else if (summaryResult.data) {
+          setInvoiceSummary(summaryResult.data);
+          setInvoiceSummaryLoaded(true);
+        }
       }
       if (pageResult.error) {
         console.error('Error fetching invoice list page:', pageResult.error);
@@ -3273,6 +3319,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       ];
       const customerMap = await fetchCustomersByIds(supabase, customerIdsOnPage);
       const customerMs = performance.now() - customerStarted;
+      if (invoiceListRequestIdRef.current !== requestId) return;
 
       const invoicesWithCustomer = pageResult.data.map((row) =>
         normalizeInvoiceListRow(
@@ -3308,20 +3355,133 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         pageMs,
         customerMs,
         invoicesTransferred: invoicesWithCustomer.length,
-        dbRequests: 2 + Math.ceil(customerIdsOnPage.length / 200),
+        dbRequests: (includeSummary ? 2 : 1) + Math.ceil(customerIdsOnPage.length / 200),
       });
     } catch (e) {
       console.error('fetchInvoiceList', e);
     } finally {
       if (invoiceListRequestIdRef.current === requestId) {
-        setInvoiceListLoading(false);
-        setInvoicesLoading(false);
+        setInvoiceInitialLoading(false);
+        setInvoiceListRefreshing(false);
       }
     }
   };
 
   const refreshInvoiceList = async (overrideSortDir?: 'asc' | 'desc') => {
-    await fetchInvoiceList(overrideSortDir);
+    await fetchInvoiceList({ background: true, overrideSortDir });
+  };
+
+  const refreshInvoiceSummaryOnly = async () => {
+    try {
+      const filterContext = await buildCurrentInvoiceListFilters();
+      if (!filterContext) return;
+      const summaryResult = await loadShopInvoiceSummary(supabase, {
+        ...filterContext.listFilters,
+        cardFeePercentage: cardProcessingFeePercentage,
+      });
+      if (summaryResult.error) {
+        console.error('Error refreshing invoice summary:', summaryResult.error);
+        return;
+      }
+      setInvoiceSummary(summaryResult.data);
+      setInvoiceSummaryLoaded(true);
+    } catch (error) {
+      console.error('refreshInvoiceSummaryOnly', error);
+    }
+  };
+
+  const reconcileInvoiceRowInList = async (invoiceId: string) => {
+    if (!invoiceId) return;
+    try {
+      const { data: row, error } = await supabase
+        .from('invoice_balances_v')
+        .select('*')
+        .eq('id', invoiceId)
+        .maybeSingle();
+      if (error) {
+        console.error('reconcileInvoiceRowInList', error);
+        return;
+      }
+      if (!row) {
+        setInvoices((prev) => prev.filter((inv) => inv.id !== invoiceId));
+        return;
+      }
+      const customerId = row.customer_id ? String(row.customer_id) : '';
+      const customerMap = customerId
+        ? await fetchCustomersByIds(supabase, [customerId])
+        : {};
+      const normalized = normalizeInvoiceListRow(
+        row,
+        customerId ? customerMap[customerId] ?? null : null
+      ) as unknown as Invoice;
+      setInvoices((prev) => {
+        const index = prev.findIndex((inv) => inv.id === invoiceId);
+        if (index < 0) return prev;
+        return prev.map((inv) => (inv.id === invoiceId ? { ...inv, ...normalized } : inv));
+      });
+    } catch (error) {
+      console.error('reconcileInvoiceRowInList', error);
+    }
+  };
+
+  const removeInvoiceFromListLocally = (invoiceId: string) => {
+    setInvoices((prev) => {
+      const next = prev.filter((inv) => inv.id !== invoiceId);
+      if (next.length === 0 && invoiceCurrentPage > 1) {
+        setInvoiceCurrentPage((page) => Math.max(1, page - 1));
+      }
+      return next;
+    });
+    setInvoiceListTotalCount((count) => Math.max(0, count - 1));
+    void refreshInvoiceSummaryOnly();
+  };
+
+  const insertCreatedInvoiceIntoList = async (invoiceId: string) => {
+    try {
+      const { data: row, error } = await supabase
+        .from('invoice_balances_v')
+        .select('*')
+        .eq('id', invoiceId)
+        .maybeSingle();
+      if (error || !row) {
+        void refreshInvoiceSummaryOnly();
+        return;
+      }
+      const customerId = row.customer_id ? String(row.customer_id) : '';
+      const customerMap = customerId
+        ? await fetchCustomersByIds(supabase, [customerId])
+        : {};
+      const normalized = normalizeInvoiceListRow(
+        row,
+        customerId ? customerMap[customerId] ?? null : null
+      ) as unknown as Invoice;
+
+      if (invoiceCurrentPage === 1) {
+        setInvoices((prev) => {
+          const withoutDuplicate = prev.filter((inv) => inv.id !== normalized.id);
+          const next =
+            invoiceSortDir === 'desc'
+              ? [normalized, ...withoutDuplicate]
+              : [...withoutDuplicate, normalized];
+          return next.slice(0, invoicePageSize);
+        });
+      }
+      setInvoiceListTotalCount((count) => count + 1);
+      void refreshInvoiceSummaryOnly();
+    } catch (error) {
+      console.error('insertCreatedInvoiceIntoList', error);
+      void refreshInvoiceSummaryOnly();
+    }
+  };
+
+  const reconcileInvoicesForWorkOrders = async (workOrderIds: string[]) => {
+    const ids = [...new Set(workOrderIds.filter(Boolean))];
+    if (ids.length === 0) return;
+    const visibleIds = invoicesRef.current
+      .filter((inv) => inv.work_order_id && ids.includes(String(inv.work_order_id)))
+      .map((inv) => inv.id);
+    if (visibleIds.length === 0) return;
+    await Promise.all(visibleIds.map((invoiceId) => reconcileInvoiceRowInList(invoiceId)));
   };
 
   const fetchShopLocationsForInvoiceTab = async () => {
@@ -3615,14 +3775,47 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   };
 
   useEffect(() => {
+    setInvoices([]);
+    setInvoiceListTotalCount(0);
+    setInvoiceSummary({
+      totalDueToday: 0,
+      totalPaid: 0,
+      totalOutstanding: 0,
+      overdueCount: 0,
+      filteredCount: 0,
+    });
+    setInvoiceSummaryLoaded(false);
+    setInvoiceInitialLoading(false);
+    setInvoiceListRefreshing(false);
     setInvoiceCurrentPage(1);
-  }, [contextShopId, debouncedInvoiceSearch, invoiceStatusFilter, invoiceLocationFilter, invoicePageSize]);
+  }, [contextShopId]);
+
+  useEffect(() => {
+    setInvoiceCurrentPage(1);
+  }, [debouncedInvoiceSearch, invoiceStatusFilter, invoiceLocationFilter, invoicePageSize]);
 
   useEffect(() => {
     if (activeTab === 'invoices') {
       void fetchShopLocationsForInvoiceTab();
-      void fetchInvoiceList();
     }
+  }, [activeTab, contextShopId]);
+
+  useEffect(() => {
+    if (activeTab === 'invoices' && invoicesRef.current.length > 0) {
+      skipNextInvoiceFetchRef.current = true;
+    }
+  }, [activeTab]);
+
+  // Fetch invoice list when filters/page/sort change, or first open of Invoices tab.
+  useEffect(() => {
+    if (activeTab !== 'invoices') return;
+    if (skipNextInvoiceFetchRef.current) {
+      skipNextInvoiceFetchRef.current = false;
+      return;
+    }
+    void fetchInvoiceList({
+      background: invoicesRef.current.length > 0,
+    });
   }, [
     activeTab,
     contextShopId,
@@ -4059,31 +4252,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         notes: ''
       });
 
-      void (async () => {
-        await refreshInvoiceList();
-        if (editingInvoice && editingInvoice.id === invoiceForPayment.id) {
-          try {
-            const { data: refreshedPayments, error: refreshedPaymentsError } = await supabase
-              .from('invoice_payments')
-              .select('*')
-              .eq('invoice_id', invoiceForPayment.id)
-              .order('created_at', { ascending: false });
-
-            if (refreshedPaymentsError) {
-              console.log('Could not refresh payment history after invoice refresh:', refreshedPaymentsError);
-              mergeInvoicePaymentsForInvoice(invoiceForPayment.id, nextSavedPayments);
-              setEditingInvoicePayments(nextSavedPayments);
-            } else {
-              mergeInvoicePaymentsForInvoice(invoiceForPayment.id, refreshedPayments || []);
-              setEditingInvoicePayments(refreshedPayments || []);
-            }
-          } catch (err) {
-            console.log('Error refreshing payment history after invoice refresh:', err);
-            mergeInvoicePaymentsForInvoice(invoiceForPayment.id, nextSavedPayments);
-            setEditingInvoicePayments(nextSavedPayments);
-          }
-        }
-      })();
+      void reconcileInvoiceRowInList(invoiceForPayment.id);
+      void refreshInvoiceSummaryOnly();
     } catch (err) {
       console.error('Error recording payment:', err);
       alert('Unexpected error when recording payment.');
@@ -4130,7 +4300,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           setEditingInvoicePayments((prev) => prev.filter((p: any) => p.id !== payment.id));
         }
         showToast({ type: 'success', message: 'Payment deleted' });
-        await refreshInvoiceList();
+        void reconcileInvoiceRowInList(invoiceId);
+        void refreshInvoiceSummaryOnly();
         return;
       }
 
@@ -4143,7 +4314,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       if (invErr || !invRow) {
         console.error('Error loading invoice after payment delete:', invErr);
         showToast({ type: 'success', message: 'Payment deleted' });
-        await refreshInvoiceList();
+        void reconcileInvoiceRowInList(invoiceId);
+        void refreshInvoiceSummaryOnly();
         mergeInvoicePaymentsForInvoice(invoiceId, restRows || []);
         if (editingInvoice?.id === invoiceId) {
           setEditingInvoicePayments(restRows || []);
@@ -4193,7 +4365,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         setEditingInvoicePayments(restRows || []);
       }
       showToast({ type: 'success', message: 'Payment deleted' });
-      await refreshInvoiceList();
+      void reconcileInvoiceRowInList(invoiceId);
+      void refreshInvoiceSummaryOnly();
 
       if (editingInvoice && editingInvoice.id === invoiceId) {
         try {
@@ -4304,10 +4477,13 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       if (error) {
         console.error('Error updating invoice status:', error);
+      } else {
+        setInvoices((prev) =>
+          prev.map((row) => (row.id === invoice.id ? { ...row, status: 'sent' } : row))
+        );
       }
 
       showToast({ type: 'success', message: 'Invoice sent successfully with PDF attachment!' });
-      await refreshInvoiceList();
     } catch (err: any) {
       console.error('Error sending invoice:', err);
       showToast({
@@ -7223,8 +7399,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           successCount++;
         }
 
-        // Refresh invoices list
-        await refreshInvoiceList();
+        // Refresh invoices list silently when rows are already visible
+        await fetchInvoiceList({ background: true });
 
         // Show results
         if (successCount > 0) {
@@ -9241,6 +9417,15 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     : invoiceListUsesServerPage
       ? invoiceListTotalCount
       : filteredInvoicesForList.length;
+
+  const showInvoiceListSkeleton = shouldShowInvoiceListSkeleton(
+    invoiceInitialLoading,
+    invoices.length
+  );
+  const showInvoiceSummarySkeleton = shouldShowInvoiceSummarySkeleton(
+    invoiceInitialLoading,
+    invoiceSummaryLoaded
+  );
 
   const invoiceListTotalPages = Math.max(
     1,
@@ -11680,7 +11865,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       // Refresh data
       await fetchWorkOrders();
       await fetchServiceBays();
-      void refreshInvoiceList();
+      void reconcileInvoicesForWorkOrders([workOrder.id]);
 
       // Close modal and reset state
       setShowMoveWorkOrderModal(false);
@@ -11898,7 +12083,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         alert('Bay not found. Work order completed and invoice created.');
         await fetchWorkOrders();
         await fetchServiceBays();
-        await refreshInvoiceList();
+        void reconcileInvoicesForWorkOrders([workOrder.id]);
         return;
       }
 
@@ -11977,7 +12162,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       // Refresh data
       await fetchWorkOrders();
       await fetchServiceBays();
-      await refreshInvoiceList(); // Refresh invoices list
+      void reconcileInvoicesForWorkOrders([workOrder.id]);
+      if (invoice?.id) {
+        if (existingInvoice) {
+          void reconcileInvoiceRowInList(invoice.id);
+        } else {
+          void insertCreatedInvoiceIntoList(invoice.id);
+        }
+      }
 
       const invoiceNumber = invoice?.invoice_number || 'N/A';
       const successMessage = nextWorkOrder
@@ -14920,7 +15112,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-sm font-medium text-gray-600">Total Due Today</div>
                   <div className="text-2xl font-bold text-gray-900">
-                    {invoiceListLoading ? (
+                    {showInvoiceSummarySkeleton ? (
                       <div className="h-8 w-28 bg-gray-200 animate-pulse rounded" />
                     ) : (
                       formatCurrency(invoiceSummary.totalDueToday)
@@ -14931,7 +15123,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-sm font-medium text-gray-600">Paid</div>
                   <div className="text-2xl font-bold text-green-700">
-                    {invoiceListLoading ? (
+                    {showInvoiceSummarySkeleton ? (
                       <div className="h-8 w-28 bg-gray-200 animate-pulse rounded" />
                     ) : (
                       formatCurrency(invoiceSummary.totalPaid)
@@ -14942,7 +15134,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-sm font-medium text-gray-600">Outstanding</div>
                   <div className="text-2xl font-bold text-red-600">
-                    {invoiceListLoading ? (
+                    {showInvoiceSummarySkeleton ? (
                       <div className="h-8 w-28 bg-gray-200 animate-pulse rounded" />
                     ) : (
                       formatCurrency(invoiceSummary.totalOutstanding)
@@ -14953,7 +15145,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                   <div className="text-sm font-medium text-gray-600">Overdue</div>
                   <div className="text-2xl font-bold text-red-600">
-                    {invoiceListLoading ? (
+                    {showInvoiceSummarySkeleton ? (
                       <div className="h-8 w-16 bg-gray-200 animate-pulse rounded" />
                     ) : (
                       invoiceSummary.overdueCount
@@ -15288,7 +15480,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   </div>
                 </div>
                 <div className="p-6">
-                  {invoiceListLoading ? (
+                  {showInvoiceListSkeleton ? (
                     <div className="space-y-3">
                       {Array.from({ length: 5 }).map((_, index) => (
                         <div key={index} className="h-16 bg-gray-100 animate-pulse rounded-lg" />
@@ -15321,7 +15513,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       </div>
                     </div>
                   ) : (
-                    <div className="min-w-0 overflow-x-hidden md:overflow-x-auto">
+                    <div
+                      className={`min-w-0 overflow-x-hidden md:overflow-x-auto transition-opacity ${
+                        invoiceListRefreshing ? 'opacity-70' : 'opacity-100'
+                      }`}
+                    >
                       {/* Table Header - Desktop Only */}
                       <div className="hidden md:grid gap-2 text-xs font-medium text-gray-500 uppercase tracking-wider mb-3 min-w-0" style={{ gridTemplateColumns: invoiceListGridColumns }}>
                         {invoicesEstimatesIntegrationEnabled && <div className="min-w-0">Type</div>}
@@ -24170,7 +24366,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
                       showToast({ type: 'success', message: 'Invoice updated' });
                       setCustomerStatsEpoch((value) => value + 1);
-                      void refreshInvoiceList(); // refresh list in background; UI already updated optimistically
+                      void refreshInvoiceSummaryOnly();
 
                       // Keep drawer open so user can print the updated invoice immediately
                       setEditingInvoice((prev) => {
@@ -24340,7 +24536,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
                       showToast({ type: 'success', message: 'Invoice created' });
                       setCustomerStatsEpoch((value) => value + 1);
-                      refreshInvoiceList();
+                      void insertCreatedInvoiceIntoList(invoice.id);
                       
                       // Close modal and reset form
                       setShowCreateInvoiceModal(false);
@@ -30061,7 +30257,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
             }
 
             showToast({ type: 'success', message: 'Invoice deleted' });
-            refreshInvoiceList();
+            removeInvoiceFromListLocally(invoiceToDelete.id);
             setInvoiceToDelete(null);
           } catch (err) {
             console.error('Error deleting invoice:', err);

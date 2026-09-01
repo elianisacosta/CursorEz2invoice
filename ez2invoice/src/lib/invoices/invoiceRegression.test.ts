@@ -197,6 +197,7 @@ describe('invoice regression scenarios E and I', () => {
     assert.match(sendInvoiceBlock, /fetchCustomerById\(supabase/);
     assert.match(sendInvoiceBlock, /resolveCustomerEmailRecipient\(customer\)/);
     assert.doesNotMatch(sendInvoiceBlock, /customers\.find\(/);
+    assert.doesNotMatch(sendInvoiceBlock, /refreshInvoiceList\(\)/);
   });
 
   it('I: fetchCustomerById returns Elianis email without paginated customers state', async () => {
