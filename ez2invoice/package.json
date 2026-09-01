@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --import ./scripts/register-test-paths.mjs --test src/lib/postgrestPagination.test.ts src/lib/invoices/invoiceLineItemPersistence.test.ts src/lib/invoices/searchInvoiceCatalogItems.test.ts src/lib/invoices/invoiceItemDropdownPosition.test.ts src/lib/invoices/listShopInvoices.test.ts src/lib/estimates/listShopEstimates.test.ts src/lib/workOrders/listShopWorkOrders.test.ts src/lib/labor/listShopLaborItems.test.ts src/lib/inventory/searchInventoryParts.test.ts src/lib/labor/laborFilters.test.ts src/lib/customers/searchCustomers.test.ts src/lib/customers/customerStats.test.ts"
+    "test": "node --experimental-strip-types --import ./scripts/register-test-paths.mjs --test src/lib/postgrestPagination.test.ts src/lib/invoices/invoiceLineItemPersistence.test.ts src/lib/invoices/searchInvoiceCatalogItems.test.ts src/lib/invoices/invoiceItemDropdownPosition.test.ts src/lib/invoices/listShopInvoices.test.ts src/lib/estimates/listShopEstimates.test.ts src/lib/workOrders/listShopWorkOrders.test.ts src/lib/labor/listShopLaborItems.test.ts src/lib/inventory/searchInventoryParts.test.ts src/lib/labor/laborFilters.test.ts src/lib/customers/searchCustomers.test.ts src/lib/customers/customerStats.test.ts src/lib/customers/customerEmailRecipient.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.76.1",

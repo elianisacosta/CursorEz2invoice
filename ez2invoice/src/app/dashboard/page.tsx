@@ -43,6 +43,7 @@ import {
   canQueryShopCustomers,
   countShopCustomers,
   customerMatchesQuery,
+  fetchCustomerById,
   hasExactCustomerLookupMatch,
   isCurrentCustomerRequest,
   isPhoneSearchQuery,
@@ -51,6 +52,7 @@ import {
   replaceCustomerById,
   searchShopCustomers,
   selectedCustomerId,
+  resolveCustomerEmailRecipient,
 } from '@/lib/customers/searchCustomers';
 import {
   loadCustomerActivityStats,
@@ -3875,9 +3877,31 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const handleSendInvoice = async (invoice: Invoice) => {
     if (!invoice?.id) return;
     try {
-      const customer = customers.find(c => c.id === invoice.customer_id);
-      if (!customer || !customer.email) {
-        showToast({ type: 'error', message: 'Customer email not found. Cannot send invoice.' });
+      if (!invoice.customer_id) {
+        showToast({ type: 'error', message: 'Customer not found. Cannot send invoice.' });
+        return;
+      }
+
+      const shopId = await getShopId();
+      const { data: customer, error: customerLookupError } = await fetchCustomerById(supabase, {
+        shopId,
+        isFounder,
+        customerId: invoice.customer_id,
+      });
+      if (customerLookupError) {
+        showToast({ type: 'error', message: 'Could not look up customer. Cannot send invoice.' });
+        return;
+      }
+
+      const recipient = resolveCustomerEmailRecipient(customer);
+      if (!recipient.ok) {
+        showToast({
+          type: 'error',
+          message:
+            recipient.reason === 'missing_email'
+              ? 'Customer email not found. Cannot send invoice.'
+              : 'Customer not found. Cannot send invoice.',
+        });
         return;
       }
 
@@ -3900,7 +3924,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         content: pdfResult.base64,
       }];
 
-      showToast({ type: 'info', message: `Sending ${invoiceNumber} to ${customer.email}…` });
+      showToast({ type: 'info', message: `Sending ${invoiceNumber} to ${recipient.email}…` });
 
       const response = await fetch('/api/send-email', {
         method: 'POST',
@@ -3908,7 +3932,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          to: customer.email,
+          to: recipient.email,
           subject: `Invoice ${invoiceNumber} from ${shopInfo.shop_name || 'EZ2Invoice'}`,
           html: emailHTML,
           type: 'invoice',
@@ -4510,12 +4534,33 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       return;
     }
 
-    if (!estimate.customer?.email) {
-      alert('Cannot send estimate: Customer email is missing.');
-      return;
-    }
-
     try {
+      if (!estimate.customer_id) {
+        alert('Customer not found. Cannot send estimate.');
+        return;
+      }
+
+      const shopId = await getShopId();
+      const { data: customer, error: customerLookupError } = await fetchCustomerById(supabase, {
+        shopId,
+        isFounder,
+        customerId: estimate.customer_id,
+      });
+      if (customerLookupError) {
+        alert('Could not look up customer. Cannot send estimate.');
+        return;
+      }
+
+      const recipient = resolveCustomerEmailRecipient(customer);
+      if (!recipient.ok) {
+        alert(
+          recipient.reason === 'missing_email'
+            ? 'Cannot send estimate: Customer email is missing.'
+            : 'Customer not found. Cannot send estimate.'
+        );
+        return;
+      }
+
       // Get the base URL for the acceptance link (from client-side)
       const baseUrl = typeof window !== 'undefined' ? window.location.origin : 
                       process.env.NEXT_PUBLIC_SITE_URL || 
@@ -4532,7 +4577,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          to: estimate.customer.email,
+          to: recipient.email,
           subject: `Estimate ${estimateNumber} from EZ2Invoice`,
           html: emailHTML,
           type: 'estimate',

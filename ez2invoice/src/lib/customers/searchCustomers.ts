@@ -214,6 +214,69 @@ export function canQueryShopCustomers(shopId: string | null | undefined, isFound
   return Boolean(shopId) || isFounder;
 }
 
+export type CustomerEmailLookupRow = {
+  id: string;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+  phone: string | null;
+  shop_id: string | null;
+};
+
+export type CustomerEmailRecipientResult =
+  | { ok: true; email: string }
+  | { ok: false; reason: 'not_found' | 'missing_email' };
+
+/** Resolve a saved customer row for outbound email. Does not use paginated UI state. */
+export function resolveCustomerEmailRecipient(
+  customer: CustomerEmailLookupRow | null | undefined
+): CustomerEmailRecipientResult {
+  if (!customer) {
+    return { ok: false, reason: 'not_found' };
+  }
+  const email = String(customer.email || '').trim();
+  if (!email) {
+    return { ok: false, reason: 'missing_email' };
+  }
+  return { ok: true, email };
+}
+
+export async function fetchCustomerById(
+  supabase: SupabaseClient,
+  options: CustomerShopScope & { customerId: string | null | undefined }
+): Promise<{ data: CustomerEmailLookupRow | null; error: { message?: string; code?: string } | null }> {
+  const customerId = String(options.customerId || '').trim();
+  if (!customerId) {
+    return { data: null, error: null };
+  }
+
+  let query = supabase
+    .from('customers')
+    .select('id, first_name, last_name, email, phone, shop_id')
+    .eq('id', customerId);
+  query = applyCustomerShopScope(query, options.shopId, options.isFounder);
+  const { data, error } = await query.maybeSingle();
+  if (error) {
+    return { data: null, error: { message: error.message, code: error.code } };
+  }
+  if (!data) {
+    return { data: null, error: null };
+  }
+
+  const row = data as Record<string, unknown>;
+  return {
+    data: {
+      id: String(row.id),
+      first_name: (row.first_name as string | null) ?? null,
+      last_name: (row.last_name as string | null) ?? null,
+      email: (row.email as string | null) ?? null,
+      phone: (row.phone as string | null) ?? null,
+      shop_id: (row.shop_id as string | null) ?? null,
+    },
+    error: null,
+  };
+}
+
 export function buildCustomerSearchOrFilter(searchTerm: string): string | null {
   const trimmed = searchTerm.trim();
   if (!trimmed) return null;
