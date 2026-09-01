@@ -1,6 +1,7 @@
 'use client';
 
 import { Eye, Printer, Send, Trash2 } from 'lucide-react';
+import { formatUsPhoneDisplay } from '@/lib/customers/phoneNumber';
 import {
   formatEstimateDocumentNumber,
   getEstimateCustomerName,
@@ -43,7 +44,7 @@ export function InvoicesTabEstimateListRow({
   onDelete,
 }: InvoicesTabEstimateListRowProps) {
   const customerName = getEstimateCustomerName(estimate.customer);
-  const customerPhone = estimate.customer?.phone || '';
+  const customerPhone = formatUsPhoneDisplay(estimate.customer?.phone);
   const documentNumber = formatEstimateDocumentNumber(estimate.estimate_number, estimate.id);
   const statusLabel = getEstimateListStatusLabel(estimate.status);
   const statusClass = getEstimateListStatusColors(estimate.status);

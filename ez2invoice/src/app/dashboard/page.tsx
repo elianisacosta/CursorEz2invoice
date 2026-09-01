@@ -60,6 +60,12 @@ import {
   type CustomerActivityStats,
 } from '@/lib/customers/customerStats';
 import {
+  formatUsPhoneDisplay,
+  normalizePhoneForLookup,
+  serializePhoneForStorage,
+} from '@/lib/customers/phoneNumber';
+import { CustomerPhoneInput } from '@/components/customers/CustomerPhoneInput';
+import {
   DUPLICATE_LINE_ITEM_TOAST,
   laborLineItemSelection,
   mergeDuplicateLineItem,
@@ -4492,7 +4498,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
             <h3>Customer Information</h3>
             <div class="info-row"><strong>Name:</strong> ${customerName}</div>
             ${estimate.customer?.email ? `<div class="info-row"><strong>Email:</strong> ${estimate.customer.email}</div>` : ''}
-            ${estimate.customer?.phone ? `<div class="info-row"><strong>Phone:</strong> ${estimate.customer.phone}</div>` : ''}
+            ${estimate.customer?.phone ? `<div class="info-row"><strong>Phone:</strong> ${formatUsPhoneDisplay(estimate.customer.phone)}</div>` : ''}
           </div>
           <table>
             <thead>
@@ -4617,7 +4623,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           <h2 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">Customer Information</h2>
           <p style="margin: 5px 0;"><strong>Name:</strong> ${customerName}</p>
           ${estimate.customer?.email ? `<p style="margin: 5px 0;"><strong>Email:</strong> ${estimate.customer.email}</p>` : ''}
-          ${estimate.customer?.phone ? `<p style="margin: 5px 0;"><strong>Phone:</strong> ${estimate.customer.phone}</p>` : ''}
+          ${estimate.customer?.phone ? `<p style="margin: 5px 0;"><strong>Phone:</strong> ${formatUsPhoneDisplay(estimate.customer.phone)}</p>` : ''}
         </div>
 
         <div style="margin-bottom: 20px;">
@@ -4778,7 +4784,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
           <h2 style="color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px;">Bill To</h2>
           <p style="margin: 5px 0;"><strong>${customerName}</strong></p>
           ${invoice.customer?.email ? `<p style="margin: 5px 0;">${invoice.customer.email}</p>` : ''}
-          ${invoice.customer?.phone ? `<p style="margin: 5px 0;">${invoice.customer.phone}</p>` : ''}
+          ${invoice.customer?.phone ? `<p style="margin: 5px 0;">${formatUsPhoneDisplay(invoice.customer.phone)}</p>` : ''}
         </div>
 
         <div style="margin-bottom: 20px;">
@@ -6383,7 +6389,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
     const rows = invoicesToExport.map((invoice) => {
       const customerName = getInvoiceCustomerName(invoice);
-      const customerPhone = invoice.customer?.phone || '';
+      const customerPhone = formatUsPhoneDisplay(invoice.customer?.phone);
       const dateCreated = invoice.created_at 
         ? formatDateInTimezone(invoice.created_at, { month: 'short', day: 'numeric', year: 'numeric' })
         : '';
@@ -6453,7 +6459,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       const customerName = estimate.customer 
         ? [estimate.customer.first_name, estimate.customer.last_name].filter(Boolean).join(' ') || estimate.customer.company || 'Unknown'
         : 'No Customer';
-      const customerPhone = estimate.customer?.phone || '';
+      const customerPhone = formatUsPhoneDisplay(estimate.customer?.phone);
       const dateCreated = estimate.created_at 
         ? formatDateInTimezone(estimate.created_at, { month: 'short', day: 'numeric', year: 'numeric' })
         : '';
@@ -8197,7 +8203,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   // Check for duplicate phone number
   const checkDuplicatePhone = async (phone: string) => {
     // Normalize phone number (remove non-digits)
-    const normalizedPhone = phone.replace(/\D/g, '');
+    const normalizedPhone = normalizePhoneForLookup(phone);
     
     // Only check if phone has at least 7 digits (enough to be meaningful)
     if (!normalizedPhone || normalizedPhone.length < 7) {
@@ -8235,7 +8241,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
       const duplicate = existingCustomers.find((customer) => {
         if (!customer.phone) return false;
-        const customerPhoneNormalized = customer.phone.replace(/\D/g, '');
+        const customerPhoneNormalized = normalizePhoneForLookup(customer.phone || '');
         return customerPhoneNormalized.length >= 7 &&
                normalizedPhone.length >= 7 &&
                customerPhoneNormalized === normalizedPhone;
@@ -8251,6 +8257,21 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   };
 
   // Fetch customer notes when Edit Customer modal opens
+  useEffect(() => {
+    if (!showEditCustomerModal) return;
+    setCustomerForm((prev) => ({
+      ...prev,
+      name: [showEditCustomerModal.first_name, showEditCustomerModal.last_name].filter(Boolean).join(' '),
+      email: showEditCustomerModal.email || '',
+      phone: formatUsPhoneDisplay(showEditCustomerModal.phone || '', ''),
+      address: showEditCustomerModal.address || '',
+      city: showEditCustomerModal.city || '',
+      state: showEditCustomerModal.state || '',
+      zip_code: showEditCustomerModal.zip_code || '',
+      is_fleet: Boolean(showEditCustomerModal.is_fleet),
+    }));
+  }, [showEditCustomerModal?.id]);
+
   useEffect(() => {
     if (showEditCustomerModal?.id) {
       const fetchEditCustomerNotes = async () => {
@@ -9000,19 +9021,6 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     const startTime = new Date(`2000-01-01T${start}`);
     const endTime = new Date(`2000-01-01T${end}`);
     return (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
-  };
-
-  // Format phone number as (***)***-****
-  const formatPhoneNumber = (phone: string | null | undefined): string => {
-    if (!phone) return '—';
-    // Remove all non-digit characters
-    const digits = phone.replace(/\D/g, '');
-    // Format as (***)***-****
-    if (digits.length === 10) {
-      return `(${digits.slice(0, 3)})${digits.slice(3, 6)}-${digits.slice(6)}`;
-    }
-    // If not 10 digits, return original (could be international format)
-    return phone;
   };
 
   const getNextEstimateNumber = async (): Promise<number> => {
@@ -10140,7 +10148,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         customer = customerData;
         if (customer) {
           customerName = [customer.first_name, customer.last_name].filter(Boolean).join(' ') || customer.company || '—';
-          customerPhone = customer.phone || '—';
+          customerPhone = formatUsPhoneDisplay(customer.phone, '—');
         }
       }
 
@@ -13877,7 +13885,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           </div>
                           <div className="text-gray-700 min-w-0">
                             <div className="truncate">{c.email || '—'}</div>
-                            <div className="text-gray-500 truncate">{formatPhoneNumber(c.phone)}</div>
+                            <div className="text-gray-500 truncate">{formatUsPhoneDisplay(c.phone, '—')}</div>
                           </div>
                           <div className="min-w-0 whitespace-nowrap">{rowStats ? rowStats.visits : '—'}</div>
                           <div className="min-w-0 whitespace-nowrap">{rowStats ? formatCurrency(rowStats.totalSpent) : '—'}</div>
@@ -14192,7 +14200,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     <div className="text-sm text-gray-900">{order.customer || '—'}</div>
                                   </td>
                                   <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="text-sm text-gray-500">{order.customer_phone || '—'}</div>
+                                    <div className="text-sm text-gray-500">{formatUsPhoneDisplay(order.customer_phone, '—')}</div>
                                   </td>
                                   <td className="px-6 py-4">
                                     <div className="text-sm text-gray-900">{vehicleInfo}</div>
@@ -15382,7 +15390,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
                             const invoice = entry.data as Invoice;
                             const customerName = getInvoiceCustomerName(invoice);
-                            const customerPhone = invoice.customer?.phone || '';
+                            const customerPhone = formatUsPhoneDisplay(invoice.customer?.phone);
                             const financials = getInvoiceFinancialsForInvoice(invoice);
                             const balanceDue = financials.totalDueToday;
                             const displayStatus = financials.status;
@@ -19626,7 +19634,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                         <div className="text-xs text-gray-500">{customer.email}</div>
                                       )}
                                       {customer.phone && (
-                                        <div className="text-xs text-gray-500">{formatPhoneNumber(customer.phone)}</div>
+                                        <div className="text-xs text-gray-500">{formatUsPhoneDisplay(customer.phone)}</div>
                                       )}
                                     </div>
                                   );
@@ -19653,7 +19661,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                     )}
                                     {selectedAnalyticsCustomer.phone && (
                                       <div>
-                                        <span className="text-gray-500">Phone:</span> {formatPhoneNumber(selectedAnalyticsCustomer.phone)}
+                                        <span className="text-gray-500">Phone:</span> {formatUsPhoneDisplay(selectedAnalyticsCustomer.phone)}
                                       </div>
                                     )}
                                     {selectedAnalyticsCustomer.company && (
@@ -22568,7 +22576,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   <div className="font-medium text-gray-900">{displayName}</div>
                                   <div className="flex items-center gap-2 mt-1">
                                     {customer.phone && (
-                                      <div className="text-sm text-gray-500">{customer.phone}</div>
+                                      <div className="text-sm text-gray-500">{formatUsPhoneDisplay(customer.phone)}</div>
                                     )}
                                     {customer.is_fleet && (
                                       <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Fleet</span>
@@ -22691,7 +22699,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 <div className="font-medium text-gray-900">{displayName}</div>
                                 <div className="flex items-center gap-2 mt-1">
                                   {customer.phone && (
-                                    <div className="text-sm text-gray-500">{customer.phone}</div>
+                                    <div className="text-sm text-gray-500">{formatUsPhoneDisplay(customer.phone)}</div>
                                   )}
                                   {customer.is_fleet && (
                                     <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Fleet</span>
@@ -24523,7 +24531,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   <div className="font-medium text-gray-900">{displayName}</div>
                                   <div className="flex items-center gap-2 mt-1">
                                     {customer.phone && (
-                                      <div className="text-sm text-gray-500">{customer.phone}</div>
+                                      <div className="text-sm text-gray-500">{formatUsPhoneDisplay(customer.phone)}</div>
                                     )}
                                     {customer.is_fleet && (
                                       <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Fleet</span>
@@ -24648,7 +24656,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 <div className="font-medium text-gray-900">{displayName}</div>
                                 <div className="flex items-center gap-2 mt-1">
                                   {customer.phone && (
-                                    <div className="text-sm text-gray-500">{customer.phone}</div>
+                                    <div className="text-sm text-gray-500">{formatUsPhoneDisplay(customer.phone)}</div>
                                   )}
                                   {customer.is_fleet && (
                                     <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Fleet</span>
@@ -27170,7 +27178,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   <div className="font-medium text-gray-900">{displayName}</div>
                                   <div className="flex items-center gap-2 mt-1">
                                     {customer.phone && (
-                                      <div className="text-sm text-gray-500">{customer.phone}</div>
+                                      <div className="text-sm text-gray-500">{formatUsPhoneDisplay(customer.phone)}</div>
                                     )}
                                     {customer.is_fleet && (
                                       <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Fleet</span>
@@ -27243,7 +27251,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                 <div className="font-medium text-gray-900">{displayName}</div>
                                 <div className="flex items-center gap-2 mt-1">
                                   {customer.phone && (
-                                    <div className="text-sm text-gray-500">{customer.phone}</div>
+                                    <div className="text-sm text-gray-500">{formatUsPhoneDisplay(customer.phone)}</div>
                                   )}
                                   {customer.is_fleet && (
                                     <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Fleet</span>
@@ -27684,7 +27692,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       <div className="text-sm text-gray-600">{selectedEstimate.customer.email}</div>
                     )}
                     {selectedEstimate.customer?.phone && (
-                      <div className="text-sm text-gray-600">{selectedEstimate.customer.phone}</div>
+                      <div className="text-sm text-gray-600">{formatUsPhoneDisplay(selectedEstimate.customer.phone)}</div>
                     )}
                   </div>
                 </div>
@@ -28410,28 +28418,24 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Phone <span className="text-black">*</span></label>
                 <div className="relative">
-                  <input 
-                    value={customerForm.phone} 
-                    onChange={async (e) => {
-                      const phoneValue = e.target.value;
-                      setCustomerForm(prev => ({ ...prev, phone: phoneValue }));
-                      // Check immediately as user types (no delay)
+                  <CustomerPhoneInput
+                    value={customerForm.phone}
+                    onChange={async (phoneValue) => {
+                      setCustomerForm((prev) => ({ ...prev, phone: phoneValue }));
                       await checkDuplicatePhone(phoneValue);
                     }}
                     onBlur={() => {
-                      // Double-check when user leaves the field
                       if (customerForm.phone) {
                         checkDuplicatePhone(customerForm.phone);
                       }
                     }}
                     className={`w-full px-3 py-2 pr-10 border rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 ${
-                      duplicatePhoneCustomer 
-                        ? 'border-red-500 focus:border-red-500 focus:ring-red-500 bg-red-50' 
+                      duplicatePhoneCustomer
+                        ? 'border-red-500 focus:border-red-500 focus:ring-red-500 bg-red-50'
                         : checkingPhone
                         ? 'border-blue-300'
                         : 'border-gray-300'
-                    }`} 
-                    placeholder="(555) 123-4567" 
+                    }`}
                   />
                   {checkingPhone && (
                     <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
@@ -28730,7 +28734,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   last_name: last,
                   company: companyName,
                   email: customerForm.email || null,
-                  phone: customerForm.phone || null,
+                  phone: serializePhoneForStorage(customerForm.phone) || null,
                   address: customerForm.address || null,
                   city: customerForm.city || null,
                   state: customerForm.state || null,
@@ -29284,7 +29288,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Phone <span className="text-black">*</span></label>
-                <input defaultValue={showEditCustomerModal.phone || ''} onChange={(e)=>setCustomerForm(prev=>({...prev,phone:e.target.value}))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+                <CustomerPhoneInput
+                  value={customerForm.phone}
+                  onChange={(phoneValue) => setCustomerForm((prev) => ({ ...prev, phone: phoneValue }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Address</label>
@@ -29399,7 +29407,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                 const { error } = await supabase.from('customers').update({
                   first_name: first, last_name: last,
                   email: customerForm.email || showEditCustomerModal.email || null,
-                  phone: customerForm.phone || showEditCustomerModal.phone || null,
+                  phone: serializePhoneForStorage(customerForm.phone || showEditCustomerModal.phone || '') || null,
                   address: customerForm.address || showEditCustomerModal.address || null,
                   city: customerForm.city || showEditCustomerModal.city || null,
                   state: customerForm.state || showEditCustomerModal.state || null,
@@ -29412,7 +29420,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                   first_name: first,
                   last_name: last,
                   email: customerForm.email || showEditCustomerModal.email || null,
-                  phone: customerForm.phone || showEditCustomerModal.phone || null,
+                  phone: serializePhoneForStorage(customerForm.phone || showEditCustomerModal.phone || '') || null,
                   address: customerForm.address || showEditCustomerModal.address || null,
                   city: customerForm.city || showEditCustomerModal.city || null,
                   state: customerForm.state || showEditCustomerModal.state || null,

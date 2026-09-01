@@ -1,5 +1,6 @@
-import type { InvoiceDocumentData } from '@/lib/invoices/invoiceDocumentTypes';
+import { formatUsPhoneDisplay } from '@/lib/customers/phoneNumber';
 import { formatInvoiceDate } from '@/lib/invoices/formatInvoiceDate';
+import type { InvoiceDocumentData } from '@/lib/invoices/invoiceDocumentTypes';
 import {
   formatCompanyDetails,
   formatCustomerAddress,
@@ -44,7 +45,7 @@ export default function InvoiceDocument(props: InvoiceDocumentProps) {
             <div>{customerName}</div>
             {customerAddress && <div>{customerAddress}</div>}
             {invoice.customer?.email && <div>{invoice.customer.email}</div>}
-            {invoice.customer?.phone && <div>{invoice.customer.phone}</div>}
+            {invoice.customer?.phone && <div>{formatUsPhoneDisplay(invoice.customer.phone)}</div>}
           </div>
           <div>
             <div>

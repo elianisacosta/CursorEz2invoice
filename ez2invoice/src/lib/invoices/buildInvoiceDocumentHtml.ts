@@ -1,4 +1,5 @@
 import { INVOICE_DOCUMENT_STYLES } from '@/components/invoices/invoiceDocumentStyles';
+import { formatUsPhoneDisplay } from '@/lib/customers/phoneNumber';
 import { formatInvoiceDate } from './formatInvoiceDate';
 import type { InvoiceDocumentData } from './invoiceDocumentTypes';
 import {
@@ -136,7 +137,7 @@ export function buildInvoiceDocumentHtml(rawData: InvoiceDocumentData): string {
         <div>${escapeHtml(customerName)}</div>
         ${customerAddress ? `<div>${escapeHtml(customerAddress)}</div>` : ''}
         ${invoice.customer?.email ? `<div>${escapeHtml(invoice.customer.email)}</div>` : ''}
-        ${invoice.customer?.phone ? `<div>${escapeHtml(invoice.customer.phone)}</div>` : ''}
+        ${invoice.customer?.phone ? `<div>${escapeHtml(formatUsPhoneDisplay(invoice.customer.phone))}</div>` : ''}
       </div>
       <div>
         <div><strong>Invoice Date:</strong> ${escapeHtml(invoiceDate)}</div>

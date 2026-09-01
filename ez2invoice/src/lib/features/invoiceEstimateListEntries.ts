@@ -1,3 +1,5 @@
+import { normalizePhoneForLookup } from '@/lib/customers/phoneNumber';
+
 export type InvoiceListDocumentKind = 'invoice' | 'estimate';
 
 export interface InvoiceListDocumentEntry<TInvoice, TEstimate> {
@@ -92,9 +94,8 @@ export function estimateMatchesInvoiceListSearch<
     if ((customer.company || '').toLowerCase().includes(q)) return true;
     if ((customer.email || '').toLowerCase().includes(q)) return true;
     if (customer.phone) {
-      const normalizePhone = (p: string) => p.replace(/\D/g, '');
-      const normalizedPhone = normalizePhone(String(customer.phone));
-      const normalizedSearch = normalizePhone(q);
+      const normalizedPhone = normalizePhoneForLookup(String(customer.phone));
+      const normalizedSearch = normalizePhoneForLookup(q);
       if (
         normalizedSearch.length >= 3 &&
         (normalizedPhone.includes(normalizedSearch) || normalizedSearch.includes(normalizedPhone))

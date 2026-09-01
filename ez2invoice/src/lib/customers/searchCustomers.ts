@@ -1,4 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { normalizePhoneForLookup } from '@/lib/customers/phoneNumber';
+
+export { normalizePhoneForLookup };
 
 export const CUSTOMER_PAGE_SIZE = 50;
 export const CUSTOMER_SEARCH_LIMIT = 50;
@@ -44,10 +47,6 @@ export function applyCustomerShopScope<T extends { or: (filters: string) => T; e
     return query.is('shop_id', null);
   }
   return query;
-}
-
-export function normalizePhoneForLookup(value: string): string {
-  return String(value || '').replace(/\D/g, '');
 }
 
 export function normalizeTextForLookup(value: string): string {
