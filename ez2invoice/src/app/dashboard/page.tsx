@@ -341,6 +341,21 @@ import {
 } from '@/lib/invoices/listShopInvoices';
 import { logInvoiceListPerformance } from '@/lib/invoices/invoiceListPerformance';
 import {
+  ALL_LOCATIONS_FILTER,
+  NO_LOCATION_FILTER,
+  buildManualLocationPatch,
+  invoiceMatchesLocationFilter,
+  resolveInvoiceLocation,
+  type ManualLocationPatch,
+} from '@/lib/invoices/resolveInvoiceLocation';
+import {
+  createShopLocation,
+  ensureDefaultShopLocations,
+  setInvoiceManualLocation,
+  type ShopLocation,
+} from '@/lib/invoices/shopLocations';
+import { InvoiceLocationBadge } from '@/components/invoices/InvoiceLocationBadge';
+import {
   ESTIMATE_DEFAULT_PAGE_SIZE,
   fetchAllShopEstimates,
   listShopEstimatesPage,
@@ -2761,6 +2776,10 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     customer_id?: string;
     shop_id?: string;
     work_order_id?: string | null;
+    manual_location_id?: string | null;
+    location_id?: string | null;
+    effective_location_name?: string | null;
+    effective_location_source?: string | null;
     notes?: string | null;
     internal_notes?: string | null;
     customer?: {
@@ -2887,6 +2906,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const estimateListRequestIdRef = useRef(0);
   const [integrationEstimates, setIntegrationEstimates] = useState<Estimate[]>([]);
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState('All Status');
+  const [invoiceLocationFilter, setInvoiceLocationFilter] = useState(ALL_LOCATIONS_FILTER);
   const [invoiceSearchQuery, setInvoiceSearchQuery] = useState('');
   const [invoiceSortDir, setInvoiceSortDir] = useState<'asc' | 'desc'>('desc'); // Invoice ID column: desc = newest first (20, 19, 18...)
   const [invoicePageSize, setInvoicePageSize] = useState(INVOICE_DEFAULT_PAGE_SIZE);
@@ -2906,6 +2926,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
   const [arInvoicesLoading, setArInvoicesLoading] = useState(false);
   const [analyticsBulkLoading, setAnalyticsBulkLoading] = useState(false);
   const [analyticsInvoices, setAnalyticsInvoices] = useState<Invoice[]>([]);
+  const [shopLocations, setShopLocations] = useState<ShopLocation[]>([]);
+  const [shopLocationsLoading, setShopLocationsLoading] = useState(false);
+  const [shopLocationsError, setShopLocationsError] = useState<string | null>(null);
+  const [openLocationPickerInvoiceId, setOpenLocationPickerInvoiceId] = useState<string | null>(null);
+  const [savingLocationInvoiceId, setSavingLocationInvoiceId] = useState<string | null>(null);
   const debouncedInvoiceSearch = useDebouncedValue(invoiceSearchQuery, 300);
   const invoiceListRequestIdRef = useRef(0);
   const [invoiceListUsesServerPage] = useState(true);
@@ -3202,6 +3227,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
         ...scope,
         searchTerm,
         statusFilter: invoiceStatusFilter as InvoiceListStatusFilter,
+        locationFilter: invoiceLocationFilter,
         customerIds,
         sortDir,
       };
@@ -3290,6 +3316,191 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
   const refreshInvoiceList = async (overrideSortDir?: 'asc' | 'desc') => {
     await fetchInvoiceList(overrideSortDir);
+  };
+
+  const fetchShopLocationsForInvoiceTab = async () => {
+    setShopLocationsLoading(true);
+    setShopLocationsError(null);
+    try {
+      const shopId = await getShopId();
+      if (!shopId && !isFounder) {
+        setShopLocations([]);
+        return;
+      }
+      const { data, error } = await ensureDefaultShopLocations(supabase, { shopId, isFounder });
+      if (error) {
+        const message = error.message || 'Could not load locations.';
+        setShopLocationsError(message);
+        console.error('Error loading shop locations:', error);
+        return;
+      }
+      setShopLocations(data);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not load locations.';
+      setShopLocationsError(message);
+      console.error('fetchShopLocationsForInvoiceTab', error);
+    } finally {
+      setShopLocationsLoading(false);
+    }
+  };
+
+  const shopLocationById = useMemo(() => {
+    const map: Record<string, ShopLocation> = {};
+    for (const location of shopLocations) {
+      map[String(location.id)] = location;
+    }
+    return map;
+  }, [shopLocations]);
+
+  const resolveInvoiceLocationForRow = (invoice: Invoice) =>
+    resolveInvoiceLocation(invoice, { shopLocationById });
+
+  const snapshotInvoiceLocationFields = (invoice: Invoice): ManualLocationPatch => ({
+    manual_location_id: invoice.manual_location_id ?? invoice.location_id ?? null,
+    location_id: invoice.location_id ?? null,
+    effective_location_name: invoice.effective_location_name ?? null,
+    effective_location_source:
+      (invoice.effective_location_source as 'digital' | 'manual' | null) ?? null,
+  });
+
+  const applyOptimisticInvoiceLocation = (
+    invoice: Invoice,
+    locationId: string | null
+  ): { removedFromFilter: boolean } => {
+    const locationOptions = { shopLocationById };
+    let removedFromFilter = false;
+
+    setInvoices((prev) => {
+      const updatedRows = prev.map((row) => {
+        if (row.id !== invoice.id) return row;
+        return {
+          ...row,
+          ...buildManualLocationPatch(row, locationId, locationOptions),
+        };
+      });
+
+      const updatedInvoice = updatedRows.find((row) => row.id === invoice.id);
+      if (
+        updatedInvoice &&
+        !invoiceMatchesLocationFilter(updatedInvoice, invoiceLocationFilter, locationOptions)
+      ) {
+        removedFromFilter = true;
+        return updatedRows.filter((row) => row.id !== invoice.id);
+      }
+
+      return updatedRows;
+    });
+
+    if (removedFromFilter) {
+      setInvoiceListTotalCount((count) => Math.max(0, count - 1));
+    }
+
+    return { removedFromFilter };
+  };
+
+  const rollbackOptimisticInvoiceLocation = (
+    invoice: Invoice,
+    previous: ManualLocationPatch,
+    removedFromFilter: boolean
+  ) => {
+    setInvoices((prev) => {
+      if (prev.some((row) => row.id === invoice.id)) {
+        return prev.map((row) =>
+          row.id === invoice.id
+            ? {
+                ...row,
+                ...previous,
+              }
+            : row
+        );
+      }
+      return [...prev, { ...invoice, ...previous }];
+    });
+
+    if (removedFromFilter) {
+      setInvoiceListTotalCount((count) => count + 1);
+    }
+  };
+
+  const handleInvoiceLocationSelect = async (invoice: Invoice, locationId: string) => {
+    if (!invoice?.id) return;
+
+    const previous = snapshotInvoiceLocationFields(invoice);
+    const predictedPatch = buildManualLocationPatch(invoice, locationId, { shopLocationById });
+    setOpenLocationPickerInvoiceId(null);
+    const { removedFromFilter } = applyOptimisticInvoiceLocation(invoice, locationId);
+    setSavingLocationInvoiceId(invoice.id);
+
+    try {
+      const { error } = await setInvoiceManualLocation(supabase, {
+        invoiceId: invoice.id,
+        locationId,
+      });
+      if (error) {
+        rollbackOptimisticInvoiceLocation(invoice, previous, removedFromFilter);
+        showToast({ type: 'error', message: 'Could not update location.' });
+        return;
+      }
+      if (predictedPatch.effective_location_source === 'digital') {
+        showToast({
+          type: 'info',
+          message: 'Fallback location saved. Display follows the Work Order bay.',
+        });
+      }
+    } catch (error) {
+      rollbackOptimisticInvoiceLocation(invoice, previous, removedFromFilter);
+      console.error('handleInvoiceLocationSelect', error);
+      showToast({ type: 'error', message: 'Could not update location.' });
+    } finally {
+      setSavingLocationInvoiceId(null);
+    }
+  };
+
+  const handleInvoiceLocationClear = async (invoice: Invoice) => {
+    if (!invoice?.id) return;
+
+    const previous = snapshotInvoiceLocationFields(invoice);
+    setOpenLocationPickerInvoiceId(null);
+    const { removedFromFilter } = applyOptimisticInvoiceLocation(invoice, null);
+    setSavingLocationInvoiceId(invoice.id);
+
+    try {
+      const { error } = await setInvoiceManualLocation(supabase, {
+        invoiceId: invoice.id,
+        locationId: null,
+      });
+      if (error) {
+        rollbackOptimisticInvoiceLocation(invoice, previous, removedFromFilter);
+        showToast({ type: 'error', message: 'Could not update location.' });
+      }
+    } catch (error) {
+      rollbackOptimisticInvoiceLocation(invoice, previous, removedFromFilter);
+      console.error('handleInvoiceLocationClear', error);
+      showToast({ type: 'error', message: 'Could not update location.' });
+    } finally {
+      setSavingLocationInvoiceId(null);
+    }
+  };
+
+  const handleAddShopLocation = async (name: string) => {
+    const shopId = await getShopId();
+    if (!shopId && !isFounder) {
+      throw new Error('Shop not found. Please refresh and try again.');
+    }
+    const { data, error } = await createShopLocation(supabase, { shopId, isFounder, name });
+    if (error || !data) {
+      throw new Error(error?.message || 'Could not add location.');
+    }
+    setShopLocations((prev) => {
+      if (prev.some((row) => row.id === data.id)) return prev;
+      return [...prev, data].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    });
+    return data;
+  };
+
+  const handleAddShopLocationForInvoice = async (invoice: Invoice, name: string) => {
+    const created = await handleAddShopLocation(name);
+    await handleInvoiceLocationSelect(invoice, created.id);
   };
 
   const fetchOverviewInvoiceMetrics = async () => {
@@ -3399,10 +3610,11 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
 
   useEffect(() => {
     setInvoiceCurrentPage(1);
-  }, [contextShopId, debouncedInvoiceSearch, invoiceStatusFilter, invoicePageSize]);
+  }, [contextShopId, debouncedInvoiceSearch, invoiceStatusFilter, invoiceLocationFilter, invoicePageSize]);
 
   useEffect(() => {
     if (activeTab === 'invoices') {
+      void fetchShopLocationsForInvoiceTab();
       void fetchInvoiceList();
     }
   }, [
@@ -3411,6 +3623,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     invoiceCurrentPage,
     debouncedInvoiceSearch,
     invoiceStatusFilter,
+    invoiceLocationFilter,
     invoicePageSize,
     invoiceSortDir,
   ]);
@@ -11459,6 +11672,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       // Refresh data
       await fetchWorkOrders();
       await fetchServiceBays();
+      void refreshInvoiceList();
 
       // Close modal and reset state
       setShowMoveWorkOrderModal(false);
@@ -14982,6 +15196,19 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       <option>Partial</option>
                       <option>Overdue</option>
                     </select>
+                    <select
+                      value={invoiceLocationFilter}
+                      onChange={(e) => setInvoiceLocationFilter(e.target.value)}
+                      className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                    >
+                      <option value={ALL_LOCATIONS_FILTER}>{ALL_LOCATIONS_FILTER}</option>
+                      <option value={NO_LOCATION_FILTER}>{NO_LOCATION_FILTER}</option>
+                      {shopLocations.map((location) => (
+                        <option key={location.id} value={location.name}>
+                          {location.name}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <div className="flex flex-col items-start md:items-end space-y-2">
                     <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
@@ -15106,7 +15333,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                           )}
                         </button>
                         <div className="min-w-0">Customer</div>
-                        <div className="min-w-0">Work Order</div>
+                        <div className="min-w-0">Location</div>
                         <div className="min-w-0 text-right">Balance Due</div>
                         <div className="min-w-0">Status</div>
                         <div className="min-w-0">Date</div>
@@ -15159,7 +15386,8 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             const financials = getInvoiceFinancialsForInvoice(invoice);
                             const balanceDue = financials.totalDueToday;
                             const displayStatus = financials.status;
-                            
+                            const resolvedLocation = resolveInvoiceLocationForRow(invoice);
+
                             const statusColors: { [key: string]: string } = {
                             paid: 'bg-green-100 text-green-800', // 🟢 Paid - Green (completed/success)
                             unpaid: 'bg-orange-100 text-orange-800', // 🟠 Unpaid - Orange (needs attention)
@@ -15200,8 +15428,22 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   </div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-2 text-sm text-gray-600 pt-2 border-t border-gray-100">
-                                  <div>
-                                    <span className="text-gray-500">Work Order:</span> {getWorkOrderNumber(invoice.work_order_id)}
+                                  <div className="min-w-0">
+                                    <span className="text-gray-500">Location:</span>{' '}
+                                    <InvoiceLocationBadge
+                                      invoiceId={invoice.id}
+                                      resolved={resolvedLocation}
+                                      locations={shopLocations}
+                                      locationsLoading={shopLocationsLoading}
+                                      locationsError={shopLocationsError}
+                                      isOpen={openLocationPickerInvoiceId === invoice.id}
+                                      isSaving={savingLocationInvoiceId === invoice.id}
+                                      onOpen={() => setOpenLocationPickerInvoiceId(invoice.id)}
+                                      onClose={() => setOpenLocationPickerInvoiceId(null)}
+                                      onSelect={(locationId) => void handleInvoiceLocationSelect(invoice, locationId)}
+                                      onClear={() => void handleInvoiceLocationClear(invoice)}
+                                      onAddLocation={(name) => handleAddShopLocationForInvoice(invoice, name)}
+                                    />
                                   </div>
                                   <div>
                                     <span className="text-gray-500">Date:</span> {formatDateInTimezone(invoice.created_at)}
@@ -15421,8 +15663,21 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                                   <div className="font-medium truncate max-w-[14rem]">{customerName}</div>
                                   {customerPhone && <div className="text-xs text-gray-500 truncate">{customerPhone}</div>}
                                 </div>
-                                <div className="text-sm text-gray-600 min-w-0 truncate">
-                                  {getWorkOrderNumber(invoice.work_order_id)}
+                                <div className="min-w-0">
+                                  <InvoiceLocationBadge
+                                    invoiceId={invoice.id}
+                                    resolved={resolvedLocation}
+                                    locations={shopLocations}
+                                    locationsLoading={shopLocationsLoading}
+                                    locationsError={shopLocationsError}
+                                    isOpen={openLocationPickerInvoiceId === invoice.id}
+                                    isSaving={savingLocationInvoiceId === invoice.id}
+                                    onOpen={() => setOpenLocationPickerInvoiceId(invoice.id)}
+                                    onClose={() => setOpenLocationPickerInvoiceId(null)}
+                                    onSelect={(locationId) => void handleInvoiceLocationSelect(invoice, locationId)}
+                                    onClear={() => void handleInvoiceLocationClear(invoice)}
+                                    onAddLocation={(name) => handleAddShopLocationForInvoice(invoice, name)}
+                                  />
                                 </div>
                                 <div className="font-semibold text-gray-900 min-w-0 whitespace-nowrap text-right">
                                   {formatCurrency(balanceDue)}

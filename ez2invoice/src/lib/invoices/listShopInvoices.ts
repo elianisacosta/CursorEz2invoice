@@ -6,6 +6,11 @@ import {
   type ShopScope,
 } from '@/lib/postgrestPagination';
 import { calculateInvoiceFinancials } from '@/lib/invoices/invoicePaymentSummary';
+import { ALL_LOCATIONS_FILTER } from '@/lib/invoices/resolveInvoiceLocation';
+import {
+  applyInvoiceLocationFilter,
+  type InvoiceLocationListFilter,
+} from '@/lib/invoices/shopLocations';
 
 /** @deprecated use POSTGREST_PAGE_SIZE */
 export const INVOICE_FETCH_PAGE_SIZE = POSTGREST_PAGE_SIZE;
@@ -35,8 +40,11 @@ export type InvoiceListFilters = InvoiceShopScope & {
   searchTerm?: string;
   statusFilter?: InvoiceListStatusFilter;
   customerIds?: string[];
+  locationFilter?: InvoiceLocationListFilter;
   sortDir?: 'asc' | 'desc';
 };
+
+export { ALL_LOCATIONS_FILTER };
 
 export const INVOICE_DEFAULT_PAGE_SIZE = 25;
 
@@ -109,6 +117,7 @@ function applyInvoiceListFilters<
     or: (filters: string) => T;
     in: (column: string, values: string[]) => T;
     eq: (column: string, value: string | number | boolean) => T;
+    is: (column: string, value: null) => T;
     lt: (column: string, value: string) => T;
     gt: (column: string, value: number) => T;
   }
@@ -126,6 +135,7 @@ function applyInvoiceListFilters<
   if (options.customerIds && options.customerIds.length > 0) {
     next = next.in('customer_id', options.customerIds);
   }
+  next = applyInvoiceLocationFilter(next, options.locationFilter);
   next = applyInvoiceStatusFilter(next, options.statusFilter);
   return next;
 }
