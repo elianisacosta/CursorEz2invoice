@@ -6,6 +6,9 @@ export { normalizePhoneForLookup };
 export const CUSTOMER_PAGE_SIZE = 50;
 export const CUSTOMER_SEARCH_LIMIT = 50;
 export const CUSTOMER_PICKER_BROWSE_LIMIT = 25;
+/** Minimum contiguous digits before Invoice global search unions customer phone matches. */
+export const INVOICE_CUSTOMER_PHONE_MIN_DIGITS = 6;
+export const INVOICE_CUSTOMER_SEARCH_LIMIT = 100;
 
 export type CustomerSearchRow = {
   id: string;
@@ -303,6 +306,146 @@ export function buildCustomerSearchOrFilter(searchTerm: string): string | null {
   }
 
   return filters.join(',');
+}
+
+function isInvoicePhoneSearchQuery(query: string): boolean {
+  const trimmed = query.trim();
+  if (!trimmed || trimmed.startsWith('#') || /[a-z]/i.test(trimmed)) return false;
+  const digits = normalizePhoneForLookup(trimmed);
+  return digits.length >= INVOICE_CUSTOMER_PHONE_MIN_DIGITS;
+}
+
+/** Contiguous normalized-digit phone match for Invoice global search. */
+export function customerPhoneMatchesInvoiceSearch(
+  phone: string | null | undefined,
+  query: string
+): boolean {
+  const digits = normalizePhoneForLookup(query.trim());
+  if (digits.length < INVOICE_CUSTOMER_PHONE_MIN_DIGITS) return false;
+  const customerPhone = normalizePhoneForLookup(phone || '');
+  return customerPhone.length > 0 && customerPhone.includes(digits);
+}
+
+/**
+ * Phrase-aware customer match for Invoice global search.
+ * Multi-word queries must align to the same customer name/company — not independent word ORs.
+ */
+export function customerMatchesInvoiceSearchQuery(
+  customer: {
+    first_name?: string | null;
+    last_name?: string | null;
+    company?: string | null;
+    email?: string | null;
+    phone?: string | null;
+  },
+  query: string
+): boolean {
+  const trimmed = query.trim();
+  if (!trimmed) return true;
+  if (trimmed.startsWith('#')) return false;
+
+  if (isInvoicePhoneSearchQuery(trimmed)) {
+    return customerPhoneMatchesInvoiceSearch(customer.phone, trimmed);
+  }
+
+  const normalizedQuery = normalizeTextForLookup(trimmed);
+  const email = normalizeTextForLookup(customer.email || '');
+  if (email.includes(normalizedQuery)) return true;
+
+  const company = normalizeTextForLookup(customer.company || '');
+  if (company.includes(normalizedQuery)) return true;
+
+  const firstName = normalizeTextForLookup(customer.first_name || '');
+  const lastName = normalizeTextForLookup(customer.last_name || '');
+  const fullName = normalizeTextForLookup(
+    [customer.first_name, customer.last_name].filter(Boolean).join(' ')
+  );
+  if (fullName.includes(normalizedQuery)) return true;
+
+  const words = normalizedQuery.split(/\s+/).filter(Boolean);
+  if (words.length >= 2) {
+    const firstWord = words[0];
+    const restPhrase = words.slice(1).join(' ');
+    if (firstName.includes(firstWord) && lastName.includes(restPhrase)) return true;
+    return false;
+  }
+
+  if (firstName.includes(normalizedQuery) || lastName.includes(normalizedQuery)) return true;
+  return false;
+}
+
+function buildInvoiceCustomerPhoneOrFilter(digits: string): string {
+  const escaped = escapeIlikePattern(digits);
+  const clauses = [`phone.ilike.%${escaped}%`];
+  if (digits.length >= INVOICE_CUSTOMER_PHONE_MIN_DIGITS) {
+    const area = escapeIlikePattern(digits.slice(0, 3));
+    const rest = escapeIlikePattern(digits.slice(3));
+    if (rest.length >= 3) {
+      clauses.push(`and(phone.ilike.%${area}%,phone.ilike.%${rest}%)`);
+    }
+  }
+  return clauses.join(',');
+}
+
+/** Server-side prefilter for Invoice global search; results are post-filtered for precision. */
+export function buildInvoiceCustomerSearchOrFilter(searchTerm: string): string | null {
+  const trimmed = searchTerm.trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+
+  if (isInvoicePhoneSearchQuery(trimmed)) {
+    const digits = normalizePhoneForLookup(trimmed);
+    return buildInvoiceCustomerPhoneOrFilter(digits);
+  }
+
+  const pattern = `%${escapeIlikePattern(trimmed)}%`;
+  const filters = [`company.ilike.${pattern}`, `email.ilike.${pattern}`];
+
+  const words = trimmed.split(/\s+/).filter((word) => word.length > 0);
+  if (words.length >= 2) {
+    const first = `%${escapeIlikePattern(words[0])}%`;
+    const rest = `%${escapeIlikePattern(words.slice(1).join(' '))}%`;
+    filters.push(`and(first_name.ilike.${first},last_name.ilike.${rest})`);
+  } else {
+    filters.push(`first_name.ilike.${pattern}`, `last_name.ilike.${pattern}`);
+  }
+
+  return filters.join(',');
+}
+
+export async function searchShopCustomersForInvoice(
+  supabase: SupabaseClient,
+  options: CustomerShopScope & {
+    searchTerm: string;
+    limit?: number;
+  }
+): Promise<{ data: CustomerSearchRow[]; error: { message?: string; code?: string } | null }> {
+  const trimmed = options.searchTerm.trim();
+  if (!trimmed) return { data: [], error: null };
+
+  const limit = options.limit ?? INVOICE_CUSTOMER_SEARCH_LIMIT;
+  const orFilter = buildInvoiceCustomerSearchOrFilter(trimmed);
+  if (!orFilter) return { data: [], error: null };
+
+  let query = supabase
+    .from('customers')
+    .select('*')
+    .or(orFilter)
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(Math.max(limit, limit * 2));
+
+  query = applyCustomerShopScope(query, options.shopId, options.isFounder);
+  const { data, error } = await query;
+  if (error) {
+    return { data: [], error: { message: error.message, code: error.code } };
+  }
+
+  const rows = ((data || []) as Record<string, unknown>[]).map(normalizeCustomerRow);
+  const filtered = rows.filter((row) => customerMatchesInvoiceSearchQuery(row, trimmed));
+  return {
+    data: filtered.slice(0, limit),
+    error: null,
+  };
 }
 
 export async function searchShopCustomers(

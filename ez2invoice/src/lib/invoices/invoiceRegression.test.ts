@@ -6,7 +6,7 @@ import {
   fetchCustomerById,
   resolveCustomerEmailRecipient,
 } from '../customers/searchCustomers.ts';
-import { INVOICE_DEFAULT_PAGE_SIZE, listShopInvoicesPage } from './listShopInvoices.ts';
+import { INVOICE_DEFAULT_PAGE_SIZE, listShopInvoicesPage, invoiceMatchesListSearch, parseInvoiceSearchFromOrFilter } from './listShopInvoices.ts';
 import { logInvoiceListPerformance, getLastInvoiceListPerformance } from './invoiceListPerformance.ts';
 
 const ELIANIS_CUSTOMER_ID = '111419a7-ebd5-4b1b-9d2e-70a4843d5908';
@@ -46,6 +46,70 @@ function buildInvoiceRow(index: number, overrides: Record<string, unknown> = {})
 
 function createCustomerFilteredSupabase(rows: Record<string, unknown>[]) {
   let listCalls = 0;
+  const queryState: { searchTerm?: string; customerIds?: string[] } = {};
+
+  const filterRows = () =>
+    rows.filter((row) =>
+      invoiceMatchesListSearch(row, {
+        searchTerm: queryState.searchTerm,
+        customerIds: queryState.customerIds,
+      })
+    );
+
+  const applyOrFilter = (filter: string) => {
+    const parsed = parseInvoiceSearchFromOrFilter(filter);
+    if (parsed.searchTerm !== undefined) queryState.searchTerm = parsed.searchTerm;
+    if (parsed.customerIds !== undefined) queryState.customerIds = parsed.customerIds;
+  };
+
+  const filterable = {
+    rangeFrom: 0,
+    rangeTo: INVOICE_DEFAULT_PAGE_SIZE - 1,
+    eq() {
+      return filterable;
+    },
+    or(filter: string) {
+      applyOrFilter(filter);
+      return filterable;
+    },
+    in(_column: string, values: string[]) {
+      queryState.customerIds = values;
+      return filterable;
+    },
+    is() {
+      return filterable;
+    },
+    lt() {
+      return filterable;
+    },
+    gt() {
+      return filterable;
+    },
+    order() {
+      return filterable;
+    },
+    range(from: number, to: number) {
+      filterable.rangeFrom = from;
+      filterable.rangeTo = to;
+      return filterable;
+    },
+    async then(
+      resolve: (value: {
+        data?: Record<string, unknown>[];
+        count?: number;
+        error: null;
+      }) => void
+    ) {
+      listCalls += 1;
+      const scoped = filterRows();
+      resolve({
+        data: scoped.slice(filterable.rangeFrom, filterable.rangeTo + 1),
+        error: null,
+        count: scoped.length,
+      });
+    },
+  };
+
   const supabase = {
     from(table: string) {
       assert.equal(table, 'invoice_balances_v');
@@ -53,74 +117,13 @@ function createCustomerFilteredSupabase(rows: Record<string, unknown>[]) {
         select(_columns: string, options?: { count?: string; head?: boolean }) {
           if (options?.head) {
             return {
-              eq() {
-                return this;
-              },
-              or() {
-                return this;
-              },
-              in(_column: string, values: string[]) {
-                (this as { filteredIds?: string[] }).filteredIds = values;
-                return this;
-              },
-              lt() {
-                return this;
-              },
-              gt() {
-                return this;
-              },
+              ...filterable,
               async then(resolve: (value: { count: number; error: null }) => void) {
-                const filteredIds = (this as { filteredIds?: string[] }).filteredIds;
-                const count = filteredIds
-                  ? rows.filter((row) => filteredIds.includes(String(row.customer_id))).length
-                  : rows.length;
-                resolve({ count, error: null });
+                resolve({ count: filterRows().length, error: null });
               },
             };
           }
-          return {
-            order() {
-              return this;
-            },
-            range(from: number, to: number) {
-              return {
-                eq() {
-                  return this;
-                },
-                or() {
-                  return this;
-                },
-                in(_column: string, values: string[]) {
-                  (this as { filteredIds?: string[] }).filteredIds = values;
-                  return this;
-                },
-                lt() {
-                  return this;
-                },
-                gt() {
-                  return this;
-                },
-                async then(
-                  resolve: (value: {
-                    data: Record<string, unknown>[];
-                    error: null;
-                    count?: number;
-                  }) => void
-                ) {
-                  listCalls += 1;
-                  const filteredIds = (this as { filteredIds?: string[] }).filteredIds;
-                  const scoped = filteredIds
-                    ? rows.filter((row) => filteredIds.includes(String(row.customer_id)))
-                    : rows;
-                  resolve({
-                    data: scoped.slice(from, to + 1),
-                    error: null,
-                    count: scoped.length,
-                  });
-                },
-              };
-            },
-          };
+          return filterable;
         },
       };
     },

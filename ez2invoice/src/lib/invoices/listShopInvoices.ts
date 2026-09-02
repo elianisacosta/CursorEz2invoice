@@ -1,4 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { INVOICE_CUSTOMER_PHONE_MIN_DIGITS } from '@/lib/customers/searchCustomers';
+import { normalizePhoneForLookup } from '@/lib/customers/phoneNumber';
 import {
   POSTGREST_PAGE_SIZE,
   fetchAllPagedRows,
@@ -47,9 +49,148 @@ export type InvoiceListFilters = InvoiceShopScope & {
 export { ALL_LOCATIONS_FILTER };
 
 export const INVOICE_DEFAULT_PAGE_SIZE = 25;
+export const INVOICE_PHONE_SEARCH_MIN_DIGITS = INVOICE_CUSTOMER_PHONE_MIN_DIGITS;
+
+/**
+ * Invoice global search only unions customer matches when the query could plausibly
+ * be a name/email/company lookup or a full phone number — not short digit fragments.
+ */
+export function shouldIncludeCustomerIdsInInvoiceSearch(
+  searchTerm: string,
+  customerIds?: string[]
+): boolean {
+  if (!customerIds || customerIds.length === 0) return false;
+  const trimmed = searchTerm.trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith('#')) return false;
+  const digits = normalizePhoneForLookup(trimmed);
+  const looksNumericPhoneQuery = digits.length > 0 && !/[a-z]/i.test(trimmed);
+  if (looksNumericPhoneQuery && digits.length < INVOICE_PHONE_SEARCH_MIN_DIGITS) {
+    return false;
+  }
+  return true;
+}
+
+export function filterCustomerIdsForInvoiceSearch(
+  searchTerm: string,
+  customerIds?: string[]
+): string[] {
+  if (!shouldIncludeCustomerIdsInInvoiceSearch(searchTerm, customerIds)) {
+    return [];
+  }
+  return (customerIds || []).filter(Boolean);
+}
 
 function escapeIlikePattern(value: string): string {
   return value.replace(/[%_\\,]/g, '\\$&');
+}
+
+/** Parse a forgiving invoice-number query into invoice_number_numeric when unambiguous. */
+export function parseInvoiceNumberNumericSearch(searchTerm: string): number | null {
+  const trimmed = searchTerm.trim();
+  if (!trimmed || /\s/.test(trimmed)) return null;
+
+  const withoutHash = trimmed.replace(/^#/, '');
+  const withoutInvPrefix = withoutHash.replace(/^INV[-\s]*/i, '');
+  if (!/^\d+$/.test(withoutInvPrefix)) return null;
+
+  const num = Number.parseInt(withoutInvPrefix, 10);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return num;
+}
+
+function formatPostgrestInList(values: string[]): string {
+  return values.map((value) => `"${value.replace(/"/g, '\\"')}"`).join(',');
+}
+
+export function parseInvoiceSearchFromOrFilter(filter: string): {
+  searchTerm?: string;
+  customerIds?: string[];
+} {
+  const result: { searchTerm?: string; customerIds?: string[] } = {};
+  const inMatch = filter.match(/customer_id\.in\.\(([^)]*)\)/);
+  if (inMatch?.[1]) {
+    result.customerIds = inMatch[1]
+      .split(',')
+      .map((id) => id.trim().replace(/^"|"$/g, ''))
+      .filter(Boolean);
+  }
+  const notesMatch = filter.match(/notes\.ilike\.%((?:[^%\\]|\\.)*)%/);
+  if (notesMatch?.[1]) {
+    result.searchTerm = notesMatch[1].replace(/\\(.)/g, '$1');
+  }
+  return result;
+}
+
+/**
+ * Build one PostgREST OR filter for invoice list search:
+ * invoice_number OR notes OR invoice_number_numeric OR customer_id IN (...).
+ */
+export function buildInvoiceSearchOrFilter(
+  searchTerm: string,
+  customerIds?: string[]
+): string | null {
+  const trimmed = searchTerm.trim();
+  const ids = filterCustomerIdsForInvoiceSearch(trimmed, customerIds);
+  if (!trimmed && ids.length === 0) return null;
+
+  const clauses: string[] = [];
+
+  if (trimmed) {
+    const pattern = `%${escapeIlikePattern(trimmed)}%`;
+    clauses.push(`invoice_number.ilike.${pattern}`);
+    clauses.push(`notes.ilike.${pattern}`);
+
+    const numeric = parseInvoiceNumberNumericSearch(trimmed);
+    if (numeric !== null) {
+      clauses.push(`invoice_number_numeric.eq.${numeric}`);
+    }
+  }
+
+  if (ids.length > 0) {
+    clauses.push(`customer_id.in.(${formatPostgrestInList(ids)})`);
+  }
+
+  return clauses.length > 0 ? clauses.join(',') : null;
+}
+
+function rowMatchesIlike(value: string, searchTerm: string): boolean {
+  const pattern = escapeIlikePattern(searchTerm.trim()).replace(/\\%/g, '%').replace(/\\_/g, '_');
+  const needle = pattern.replace(/%/g, '').toLowerCase();
+  if (!needle) return false;
+  return value.toLowerCase().includes(needle);
+}
+
+/** Test helper mirroring server-side OR search semantics. */
+export function invoiceMatchesListSearch(
+  row: Record<string, unknown>,
+  options: { searchTerm?: string; customerIds?: string[] }
+): boolean {
+  const trimmed = (options.searchTerm || '').trim();
+  const customerIds = filterCustomerIdsForInvoiceSearch(trimmed, options.customerIds);
+  if (!trimmed && customerIds.length === 0) return true;
+
+  if (trimmed) {
+    const invoiceNumber = String(row.invoice_number ?? '');
+    const notes = String(row.notes ?? '');
+    if (rowMatchesIlike(invoiceNumber, trimmed) || rowMatchesIlike(notes, trimmed)) {
+      return true;
+    }
+    const numeric = parseInvoiceNumberNumericSearch(trimmed);
+    if (numeric !== null && Number(row.invoice_number_numeric) === numeric) {
+      return true;
+    }
+  }
+
+  if (
+    customerIds.length > 0 &&
+    row.customer_id &&
+    customerIds.includes(String(row.customer_id))
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 export { fetchAllPagedRows };
@@ -127,13 +268,12 @@ function applyInvoiceListFilters<
     options.shopId,
     options.isFounder
   ) as unknown as T;
-  const trimmed = (options.searchTerm || '').trim();
-  if (trimmed) {
-    const pattern = `%${escapeIlikePattern(trimmed)}%`;
-    next = next.or(`invoice_number.ilike.${pattern},notes.ilike.${pattern}`);
-  }
-  if (options.customerIds && options.customerIds.length > 0) {
-    next = next.in('customer_id', options.customerIds);
+  const orFilter = buildInvoiceSearchOrFilter(
+    options.searchTerm || '',
+    options.customerIds
+  );
+  if (orFilter) {
+    next = next.or(orFilter);
   }
   next = applyInvoiceLocationFilter(next, options.locationFilter);
   next = applyInvoiceStatusFilter(next, options.statusFilter);

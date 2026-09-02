@@ -51,6 +51,7 @@ import {
   mergeCustomersById,
   replaceCustomerById,
   searchShopCustomers,
+  searchShopCustomersForInvoice,
   selectedCustomerId,
   resolveCustomerEmailRecipient,
 } from '@/lib/customers/searchCustomers';
@@ -3241,7 +3242,7 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
     const searchTerm = debouncedInvoiceSearch.trim();
     let customerIds: string[] | undefined;
     if (searchTerm) {
-      const { data: customerMatches } = await searchShopCustomers(supabase, {
+      const { data: customerMatches } = await searchShopCustomersForInvoice(supabase, {
         ...scope,
         searchTerm,
         limit: 100,
@@ -9418,6 +9419,14 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
       ? invoiceListTotalCount
       : filteredInvoicesForList.length;
 
+  const hasActiveInvoiceListQuery = Boolean(
+    debouncedInvoiceSearch.trim() ||
+      invoiceStatusFilter !== 'All Status' ||
+      invoiceLocationFilter !== ALL_LOCATIONS_FILTER
+  );
+  const showInvoiceSearchEmptyState =
+    invoiceListRowCount === 0 && hasActiveInvoiceListQuery;
+
   const showInvoiceListSkeleton = shouldShowInvoiceListSkeleton(
     invoiceInitialLoading,
     invoices.length
@@ -15486,6 +15495,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                         <div key={index} className="h-16 bg-gray-100 animate-pulse rounded-lg" />
                       ))}
                     </div>
+                  ) : showInvoiceSearchEmptyState ? (
+                    <div className="text-center py-12">
+                      <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                      <h3 className="text-lg font-medium text-gray-900 mb-2">No matching invoices</h3>
+                      <p className="text-gray-600">Try a different search or filter.</p>
+                    </div>
                   ) : invoiceListRowCount === 0 && (!invoicesEstimatesIntegrationEnabled || estimates.length === 0) ? (
                     /* Empty State */
                     <div className="text-center py-12">
@@ -15551,11 +15566,17 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                             return (
                               <div className="text-center py-12">
                                 <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                                <h3 className="text-lg font-medium text-gray-900 mb-2">No documents found</h3>
+                                <h3 className="text-lg font-medium text-gray-900 mb-2">
+                                  {showInvoiceSearchEmptyState
+                                    ? 'No matching invoices'
+                                    : 'No documents found'}
+                                </h3>
                                 <p className="text-gray-600 mb-6">
-                                  {invoices.length === 0 && estimates.length === 0
-                                    ? "Create your first invoice to get started with billing."
-                                    : "No invoices or estimates match your search criteria."}
+                                  {showInvoiceSearchEmptyState
+                                    ? 'Try a different search or filter.'
+                                    : invoices.length === 0 && estimates.length === 0
+                                      ? 'Create your first invoice to get started with billing.'
+                                      : 'No invoices or estimates match your search criteria.'}
                                 </p>
                               </div>
                             );
