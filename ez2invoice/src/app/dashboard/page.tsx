@@ -66,6 +66,7 @@ import {
   serializePhoneForStorage,
 } from '@/lib/customers/phoneNumber';
 import { CustomerPhoneInput } from '@/components/customers/CustomerPhoneInput';
+import { InvoiceCustomerNotes } from '@/components/invoices/InvoiceCustomerNotes';
 import {
   DUPLICATE_LINE_ITEM_TOAST,
   laborLineItemSelection,
@@ -22951,6 +22952,12 @@ const [creatingCustomerFromWorkOrder, setCreatingCustomerFromWorkOrder] = useSta
                       </div>
                     )}
                   </div>
+                  {invoiceFormData.customer_id && (
+                    <InvoiceCustomerNotes
+                      key={invoiceFormData.customer_id}
+                      customerId={invoiceFormData.customer_id}
+                    />
+                  )}
                 </div>
 
                 {/* Terms */}
